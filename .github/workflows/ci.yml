@@ -5,7 +5,7 @@ on:
 permissions: { contents: read }
 jobs:
   # layer 1: the suite on macOS with /bin/bash 3.2 first on PATH, and on Ubuntu with bash 5 (both must pass)
-  ci:
+  suite:
     strategy:
       fail-fast: false
       matrix: { os: [ubuntu-latest, macos-latest] }
@@ -65,3 +65,12 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: { name: coverage, path: coverage, if-no-files-found: ignore }
+  # the one check to require: green only when every job above is green
+  ci:
+    if: always()
+    needs: [suite, lint, e2e-linux, e2e-macos, coverage]
+    runs-on: ubuntu-latest
+    steps:
+      - name: every layer passed
+        run: |
+          echo '${{ toJSON(needs) }}' | python3 -c 'import json,sys; n=json.load(sys.stdin); bad=[k for k,v in n.items() if v["result"]!="success"]; print("failed: " + ", ".join(bad) if bad else "all layers passed"); sys.exit(1 if bad else 0)'

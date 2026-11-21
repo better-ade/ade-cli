@@ -364,7 +364,9 @@ cmd_orchestrator() {
       name="${1:-}"; [ $# -gt 0 ] && shift; hub=""
       while [ $# -gt 0 ]; do case "$1" in
         --hub) [ $# -ge 2 ] || die 2 "--hub needs a path"; hub="$2"; shift 2 ;;
-        --channel) [ $# -ge 2 ] || die 2 "--channel needs a name"; channels="$channels $2"; shift 2 ;;
+        --channel) [ $# -ge 2 ] || die 2 "--channel needs a name"
+          [[ $2 =~ ^[a-z][a-z0-9-]{0,31}$ ]] || die 2 "channel names are lower-case letters, digits and - (e.g. telegram)"
+          channels="$channels $2"; shift 2 ;;
         *) die 2 "$ORCH_USAGE" ;;
       esac; done
       [[ $name =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || die 2 "orchestrator names are lower-case letters, digits and - (a letter or digit first, at most 64)"

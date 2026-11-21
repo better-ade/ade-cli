@@ -270,8 +270,9 @@ In plain words:
   | 7. `ade ui` | real tmux at 120x36 and 80x24: tab bar, sidebar and popups against `tests/golden/ui-*.txt` | `bash tests/e2e/ui_snapshots.sh`; `UPDATE_GOLDEN=1` rewrites |
   | 8. Coverage | kcov line coverage of `ade` over the suite; fails below `tests/coverage-floor` | `bash tests/coverage.sh` (Linux, `kcov`) |
 
-- **CI.** Every pull request and every push to `main` runs layer 1 on both systems through the shared
+- **CI.** Every pull request and every push to `main` runs layer 1 on both systems (job `suite`) through the shared
   [`verify.yml`](https://github.com/better-ade/.github) workflow, and layers 2 and 4-8 as their own jobs
-  (`.github/workflows/ci.yml`): `lint`, `e2e-linux` (a fresh `ubuntu:24.04` container), `e2e-macos`, `coverage`.
+  (`.github/workflows/ci.yml`): `lint`, `e2e-linux` (a fresh `ubuntu:24.04` container), `e2e-macos`, `coverage`. One
+  job, `ci`, needs all of them and is the check to require on `main`.
 - **Releases.** Bump `VERSION` and add its entry to [`CHANGELOG.md`](CHANGELOG.md) in the same pull request. When the
   change to `VERSION` reaches `main`, the release workflow runs the tests again and publishes the release.
