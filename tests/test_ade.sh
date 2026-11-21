@@ -45,7 +45,7 @@ init_copies_method() {   # AC5
   assert_eq "$(cat "$P/_bmad/custom/bmad-build.toml")" "[build]" "bmad custom copied"
   assert_eq "$(cat "$P/.ade/context/decisions/README.md")" "adrs" "context templates copied"
   assert_eq "$(cat "$P/docs/standards.md")" "standards" "standards copied"
-  assert_eq "$(cat "$P/.ade/method-version")" "v2.0.0" "tag recorded"
+  assert_eq "$(cat "$P/.ade/method-version")" "v2.1.0" "tag recorded (default pin v2.1.0)"
   [ ! -e "$P/.ade/ade.json" ] && [ ! -e "$P/.ade/templates" ] || fail "only the listed files are copied"
 }
 
@@ -117,11 +117,11 @@ config_file_hub() {   # review: ~/.config/ade/hub expands a leading ~, trims spa
 }
 
 init_rerun_new_tag() {   # review: a re-run at a new tag that keeps files leaves the old record; copy failures exit 1
-  fresh; make_method_repo; git -C "$M" tag v2.1.0; P="$T/proj"; mkdir -p "$P"; git init -q "$P"
+  fresh; make_method_repo; git -C "$M" tag v2.2.0; P="$T/proj"; mkdir -p "$P"; git init -q "$P"
   (cd "$P" && bash "$ADE" init) > /dev/null 2>&1 || fail "first init"
-  (cd "$P" && ADE_METHOD_REF=v2.1.0 bash "$ADE" init) > "$T/out" 2>&1 || { cat "$T/out"; fail "re-run exit"; }
-  assert_eq "$(cat "$P/.ade/method-version")" "v2.0.0" "old record left"
-  assert_contains "$T/out" ".ade/method-version left at v2.0.0" "says so"
+  (cd "$P" && ADE_METHOD_REF=v2.2.0 bash "$ADE" init) > "$T/out" 2>&1 || { cat "$T/out"; fail "re-run exit"; }
+  assert_eq "$(cat "$P/.ade/method-version")" "v2.1.0" "old record left"
+  assert_contains "$T/out" ".ade/method-version left at v2.1.0" "says so"
   Q="$T/proj2"; mkdir -p "$Q"; git init -q "$Q"; : > "$Q/docs"   # docs/ cannot be made: the copy fails
   (cd "$Q" && bash "$ADE" init) > "$T/out" 2>&1; rc=$?; assert_eq "$rc" 1 "copy failure exit"
   [ ! -e "$Q/.ade/method-version" ] || fail "no record after a failed copy"
@@ -148,11 +148,31 @@ fetch_errors() {   # review: git's error is shown and the temp checkout is remov
   assert_eq "$(ls -A "$T/tmp")" "" "temp dir removed"
 }
 
+init_installs_templates() {   # ade.json install_templates are copied (never overwritten) and the commit template is set
+  fresh; make_method_repo; P="$T/proj"; mkdir -p "$P"; git init -q "$P"
+  (cd "$P" && bash "$ADE" init) > "$T/out" 2>&1 || { cat "$T/out"; fail "init exit"; }
+  assert_eq "$(cat "$P/.github/pull_request_template.md")" "## Overview" "PR template in .github/"
+  assert_eq "$(cat "$P/.ade/commit-template.txt")" "<type>(<scope>): <summary>" "commit template in .ade/"
+  assert_eq "$(git -C "$P" config --local commit.template)" ".ade/commit-template.txt" "commit.template set in that repo"
+  Q="$T/proj2"; mkdir -p "$Q/.github"; git init -q "$Q"; echo mine > "$Q/.github/pull_request_template.md"
+  git -C "$Q" config commit.template my-template.txt
+  (cd "$Q" && bash "$ADE" init) > "$T/out" 2>&1 || { cat "$T/out"; fail "second init exit"; }
+  assert_eq "$(cat "$Q/.github/pull_request_template.md")" "mine" "existing PR template kept"
+  assert_eq "$(git -C "$Q" config --local commit.template)" "my-template.txt" "an existing commit.template is kept"
+  assert_contains "$T/out" "kept commit.template (my-template.txt)" "and listed as kept"
+  R="$T/proj3"; mkdir -p "$R" "$T/tmp"; git init -q "$R"
+  (cd "$R" && TMPDIR="$T/tmp" bash "$ADE" init) > "$T/out" 2>&1 || fail "third init"
+  assert_not_contains "$T/out" "unbound variable" "clean exit"; assert_eq "$(ls -A "$T/tmp")" "" "temp checkout removed"
+  N="$T/plain"; mkdir -p "$N"; (cd "$N" && bash "$ADE" init --here) > "$T/out" 2>&1 || { cat "$T/out"; fail "--here outside git"; }
+  [ -f "$N/.ade/commit-template.txt" ] || fail "--here copies the templates"
+  assert_contains "$T/out" "not a git repository: commit.template not set" "outside git it says so"
+}
+
 symlinked_version() {   # review: a symlinked dev install finds VERSION beside the real script
   fresh; mkdir -p "$T/bin"; ln -s "$REPO/ade" "$T/bin/ade"
   assert_eq "$("$T/bin/ade" version)" "ade $(cat "$REPO/VERSION")" "version through a symlink"
 }
 
-ALL="finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors symlinked_version"
+ALL="finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors init_installs_templates symlinked_version"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
