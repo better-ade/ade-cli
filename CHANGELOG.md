@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- `ade init` installs ade-method's `install_templates` (`.github/pull_request_template.md`, `.ade/commit-template.txt`,
+  never overwriting) and sets `git config commit.template .ade/commit-template.txt` in that repo unless one is set;
+  the default `ADE_METHOD_REF` is now `v2.1.0`; the temp checkout is removed again (the exit trap no longer fails).
 - Testing (A8): CI on macOS Bash 3.2 and Ubuntu bash 5, pinned shellcheck, a hostile-input table over every
   name-taking command, clean-machine, upgrade and interactive e2e jobs, `ade ui` snapshots at two sizes, and a kcov
   coverage floor. Fixes it found: names starting with `-`, names with newlines, `projects/..`, `setup --test ""`,
