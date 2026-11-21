@@ -164,7 +164,7 @@ cmd_agent() {
 # skills on the fly (story A7): BMAD skills via .claude/settings.json skillOverrides (absent = on, "name-only",
 # "off"), ade-skills plugins via the marketplace file and the project's enabledPlugins
 ADE_SKILLS_REPO="${ADE_SKILLS_REPO:-https://github.com/better-ade/ade-skills}"
-ADE_SKILLS_REF="${ADE_SKILLS_REF:-main}"   # the marketplace Claude Code adds follows main
+ADE_SKILLS_REF="${ADE_SKILLS_REF:-v0.1.0}"   # pinned like the other repos; ADE_SKILLS_REF overrides
 SKILLS_USAGE="usage: ade skills list | add <plugin> | enable <skill> | disable <skill> | search <word>"
 
 # skills_py <op> <project> [args]: the one place that reads and writes the settings (atomic; other keys kept)
@@ -213,8 +213,10 @@ elif op in ("enable", "disable"):
         print("%s: on" % name)
     else:
         if not isinstance(ov, dict): ov = d["skillOverrides"] = {}
-        if ov.get(name) != "name-only": ov[name] = "name-only"; write(d)
-        print("%s: name-only" % name)
+        if ov.get(name) == "off": print("%s: off (already; disable never raises it)" % name)
+        else:
+            if ov.get(name) != "name-only": ov[name] = "name-only"; write(d)
+            print("%s: name-only" % name)
 elif op == "plugin":
     names = [n for n, _ in plugins(args[0])]
     if args[1] not in names: sys.stderr.write("ade: no ade-skills plugin named %s%s\n" % (args[1], closest(args[1], names))); sys.exit(2)
@@ -254,11 +256,17 @@ cmd_skills() {
   local sub="${1:-}" top src mkt; [ $# -gt 0 ] && shift
   top="$(git rev-parse --show-toplevel 2> /dev/null)" || top="$(pwd -P)"
   case "$sub" in
+    --pin) echo "$ADE_SKILLS_REF"; return 0 ;;
     list|search|add)
       case "$sub" in list) [ $# -eq 0 ] || die 2 "$SKILLS_USAGE" ;; *) [ $# -eq 1 ] && [ -n "$1" ] || die 2 "$SKILLS_USAGE" ;; esac
-      src="$(fetch "$ADE_SKILLS_REPO" "$ADE_SKILLS_REF")" || exit $?; mkt="$src/.claude-plugin/marketplace.json"
-      SKILLS_TMP="$(dirname "$src")"; trap 'rm -rf "$SKILLS_TMP"' EXIT
-      [ -f "$mkt" ] || die 1 "ade-skills has no .claude-plugin/marketplace.json at $ADE_SKILLS_REF"
+      if src="$(fetch "$ADE_SKILLS_REPO" "$ADE_SKILLS_REF" 2> /dev/null)"; then
+        mkt="$src/.claude-plugin/marketplace.json"; SKILLS_TMP="$(dirname "$src")"; trap 'rm_tmp "$SKILLS_TMP"' EXIT
+        [ -f "$mkt" ] || die 1 "ade-skills has no .claude-plugin/marketplace.json at $ADE_SKILLS_REF"
+      else   # offline: the marketplace Claude Code installed, when there is one
+        mkt="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/ade-skills/.claude-plugin/marketplace.json"
+        [ -f "$mkt" ] || die 1 "could not fetch $ADE_SKILLS_REPO at $ADE_SKILLS_REF, and no installed ade-skills marketplace"
+        echo "ade: ade-skills unreachable; using the installed marketplace ($mkt)" >&2
+      fi
       case "$sub" in
         list) skills_py list "$top" "$mkt"; exit $? ;;
         search) skills_py search "$top" "$mkt" "$1"; exit $? ;;
@@ -266,7 +274,8 @@ cmd_skills() {
       skills_py plugin "$top" "$mkt" "$1" || exit $?
       command -v claude > /dev/null 2>&1 || die 2 "claude is not on PATH; install Claude Code first"
       if ! claude plugin marketplace list 2>/dev/null | grep -q 'ade-skills'; then
-        claude plugin marketplace add better-ade/ade-skills || die 1 "could not add the ade-skills marketplace"
+        local msrc="$ADE_SKILLS_REPO"; [ "$msrc" = https://github.com/better-ade/ade-skills ] && msrc=better-ade/ade-skills
+        claude plugin marketplace add "$msrc" || die 1 "could not add the ade-skills marketplace"
       fi
       claude plugin install "$1@ade-skills" --scope project || exit $?
       skills_hint "$top" "plugin $1 installed in $(basename "$top"): run /reload-plugins in its open sessions to load it" ;;
@@ -275,7 +284,7 @@ cmd_skills() {
       local never=""
       if [ "$sub" = enable ]; then
         src="$(fetch "$ADE_METHOD_REPO" "$ADE_METHOD_REF")" || exit $?
-        never="$(skills_py never "$top" "$src/ade.json")"; local rc=$?; rm -rf "$(dirname "$src")"; [ "$rc" = 0 ] || exit 1
+        never="$(skills_py never "$top" "$src/ade.json")"; local rc=$?; rm_tmp "$(dirname "$src")"; [ "$rc" = 0 ] || exit 1
       fi
       skills_py "$sub" "$top" "$1" "$never" || exit $?
       skills_hint "$top" "skill $1 changed in $(basename "$top"): it applies on the next prompt (Claude Code reloads its settings)" ;;

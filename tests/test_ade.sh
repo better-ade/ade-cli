@@ -72,7 +72,7 @@ skills_add_calls_claude() {   # AC8
   fresh; stub_claude; make_skills_repo; P="$T/proj"; mkdir -p "$P"; cd "$P"
   bash "$ADE" skills add notes > "$T/out" 2>&1 || { cat "$T/out"; fail "skills add exit"; }
   bash "$ADE" skills add browser > "$T/out" 2>&1 || { cat "$T/out"; fail "second skills add exit"; }
-  assert_contains "$CLAUDE_LOG" "plugin marketplace add better-ade/ade-skills" "marketplace added"
+  assert_contains "$CLAUDE_LOG" "plugin marketplace add $K" "marketplace added (from ADE_SKILLS_REPO)"
   assert_eq "$(grep -c 'marketplace add' "$CLAUDE_LOG")" 1 "marketplace added once"
   assert_contains "$CLAUDE_LOG" "plugin install notes@ade-skills --scope project" "project-scope install"
   assert_contains "$CLAUDE_LOG" "plugin install browser@ade-skills --scope project" "second install"

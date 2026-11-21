@@ -13,7 +13,7 @@ drop_t() {
   case "$T" in */ade-test.?*) cd / && chmod -R u+w "$T" 2> /dev/null; rm -rf -- "$T" ;; esac
 }
 fresh() {
-  unset ADE_HUB ADE_HOOK_BIN ADE_METHOD_REPO ADE_REGISTRY_REPO ADE_METHOD_REF ADE_REGISTRY_REF ADE_SKILLS_REPO ADE_SKILLS_REF
+  unset ADE_HUB ADE_HOOK_BIN ADE_METHOD_REPO ADE_REGISTRY_REPO ADE_METHOD_REF ADE_REGISTRY_REF ADE_SKILLS_REPO ADE_SKILLS_REF CLAUDE_CONFIG_DIR
   drop_t; T="$(mktemp -d "${TMPDIR:-/tmp}/ade-test.XXXXXX")"; T="$(cd "$T" && pwd -P)"; trap drop_t EXIT
   export ADE_NO_CLAUDE_UPDATE=1   # the Claude Code update step is tested on its own (test_update.sh)
   export HOME="$T/home"; mkdir -p "$HOME"
