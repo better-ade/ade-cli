@@ -29,6 +29,9 @@ Hub commands (run the hub's bin/ scripts):
   context     the hub's context store (bin/context)
   agent-run   run an agent (bin/agent)
 
+Orchestrators (one per hub, run by the hub's bin/chat):
+  orchestrator  new <name> --hub <path> [--channel telegram] | start | stop | list | logs <name> [-n N] | remove
+
 Project commands (no hub needed):
   init        copy ade-method at its pinned tag into this project (git top level, or --here); never overwrites
   agent       ade agent list | ade agent add <name>: specialists from ade-agent-registry
@@ -154,6 +157,99 @@ cmd_open() {
   exec "$ADE_HOOK_BIN" open "$@"
 }
 
+# conf_get <hub> <KEY>: a hub.conf value (sourced in a subshell, as the hub's own scripts read it)
+conf_get() {
+  case "$2" in *[!A-Z0-9_]*|"") return 1 ;; esac
+  ( . "$1/hub.conf" > /dev/null 2>&1; eval "printf '%s' \"\${$2:-}\"" )
+}
+
+# ~/.config/ade: the folder 0700, every file in it 0600; write_conf_file <name> < content replaces one atomically
+CONF_DIR="$HOME/.config/ade"
+write_conf_file() {
+  local tmp; ( umask 077; mkdir -p "$CONF_DIR" ) && chmod 700 "$CONF_DIR" || die 1 "cannot create $CONF_DIR"
+  tmp="$(umask 077; mktemp "$CONF_DIR/.$1.XXXXXX")" || die 1 "cannot write $CONF_DIR/$1"
+  { cat > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$CONF_DIR/$1"; } || { rm -f "$tmp"; die 1 "cannot write $CONF_DIR/$1"; }
+}
+
+# orchestrators: ~/.config/ade/orchestrators, one "name<TAB>hub" line each (story A2, .ade/context/hub-interface.md)
+ORCH="$CONF_DIR/orchestrators"
+orch_hub() { [ -f "$ORCH" ] && awk -F '\t' -v n="$1" '$1 == n { print $2; exit }' "$ORCH"; }
+# chat <hub> <args>: the hub's own bin/chat, with HUB exported to that hub; its exit code is returned unchanged
+chat() {
+  local hub="$1"; shift
+  [ -e "$hub/bin/chat" ] || die 2 "this hub has no bin/chat; update it"
+  [ -x "$hub/bin/chat" ] || die 2 "bin/chat is not executable"
+  ( HUB="$hub"; export HUB; "$hub/bin/chat" "$@" )
+}
+# orch_state <hub>: "running <since>", "stopped -", "missing -" or "unknown -", from the hub's bin/chat status
+orch_state() {
+  local first st since
+  is_hub "$1" && [ -x "$1/bin/chat" ] || { echo "missing -"; return; }
+  first="$(chat "$1" status 2>/dev/null | head -1)"
+  st="${first%% *}"; since="$(printf '%s\n' "$first" | sed -n 's/.* since \([^ ]*\).*/\1/p')"
+  case "$st" in running|stopped) echo "$st ${since:--}" ;; *) echo "unknown -" ;; esac
+}
+
+ORCH_USAGE="usage: ade orchestrator new <name> --hub <path> [--channel telegram] | start|stop|remove <name> | list | logs <name> [-n N]"
+cmd_orchestrator() {
+  local sub="${1:-}" name hub ch n st since chans channels=""; [ $# -gt 0 ] && shift
+  case "$sub" in
+    new)
+      name="${1:-}"; [ $# -gt 0 ] && shift; hub=""
+      while [ $# -gt 0 ]; do case "$1" in
+        --hub) [ $# -ge 2 ] || die 2 "--hub needs a path"; hub="$2"; shift 2 ;;
+        --channel) [ $# -ge 2 ] || die 2 "--channel needs a name"; channels="$channels $2"; shift 2 ;;
+        *) die 2 "$ORCH_USAGE" ;;
+      esac; done
+      printf '%s' "$name" | grep -Eq '^[a-z0-9-]+$' || die 2 "orchestrator names are lower-case letters, digits and -"
+      [ -n "$hub" ] || die 2 "$ORCH_USAGE"
+      is_hub "$hub" || die 2 "$hub is not a hub (no bin/lib.sh and hub.conf)"
+      hub="$(cd "$hub" && pwd -P)"
+      [ -z "$(orch_hub "$name")" ] || die 2 "an orchestrator named $name already exists"
+      n="$([ -f "$ORCH" ] && awk -F '\t' -v h="$hub" '$2 == h { print $1; exit }' "$ORCH")"
+      [ -z "$n" ] || die 2 "$hub already has an orchestrator ($n); one per hub"
+      for ch in $channels; do ADE_ORCHESTRATOR="$name" chat "$hub" setup "$ch" || exit $?; done
+      { [ -f "$ORCH" ] && cat "$ORCH"; printf '%s\t%s\n' "$name" "$hub"; } | write_conf_file orchestrators
+      echo "orchestrator $name registered for $hub"
+      [ -n "$channels" ] || echo "no channel yet: run bin/chat setup telegram in the hub to add one" ;;
+    start|stop)
+      [ -n "${1:-}" ] && [ $# -eq 1 ] || die 2 "$ORCH_USAGE"
+      hub="$(orch_hub "$1")"; [ -n "$hub" ] || die 2 "no orchestrator named $1; ade orchestrator list shows them"
+      is_hub "$hub" || die 2 "the hub of $1 ($hub) is gone"
+      chat "$hub" "$sub"; exit $? ;;
+    list)
+      [ $# -eq 0 ] || die 2 "$ORCH_USAGE"
+      printf '%-16s %-8s %-12s %-20s %s\n' NAME STATUS CHANNELS SINCE HUB
+      [ -f "$ORCH" ] || return 0
+      while IFS="$(printf '\t')" read -r name hub; do
+        [ -n "$name" ] || continue
+        read -r st since <<EOF
+$(orch_state "$hub" < /dev/null)
+EOF
+        chans="-"; [ "$st" = missing ] || chans="$(conf_get "$hub" HUB_CHANNELS < /dev/null | tr ' ' ',')"
+        printf '%-16s %-8s %-12s %-20s %s\n' "$name" "$st" "${chans:--}" "$since" "$hub"
+      done < "$ORCH" ;;
+    logs)
+      name="${1:-}"; [ $# -gt 0 ] && shift; n=50
+      [ -n "$name" ] || die 2 "$ORCH_USAGE"
+      if [ $# -gt 0 ]; then { [ "$1" = -n ] && [ $# -eq 2 ]; } || die 2 "$ORCH_USAGE"; n="$2"; fi
+      printf '%s' "$n" | grep -Eq '^[1-9][0-9]{0,5}$' || die 2 "-n needs a number of lines"
+      hub="$(orch_hub "$name")"; [ -n "$hub" ] || die 2 "no orchestrator named $name; ade orchestrator list shows them"
+      is_hub "$hub" || die 2 "the hub of $name ($hub) is gone"
+      chat "$hub" logs -n "$n"; exit $? ;;
+    remove)
+      [ -n "${1:-}" ] && [ $# -eq 1 ] || die 2 "$ORCH_USAGE"
+      hub="$(orch_hub "$1")"; [ -n "$hub" ] || die 2 "no orchestrator named $1; ade orchestrator list shows them"
+      read -r st since <<EOF
+$(orch_state "$hub")
+EOF
+      if [ "$st" = running ]; then chat "$hub" stop || die 1 "could not stop $1; it stays registered"; fi
+      awk -F '\t' -v n="$1" '$1 != n' "$ORCH" | write_conf_file orchestrators
+      echo "orchestrator $1 removed (its hub $hub is untouched)" ;;
+    *) die 2 "$ORCH_USAGE" ;;
+  esac
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -170,6 +266,7 @@ case "$cmd" in
   init) cmd_init "$@" ;;
   agent) cmd_agent "$@" ;;
   skills) cmd_skills "$@" ;;
+  orchestrator) cmd_orchestrator "$@" ;;
   open) cmd_open "$@" ;;
   version|--version|-v) cmd_version ;;
   help|--help|-h) usage ;;

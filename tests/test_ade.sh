@@ -92,7 +92,7 @@ install_and_version() {   # AC10
   [ -x "$T/prefix/bin/ade" ] || fail "ade installed into the prefix"
   assert_eq "$(cd "$T" && "$T/prefix/bin/ade" version)" "ade $(cat "$REPO/VERSION")" "installed version"
   assert_eq "$(bash "$ADE" version)" "ade $(cat "$REPO/VERSION")" "repo version"
-  bash "$ADE" help > "$T/out"; for c in work status dispatch notify chat method keys models roles doctor sync context agent-run init agent skills open version help; do
+  bash "$ADE" help > "$T/out"; for c in work status dispatch notify chat method keys models roles doctor sync context agent-run orchestrator init agent skills open version help; do
     grep -qE "^  $c( |$)" "$T/out" || fail "help lists $c"; done
 }
 
