@@ -7,11 +7,11 @@ dead_pid() { sleep 0 & local p=$!; wait "$p"; echo "$p"; }
 clean_fixture() {
   H="$T/hub"; make_hub "$H" hub; echo "HUB_NAME=acme" > "$H/hub.conf"; git init -q "$H"; commit_tag "$H" hub
   export AGENT_STATE="$T/state" TMPDIR="$T/tmp" FAKE_LOG="$T/fake.log"; mkdir -p "$TMPDIR"; : > "$FAKE_LOG"
-  S="$AGENT_STATE"; mkdir -p "$S/dispatch" "$S/cursors"
+  S="$AGENT_STATE"; mkdir -p "$S/dispatch" "$S/events-seen"
   mkdir -p "$S/sync.lock" "$S/dispatch.lock" "$S/chat.lock"; dead_pid > "$S/sync.lock/pid"
-  sleep 300 & LIVE=$!; echo "$LIVE" > "$S/dispatch.lock/pid"; dead_pid > "$S/chat.lock/pid"
+  sleep 300 > /dev/null 2>&1 & LIVE=$!; echo "$LIVE" > "$S/dispatch.lock/pid"; dead_pid > "$S/chat.lock/pid"
   : > "$S/dispatch/old-ticket"; touch -t 202001010000 "$S/dispatch/old-ticket"; : > "$S/dispatch/new-ticket"
-  : > "$S/cursors/gone"; touch -t 202001010000 "$S/cursors/gone"; : > "$S/cursors/fresh"
+  : > "$S/events-seen/gone"; touch -t 202001010000 "$S/events-seen/gone"; : > "$S/events-seen/fresh"
   mkdir -p "$TMPDIR/ade.old1" "$TMPDIR/ade.new1" "$TMPDIR/other.old"; touch -t 202001010000 "$TMPDIR/ade.old1" "$TMPDIR/other.old"
   P="$T/proj"; mkdir -p "$P"; git init -q -b main "$P" 2>/dev/null || git init -q "$P"; git -C "$P" checkout -q -b main 2>/dev/null
   echo a > "$P/a"; commit_tag "$P" base
@@ -48,15 +48,15 @@ stop_live() { kill "$LIVE" 2>/dev/null; }
 listing() { (cd "$T" && find . -path ./tmp -prune -o -path ./state -prune -o -print | grep -v '/\.git/' | LC_ALL=C sort); }
 
 clean_preview_then_yes() {   # AC1
-  fresh; clean_fixture; before="$(listing; ls -R "$AGENT_STATE" "$TMPDIR")"
+  fresh; clean_fixture; : > "$T/out"; before="$(listing; ls -R "$AGENT_STATE" "$TMPDIR")"
   bash "$ADE" clean < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; stop_live; fail "preview exit"; }
   assert_eq "$(listing; ls -R "$AGENT_STATE" "$TMPDIR")" "$before" "the preview changes nothing"
-  for s in "sync.lock" "chat.lock" "dispatch/old-ticket" "cursors/gone" "ade.old1" "ade-dead" "wt-done"; do assert_contains "$T/out" "$s" "planned: $s"; done
+  for s in "sync.lock" "chat.lock" "dispatch/old-ticket" "events-seen/gone" "ade.old1" "ade-dead" "wt-done"; do assert_contains "$T/out" "$s" "planned: $s"; done
   assert_not_contains "$FAKE_LOG" "kill-session" "no tmux change in the preview"
   bash "$ADE" clean --yes < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; stop_live; fail "--yes exit"; }
   [ ! -e "$AGENT_STATE/sync.lock" ] && [ ! -e "$AGENT_STATE/chat.lock" ] || fail "stale locks removed"
   [ ! -e "$AGENT_STATE/dispatch/old-ticket" ] && [ -e "$AGENT_STATE/dispatch/new-ticket" ] || fail "only old markers"
-  [ ! -e "$AGENT_STATE/cursors/gone" ] && [ -e "$AGENT_STATE/cursors/fresh" ] || fail "only expired cursors"
+  [ ! -e "$AGENT_STATE/events-seen/gone" ] && [ -e "$AGENT_STATE/events-seen/fresh" ] || fail "only expired cursors"
   [ ! -e "$TMPDIR/ade.old1" ] && [ -e "$TMPDIR/ade.new1" ] && [ -e "$TMPDIR/other.old" ] || fail "only ade's old temp folders"
   grep -q "kill-session -t =ade-dead" "$FAKE_LOG" || fail "dead tmux session ended"
   [ ! -e "$T/wt-done" ] || fail "merged clean worktree removed"
@@ -105,18 +105,81 @@ reset_keys() {   # AC4
   assert_eq "$(grep -c 'Forget the' "$T/out")" 2 "one confirmation per key"
 }
 
-reset_hub() {   # AC5
-  fresh; clean_fixture; stop_live; cp -R "$H" "$T/hub2"
-  printf 'y\nwrong\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1; [ -d "$H" ] || fail "a wrong name keeps the hub"
-  fresh; clean_fixture; stop_live; echo change >> "$H/hub.conf"
-  printf 'y\nacme\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1; assert_eq "$?" 2 "uncommitted work refused"; [ -d "$H" ] || fail "kept"
-  git -C "$H" checkout -q hub.conf
-  printf 'y\nacme\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1; assert_eq "$?" 2 "unpushed work refused (no upstream)"
+# --hub never deletes: fakes for uname ($FAKE_UNAME), the trash CLI and osascript; the two trash fakes log their call
+# and move the folder into $HOME/.Trash (FAKE_TRASH_FAIL=1: they move nothing). No real Trash is ever reached.
+trash_fakes() {
+  local d="$T/osbin"; mkdir -p "$d"; export ADE_TRASH_CLI="$d/trash"
+  printf '#!/bin/bash\necho "${FAKE_UNAME:-Linux}"\n' > "$d/uname"
+  cat > "$d/trash" <<'F'
+#!/bin/bash
+echo "trash $*" >> "$FAKE_LOG"; [ -n "${FAKE_TRASH_FAIL:-}" ] && exit 1; mkdir -p "$HOME/.Trash"; mv "$1" "$HOME/.Trash/"
+F
+  cat > "$d/osascript" <<'F'
+#!/bin/bash
+printf 'osascript' >> "$FAKE_LOG"; printf ' [%s]' "$@" >> "$FAKE_LOG"; echo >> "$FAKE_LOG"
+[ -n "${FAKE_TRASH_FAIL:-}" ] && exit 1; mkdir -p "$HOME/.Trash"; mv "${@: -1}" "$HOME/.Trash/"; echo "folder hub of item .Trash"
+F
+  chmod +x "$d/"*; export PATH="$d:$PATH"
+}
+push_hub() { R="$T/remote.git"; git init -q --bare "$R"; git -C "$H" remote add origin "$R"; git -C "$H" push -q -u origin HEAD 2> /dev/null; }
+hub_fixture() { fresh; clean_fixture; stop_live; trash_fakes; commit_tag "$H" fixture; }   # a clean, committed hub
+matches() { [[ $1 =~ $2 ]]; }
+
+reset_hub_refusals() {   # AC5: uncommitted, stashed or unpushed work is refused before anything changes
+  hub_fixture; echo change >> "$H/hub.conf"
+  printf 'y\nacme\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1; assert_eq "$?" 2 "uncommitted work refused"
+  assert_contains "$T/out" "uncommitted" "says why"; [ -f "$H/hub.conf" ] && [ -d "$HOME/.config/ade" ] || fail "nothing changed"
+  git -C "$H" stash -q; printf 'y\nacme\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1; assert_eq "$?" 2 "stashed work refused"
+  git -C "$H" stash drop -q
+  printf 'y\nacme\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1; assert_eq "$?" 2 "unpushed work refused (no remote)"
   assert_contains "$T/out" "not pushed" "says why"
-  R="$T/remote.git"; git init -q --bare "$R"; git -C "$H" remote add origin "$R"; git -C "$H" push -q -u origin HEAD 2>/dev/null
+  push_hub; echo more >> "$H/hub.conf"; commit_tag "$H" local-only
+  printf 'y\nacme\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1; assert_eq "$?" 2 "a commit not pushed is refused"
+  [ -d "$H" ] && [ -d "$HOME/.config/ade" ] || fail "kept"; assert_not_contains "$FAKE_LOG" "trash" "no trash call"
+  mkdir -p "$T/plain"; make_hub "$T/plain" plain
+  printf 'y\nplain\n' | bash "$ADE" reset --hub "$T/plain" > "$T/out" 2>&1; assert_eq "$?" 2 "a hub outside git cannot be checked"
+  bash "$ADE" reset --hub "$T/proj" < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "not a hub"
+}
+
+reset_hub_wrong_name() {   # AC5: the hub's name must be typed; a wrong one changes nothing at all
+  hub_fixture; push_hub
+  printf 'y\nwrong\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1; assert_eq "$?" 1 "a wrong name stops"
+  [ -d "$H" ] && [ -d "$HOME/.config/ade" ] || fail "a wrong name keeps the hub and the setup"
+  printf 'y\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1; [ -d "$H" ] || fail "no name keeps the hub"
+}
+
+reset_hub_trash_linux() {   # AC5 on Linux: moved to ~/.local/share/ade/trash/<hub>-<UTC time>/, never deleted
+  hub_fixture; push_hub; cp -R "$H" "$T/hub2"; export FAKE_UNAME=Linux
   printf 'y\nacme\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1 || { cat "$T/out"; fail "pushed hub exit"; }
-  [ ! -e "$H" ] || fail "the hub removed after typing its name"
-  [ -d "$P" ] && [ -d "$R" ] && [ -d "$T/wt-feature" ] || fail "nothing else removed"
+  [ ! -e "$H" ] || fail "the hub moved away after typing its name"
+  dest="$(ls -d "$HOME/.local/share/ade/trash/"* 2> /dev/null)"; [ "$(printf '%s\n' "$dest" | grep -c .)" = 1 ] || fail "one trash folder"
+  matches "$(basename "$dest")" '^hub-[0-9]{8}T[0-9]{6}Z$' || fail "named <hub>-<UTC time>: $dest"
+  [ -f "$dest/hub.conf" ] && [ -d "$dest/.git" ] && [ -d "$dest/projects/api" ] || fail "the whole hub is in the trash folder"
+  assert_contains "$T/out" "$dest" "says where it went"
+  [ -d "$P" ] && [ -d "$R" ] && [ -d "$T/wt-feature" ] && [ -d "$T/hub2" ] || fail "nothing else moved"
+  assert_not_contains "$FAKE_LOG" "osascript" "no Finder on Linux"
+  restore="$(sed -n 's/^ *to restore: //p' "$T/out")"; [ -n "$restore" ] || fail "prints how to restore"
+  eval "$restore" && [ -f "$H/hub.conf" ] && [ -d "$H/.git" ] || fail "the restore line brings it back"
+}
+
+reset_hub_trash_macos() {   # AC5 on macOS: the trash CLI when installed, else Finder through osascript
+  hub_fixture; push_hub; export FAKE_UNAME=Darwin
+  printf 'y\nacme\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1 || { cat "$T/out"; fail "trash CLI exit"; }
+  assert_contains "$FAKE_LOG" "trash $H" "the trash CLI moved it"; [ ! -e "$H" ] && [ -d "$HOME/.Trash/hub" ] || fail "in the Trash"
+  assert_contains "$T/out" "Put Back" "how to restore"; assert_contains "$T/out" "$HOME/.Trash/hub" "where it went"
+  [ ! -e "$HOME/.local/share/ade/trash" ] || fail "not the Linux folder"
+}
+reset_hub_trash_finder() {   # (the fixture exports TMPDIR inside its test folder, so one fixture per test)
+  hub_fixture; push_hub; export FAKE_UNAME=Darwin ADE_TRASH_CLI="$T/no-such-trash"
+  printf 'y\nacme\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1 || { cat "$T/out"; fail "Finder exit"; }
+  assert_contains "$FAKE_LOG" 'tell application "Finder" to delete' "Finder moved it"; assert_contains "$FAKE_LOG" "[$H]" "the path as one argument"
+  [ ! -e "$H" ] && [ -d "$HOME/.Trash/hub" ] || fail "in the Trash (Finder)"; assert_contains "$T/out" "Put Back" "how to restore"
+}
+
+reset_hub_trash_fails() {   # a failed move leaves the hub where it was and says so
+  hub_fixture; push_hub; export FAKE_UNAME=Darwin FAKE_TRASH_FAIL=1
+  printf 'y\nacme\n' | bash "$ADE" reset --hub "$H" > "$T/out" 2>&1; assert_eq "$?" 1 "a failed move is an error"
+  [ -f "$H/hub.conf" ] || fail "the hub stays"; assert_contains "$T/out" "still at $H" "says it is still there"
 }
 
 uninstall_last() {   # AC6
@@ -146,6 +209,6 @@ setup_records_keys() {   # the record --keys relies on: ade setup notes which ke
   assert_eq "$(cat "$HOME/.config/ade/keys-set")" "$H	telegram" "recorded"; assert_not_contains "$HOME/.config/ade/keys-set" "tok-xyz" "never the value"
 }
 
-ALL="clean_preview_then_yes never_removes_live reset_keeps_hubs reset_keys reset_hub uninstall_last journal_lines twice_nothing setup_records_keys"
+ALL="clean_preview_then_yes never_removes_live reset_keeps_hubs reset_keys reset_hub_refusals reset_hub_wrong_name reset_hub_trash_linux reset_hub_trash_macos reset_hub_trash_finder reset_hub_trash_fails uninstall_last journal_lines twice_nothing setup_records_keys"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

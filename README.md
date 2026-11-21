@@ -189,6 +189,9 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade setup [--check\|--test\|--top\|--telegram]` | Sign-in, providers and live tests, Telegram, hub, guided session | **built** (A5; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade ui [--detach]` · `ade dash [--once]` | One tmux window, a tab per agent with state icons; fleet sidebar; popups for new agent, approve, tickets, plan preview, help | **built** (A6; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade skills list\|enable\|disable\|search` | Skills and plugins on the fly, with a reload hint to running sessions | **built** (A7) |
+| `ade clean [--yes]` | Housekeeping: stale locks, old dispatch markers and event cursors, ade's old temp folders, dead `ade-*` tmux sessions, clean merged worktrees (`git worktree remove`); lists first | **built** (A9) |
+| `ade reset [--keys] [--hub <path>]` | Undo `ade setup` here: stop orchestrators, remove the chat and monitor services, the `ade@ade-skills` entry and `~/.config/ade/`; `--keys` forgets setup's keys (one question each); `--hub` moves that hub to the Trash | **built** (A9) |
+| `ade uninstall [--keys] [--hub <path>]` | `ade reset`, then remove the installed `ade` (never a checkout) and print how to reinstall | **built** (A9) |
 
 Exit codes: `0` success, `1` a failure while working (a fetch or a copy), `2` a usage problem or a missing hub, script
 or tool. A hub command exits with whatever the hub's script returns.
@@ -235,6 +238,10 @@ In plain words:
   a key.
 - **No skipped permissions.** Agents run with Claude Code's normal permission checks. The planned `ade claude` refuses
   `--dangerously-skip-permissions` anywhere in its arguments (A4).
+- **Nothing of yours is deleted.** `ade clean` removes only ade's and the hub's own markers, temp folders and dead tmux
+  sessions, and worktrees whose branch is merged and that have no changes. `ade reset --hub` never deletes a hub: after
+  you type its name, and only when everything in it is committed and pushed, it moves it to the Trash (macOS: Finder or
+  `trash`; Linux: `~/.local/share/ade/trash/<hub>-<UTC time>/`) and prints how to put it back.
 - **Pinned, not floating.** The method and the registry are copied at fixed tags, so a change upstream reaches your
   projects only when you move the pin.
 

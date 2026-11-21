@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- `ade clean [--yes]`, `ade reset [--keys] [--hub <path>]`, `ade uninstall` (A9): each lists what it would do first.
+  clean removes stale locks, old dispatch markers and event cursors, ade's old temp folders, dead `ade-*` tmux sessions
+  and clean merged worktrees; reset stops orchestrators, removes the chat and monitor services, the `ade@ade-skills`
+  entry and `~/.config/ade/`, keeps hubs, projects, keys and Claude Code; `--hub` moves the hub to the Trash (never
+  deletes it) after its name is typed, refusing uncommitted, stashed or unpushed work; uninstall removes the installed
+  binary last. `ade setup` notes which keys it stored (names only, `~/.config/ade/keys-set`).
 - Testing (A8): CI on macOS Bash 3.2 and Ubuntu bash 5, pinned shellcheck, a hostile-input table over every
   name-taking command, clean-machine, upgrade and interactive e2e jobs, `ade ui` snapshots at two sizes, and a kcov
   coverage floor. Fixes it found: names starting with `-`, names with newlines, `projects/..`, `setup --test ""`,
