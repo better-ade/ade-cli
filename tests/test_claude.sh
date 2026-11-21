@@ -45,7 +45,9 @@ arg:projects/x" "runs bin/work projects/x"
 passthrough_and_refusal() {   # AC4
   fresh; claude_hub
   out=$(bash "$ADE" claude -- --resume | tail -1); assert_eq "$out" "arg:--resume" "--resume passed through"
-  for args in "-- --dangerously-skip-permissions" "projects/x --dangerously-skip-permissions" "-- --resume --dangerously-skip-permissions"; do
+  for args in "-- --dangerously-skip-permissions" "projects/x --dangerously-skip-permissions" "-- --resume --dangerously-skip-permissions" \
+    "-- --allow-dangerously-skip-permissions" "-- --permission-mode bypassPermissions" "-- --permission-mode=bypassPermissions" \
+    "projects/x --mode bypasspermissions" "-- --DANGEROUSLY-SKIP-PERMISSIONS"; do
     bash "$ADE" claude $args > "$T/out" 2>&1; assert_eq "$?" 2 "refused: $args"; assert_not_contains "$T/out" "pwd:" "nothing started"
   done
 }
@@ -55,6 +57,18 @@ no_hub() {   # AC5
   assert_contains "$T/out" "no hub found" "says no hub"; assert_contains "$T/out" "ade hub new <name>" "hint"
 }
 
-ALL="runs_claude_at_root enables_ade_plugin folder_is_work passthrough_and_refusal no_hub"
+hub_claude_settings() {   # review: HUB_CLAUDE, HUB_CLAUDE_CONFIG_DIR, opus[1m] never globbed; no claude: settings untouched
+  fresh; claude_hub; printf '#!/bin/bash\necho "alt CLAUDE_CONFIG_DIR=$CLAUDE_CONFIG_DIR"\nfor a in "$@"; do echo "arg:$a"; done\n' > "$T/fakebin/claude-alt"
+  chmod +x "$T/fakebin/claude-alt"
+  printf 'HUB_NAME=acme\nHUB_ROOT_MODEL="opus[1m]"\nHUB_CLAUDE=claude-alt\nHUB_CLAUDE_CONFIG_DIR=%s/cfg\n' "$T" > "$T/hub/hub.conf"; : > "$T/hub/opus1"
+  out=$(bash "$ADE" claude); echo "$out" > "$T/out"
+  assert_contains "$T/out" "alt CLAUDE_CONFIG_DIR=$T/cfg" "HUB_CLAUDE runs, with the config dir exported"
+  assert_contains "$T/out" "arg:opus[1m]" "opus[1m] passed as is (a file opus1 in the hub never matches)"
+  rm -f "$T/hub/.claude/settings.json"; printf 'HUB_NAME=acme\nHUB_CLAUDE=no-such-claude\n' > "$T/hub/hub.conf"
+  bash "$ADE" claude > "$T/out" 2>&1; assert_eq "$?" 2 "missing claude exits 2"
+  [ ! -e "$T/hub/.claude/settings.json" ] || fail "settings untouched when claude is missing"
+}
+
+ALL="hub_claude_settings runs_claude_at_root enables_ade_plugin folder_is_work passthrough_and_refusal no_hub"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

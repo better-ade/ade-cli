@@ -2,6 +2,8 @@
 # ade: one command for ADE in any terminal. Hub commands run the hub's own bin/ scripts (the single source of truth);
 # project commands copy ade-method and registry files at their pinned tags. Bash 3.2 and Linux bash.
 set -u
+# names ade uses for typed answers and secrets: never inherited, so an exported one cannot carry a key to a child
+unset SECRET ANSWER HUB_ANSWER
 ADE_VERSION=""   # install.sh stamps this; a repo checkout reads VERSION beside the script
 ADE_METHOD_REPO="${ADE_METHOD_REPO:-https://github.com/better-ade/ade-method}"
 ADE_METHOD_REF="${ADE_METHOD_REF:-v2.0.0}"
@@ -77,18 +79,25 @@ find_hub() {
 
 run_hub() {   # $1 = script name under bin/
   local script="$1" hub; shift; hub="$(find_hub)" || exit $?
+  [ "$script" = work ] && claude_update "$hub"
   [ -e "$hub/bin/$script" ] || die 2 "this hub has no bin/$script; update it"
   [ -x "$hub/bin/$script" ] || die 2 "bin/$script is not executable"
   HUB="$hub"; export HUB   # a stale HUB in the caller's environment would win in the hub's lib.sh
   exec "$hub/bin/$script" "$@"
 }
 
+# mk_tmp: a fresh temp folder under the temp root, or failure (never an empty or current path);
+# rm_tmp <path>: removes only a folder mk_tmp made (under the temp root, named ade.*)
+TMP_ROOT="${TMPDIR:-/tmp}"; TMP_ROOT="${TMP_ROOT%/}"
+mk_tmp() { local d; d="$(mktemp -d "$TMP_ROOT/ade.XXXXXX" 2> /dev/null)" && [ -n "$d" ] && [ -d "$d" ] || return 1; printf '%s' "$d"; }
+rm_tmp() { case "${1:-}" in "$TMP_ROOT"/ade.?*) [ -d "$1" ] && rm -rf -- "$1" ;; esac; return 0; }
+
 # fetch <repo> <ref>: a temp checkout of repo at ref; prints its path
 fetch() {
-  local tmp err; tmp="$(mktemp -d)"
+  local tmp err; tmp="$(mk_tmp)" || die 1 "could not make a temp folder"
   if [ -d "$1" ]; then err="$(git clone -q --branch "$2" "$1" "$tmp/src" 2>&1)"
   else err="$(git -c advice.detachedHead=false clone -q --depth 1 --branch "$2" "$1" "$tmp/src" 2>&1)"; fi \
-    || { rm -rf "$tmp"; die 1 "could not fetch $1 at $2: $(printf '%s\n' "$err" | tail -1)"; }
+    || { rm_tmp "$tmp"; die 1 "could not fetch $1 at $2: $(printf '%s\n' "$err" | tail -1)"; }
   echo "$tmp/src"
 }
 
@@ -109,7 +118,7 @@ project_root() {
 cmd_init() {
   project_root "$@"
   local src f list old=""; src="$(fetch "$ADE_METHOD_REPO" "$ADE_METHOD_REF")" || exit $?
-  trap 'rm -rf "$(dirname "$src")"' EXIT
+  trap 'rm_tmp "$(dirname "$src")"' EXIT
   list="$(dirname "$src")/list"; : > "$list"   # src<TAB>dest, read without a subshell so put's counts and exits hold
   [ -f "$src/rules.md" ] && printf '%s\t%s\n' "$src/rules.md" .ade/rules.md >> "$list"
   for f in "$src"/agents/*.md; do [ -f "$f" ] && printf '%s\t%s\n' "$f" ".ade/agents/$(basename "$f")" >> "$list"; done
@@ -151,16 +160,16 @@ cmd_agent() {
     echo "$rows" | while IFS="$(printf '\t')" read -r name file desc; do printf '%-20s %s\n' "$name" "$desc"; done
   else
     file="$(echo "$rows" | awk -F '\t' -v n="$2" '$1 == n { print $2; exit }')"
-    if [ -z "$file" ] || [ ! -f "$src/$file" ]; then rm -rf "$(dirname "$src")"; die 2 "no specialist named $2; ade agent list shows them"; fi
+    if [ -z "$file" ] || [ ! -f "$src/$file" ]; then rm_tmp "$(dirname "$src")"; die 2 "no specialist named $2; ade agent list shows them"; fi
     put "$src/$file" ".ade/agents/$2.md"
   fi
-  rm -rf "$(dirname "$src")"
+  rm_tmp "$(dirname "$src")"
 }
 
 # skills on the fly (story A7): BMAD skills via .claude/settings.json skillOverrides (absent = on, "name-only",
 # "off"), ade-skills plugins via the marketplace file and the project's enabledPlugins
 ADE_SKILLS_REPO="${ADE_SKILLS_REPO:-https://github.com/better-ade/ade-skills}"
-ADE_SKILLS_REF="${ADE_SKILLS_REF:-main}"   # the marketplace Claude Code adds follows main
+ADE_SKILLS_REF="${ADE_SKILLS_REF:-v0.1.0}"   # pinned like the other repos; ADE_SKILLS_REF overrides
 SKILLS_USAGE="usage: ade skills list | add <plugin> | enable <skill> | disable <skill> | search <word>"
 
 # skills_py <op> <project> [args]: the one place that reads and writes the settings (atomic; other keys kept)
@@ -209,8 +218,10 @@ elif op in ("enable", "disable"):
         print("%s: on" % name)
     else:
         if not isinstance(ov, dict): ov = d["skillOverrides"] = {}
-        if ov.get(name) != "name-only": ov[name] = "name-only"; write(d)
-        print("%s: name-only" % name)
+        if ov.get(name) == "off": print("%s: off (already; disable never raises it)" % name)
+        else:
+            if ov.get(name) != "name-only": ov[name] = "name-only"; write(d)
+            print("%s: name-only" % name)
 elif op == "plugin":
     names = [n for n, _ in plugins(args[0])]
     if args[1] not in names: sys.stderr.write("ade: no ade-skills plugin named %s%s\n" % (args[1], closest(args[1], names))); sys.exit(2)
@@ -251,11 +262,17 @@ cmd_skills() {
   local sub="${1:-}" top src mkt; [ $# -gt 0 ] && shift
   top="$(git rev-parse --show-toplevel 2> /dev/null)" || top="$(pwd -P)"
   case "$sub" in
+    --pin) echo "$ADE_SKILLS_REF"; return 0 ;;
     list|search|add)
       case "$sub" in list) [ $# -eq 0 ] || die 2 "$SKILLS_USAGE" ;; *) [ $# -eq 1 ] && [ -n "$1" ] || die 2 "$SKILLS_USAGE" ;; esac
-      src="$(fetch "$ADE_SKILLS_REPO" "$ADE_SKILLS_REF")" || exit $?; mkt="$src/.claude-plugin/marketplace.json"
-      SKILLS_TMP="$(dirname "$src")"; trap 'rm -rf "$SKILLS_TMP"' EXIT
-      [ -f "$mkt" ] || die 1 "ade-skills has no .claude-plugin/marketplace.json at $ADE_SKILLS_REF"
+      if src="$(fetch "$ADE_SKILLS_REPO" "$ADE_SKILLS_REF" 2> /dev/null)"; then
+        mkt="$src/.claude-plugin/marketplace.json"; SKILLS_TMP="$(dirname "$src")"; trap 'rm_tmp "$SKILLS_TMP"' EXIT
+        [ -f "$mkt" ] || die 1 "ade-skills has no .claude-plugin/marketplace.json at $ADE_SKILLS_REF"
+      else   # offline: the marketplace Claude Code installed, when there is one
+        mkt="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/marketplaces/ade-skills/.claude-plugin/marketplace.json"
+        [ -f "$mkt" ] || die 1 "could not fetch $ADE_SKILLS_REPO at $ADE_SKILLS_REF, and no installed ade-skills marketplace"
+        echo "ade: ade-skills unreachable; using the installed marketplace ($mkt)" >&2
+      fi
       case "$sub" in
         list) skills_py list "$top" "$mkt"; exit $? ;;
         search) skills_py search "$top" "$mkt" "$1"; exit $? ;;
@@ -263,7 +280,8 @@ cmd_skills() {
       skills_py plugin "$top" "$mkt" "$1" || exit $?
       command -v claude > /dev/null 2>&1 || die 2 "claude is not on PATH; install Claude Code first"
       if ! claude plugin marketplace list 2>/dev/null | grep -q 'ade-skills'; then
-        claude plugin marketplace add better-ade/ade-skills || die 1 "could not add the ade-skills marketplace"
+        local msrc="$ADE_SKILLS_REPO"; [ "$msrc" = https://github.com/better-ade/ade-skills ] && msrc=better-ade/ade-skills
+        claude plugin marketplace add "$msrc" || die 1 "could not add the ade-skills marketplace"
       fi
       claude plugin install "$1@ade-skills" --scope project || exit $?
       skills_hint "$top" "plugin $1 installed in $(basename "$top"): run /reload-plugins in its open sessions to load it" ;;
@@ -272,7 +290,7 @@ cmd_skills() {
       local never=""
       if [ "$sub" = enable ]; then
         src="$(fetch "$ADE_METHOD_REPO" "$ADE_METHOD_REF")" || exit $?
-        never="$(skills_py never "$top" "$src/ade.json")"; local rc=$?; rm -rf "$(dirname "$src")"; [ "$rc" = 0 ] || exit 1
+        never="$(skills_py never "$top" "$src/ade.json")"; local rc=$?; rm_tmp "$(dirname "$src")"; [ "$rc" = 0 ] || exit 1
       fi
       skills_py "$sub" "$top" "$1" "$never" || exit $?
       skills_hint "$top" "skill $1 changed in $(basename "$top"): it applies on the next prompt (Claude Code reloads its settings)" ;;
@@ -283,6 +301,26 @@ cmd_skills() {
 cmd_open() {
   [ -n "${ADE_HOOK_BIN:-}" ] || die 2 "ade open works inside the ADE app"
   exec "$ADE_HOOK_BIN" open "$@"
+}
+
+# claude_update [hub]: before ade launches Claude Code, `claude update` at most once per 24 h per machine (stamp
+# ~/.config/ade/claude-updated, written per attempt), cut off after ADE_CLAUDE_UPDATE_TIMEOUT s (default 60); offline or
+# failing prints one line and the installed version runs. ADE_NO_CLAUDE_UPDATE=1 skips it.
+claude_update() {
+  [ "${ADE_NO_CLAUDE_UPDATE:-}" = 1 ] && return 0
+  local cl="" now t=0 stamp="$HOME/.config/ade/claude-updated" lim="${ADE_CLAUDE_UPDATE_TIMEOUT:-60}" pid w rc
+  [ -n "${1:-}" ] && cl="$(conf_get "$1" HUB_CLAUDE)"; cl="${cl:-claude}"
+  command -v "$cl" > /dev/null 2>&1 || return 0
+  now="$(date +%s)"; [ -f "$stamp" ] && t="$(cat "$stamp" 2> /dev/null)"; [[ $t =~ ^[0-9]+$ ]] || t=0
+  [ $((now - t)) -lt 86400 ] && return 0
+  [[ $lim =~ ^[0-9]+$ ]] || lim=60
+  echo "$now" | write_conf_file claude-updated
+  "$cl" update > /dev/null 2>&1 < /dev/null & pid=$!
+  ( sleep "$lim"; kill "$pid" 2> /dev/null ) > /dev/null 2>&1 & w=$!
+  wait "$pid" 2> /dev/null; rc=$?; kill "$w" 2> /dev/null; wait "$w" 2> /dev/null
+  if [ "$rc" = 0 ]; then echo "ade: Claude Code is up to date" >&2
+  else echo "ade: Claude Code update skipped (offline, failed or over ${lim}s); using the installed version" >&2; fi
+  return 0
 }
 
 # conf_get <hub> <KEY>: a hub.conf value (sourced in a subshell, as the hub's own scripts read it)
@@ -329,7 +367,7 @@ cmd_orchestrator() {
         --channel) [ $# -ge 2 ] || die 2 "--channel needs a name"; channels="$channels $2"; shift 2 ;;
         *) die 2 "$ORCH_USAGE" ;;
       esac; done
-      matches "$name" '^[a-z0-9][a-z0-9-]{0,63}$' || die 2 "orchestrator names are lower-case letters, digits and - (start with a letter or digit, at most 64)"
+      [[ $name =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || die 2 "orchestrator names are lower-case letters, digits and - (a letter or digit first, at most 64)"
       [ -n "$hub" ] || die 2 "$ORCH_USAGE"
       is_hub "$hub" || die 2 "$hub is not a hub (no bin/lib.sh and hub.conf)"
       hub="$(cd "$hub" && pwd -P)"
@@ -344,6 +382,7 @@ cmd_orchestrator() {
       [ -n "${1:-}" ] && [ $# -eq 1 ] || die 2 "$ORCH_USAGE"
       hub="$(orch_hub "$1")"; [ -n "$hub" ] || die 2 "no orchestrator named $1; ade orchestrator list shows them"
       is_hub "$hub" || die 2 "the hub of $1 ($hub) is gone"
+      [ "$sub" = start ] && claude_update "$hub"
       chat "$hub" "$sub"; exit $? ;;
     list)
       [ $# -eq 0 ] || die 2 "$ORCH_USAGE"
@@ -451,12 +490,11 @@ hub_new() {
 
 # ade with no arguments: what to do next (story A3)
 cmd_home() {
-  local hub err; err="$(mktemp)"
-  if ! hub="$(find_hub 2> "$err")"; then
-    grep -q "no hub found" "$err" || cat "$err" >&2; rm -f "$err"
+  local hub err
+  if ! hub="$(find_hub 2> /dev/null)"; then
+    err="$(find_hub 2>&1 > /dev/null)"; printf '%s' "$err" | grep -q "no hub found" || echo "$err" >&2
     echo 'no hub yet: run `ade hub new <name>`'; return 0
   fi
-  rm -f "$err"
   echo "hub: $(hub_label "$hub") ($hub)"
   [ -x "$hub/bin/sessions" ] && (HUB="$hub"; export HUB; "$hub/bin/sessions")
   echo "next:"
@@ -491,16 +529,23 @@ if json.dumps(d, sort_keys=True) != before:
 PY
 }
 
+# skips_permissions <args>: any spelling that turns permission checks off (sets SKIP_ARG); case and = forms included
+skips_permissions() {
+  local a l; for a in "$@"; do l="$(printf '%s' "$a" | tr 'A-Z' 'a-z')"
+    case "$l" in *skip-permissions*|*bypasspermissions*) SKIP_ARG="$a"; return 0 ;; esac; done; return 1
+}
+
 cmd_claude() {
   local a hub model name cl cfg
-  for a in "$@"; do [ "$a" = --dangerously-skip-permissions ] && die 2 "ade claude never skips permissions (--dangerously-skip-permissions refused)"; done
+  skips_permissions "$@" && die 2 "ade claude never skips permissions (refused: $SKIP_ARG)"
   if [ $# -gt 0 ] && [ "$1" != -- ]; then run_hub work "$@"; fi
   [ $# -gt 0 ] && shift
   hub="$(find_hub)" || exit $?
-  enable_ade_plugin "$hub/.claude/settings.json" || exit 1
   model="$(conf_get "$hub" HUB_ROOT_MODEL)"; name="$(hub_label "$hub")"
   cl="$(conf_get "$hub" HUB_CLAUDE)"; cl="${cl:-claude}"; cfg="$(conf_get "$hub" HUB_CLAUDE_CONFIG_DIR)"
   command -v "$cl" > /dev/null 2>&1 || die 2 "$cl is not on PATH; install Claude Code first (ade setup does it)"
+  claude_update "$hub"
+  enable_ade_plugin "$hub/.claude/settings.json" || exit 1
   cd "$hub" || die 1 "cannot enter $hub"
   HUB="$hub"; export HUB; [ -z "$cfg" ] || { CLAUDE_CONFIG_DIR="$cfg"; export CLAUDE_CONFIG_DIR; }
   set -- --remote-control "$name" "$@"; [ -z "$model" ] || set -- --model "$model" "$@"   # opus[1m] never globbed
@@ -544,13 +589,22 @@ store_key() {   # store_key <hub> <tool>: hidden prompt, then the hub's bin/keys
 
 # live_test <hub> <provider>: one tiny read-only task in a throwaway folder through the hub's bin/agent --live-test.
 # Prints "<p>: ready (Ns)" or "<p>: failed (<reason>)"; returns 0 only when ready.
+SCRUB_VARS="ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_OAUTH_TOKEN
+  CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX DEEPSEEK_API_KEY GEMINI_API_KEY GOOGLE_API_KEY ZAI_API_KEY GLM_API_KEY
+  TELEGRAM_BOT_TOKEN"
+# redact: hide key-shaped strings and Telegram bot tokens in text ade prints
+redact() { sed -E 's#bot[0-9]+:[A-Za-z0-9_-]+#bot<hidden>#g; s#(sk|pk|ak|key)-[A-Za-z0-9_-]{8,}#<hidden key>#g; s#[A-Za-z0-9_-]{32,}#<hidden>#g'; }
 live_test() {
   local hub="$1" p="$2" tmp out rc t0 why
-  tmp="$(mktemp -d)"; tmp="$(cd "$tmp" && pwd -P)"; t0=$(date +%s)
-  out="$(cd "$tmp" && printf '%s\n' "$LIVE_TASK" | AGENT_TIMEOUT=120 hub_run "$hub" agent --live-test "$p" --dir "$tmp" 2>&1)"; rc=$?
-  rm -rf "$tmp"
-  if [ "$rc" = 0 ] && printf '%s' "$out" | grep -q READY; then echo "$p: ready ($(( $(date +%s) - t0 ))s)"; return 0; fi
-  why="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1)"
+  tmp="$(mk_tmp)" || { echo "$p: failed (no temp folder)"; return 1; }
+  t0=$(date +%s)
+  # run from the throwaway folder only; no provider key or backend switch from this shell reaches the test
+  out="$(cd "$tmp" && { unset $SCRUB_VARS; printf '%s\n' "$LIVE_TASK" | AGENT_TIMEOUT=120 hub_run "$hub" agent --live-test "$p" --dir "$tmp"; } 2>&1)"; rc=$?
+  rm_tmp "$tmp"
+  if [ "$rc" = 0 ] && printf '%s\n' "$out" | tr -d '\r' | grep -qx '[[:space:]]*READY[[:space:]]*'; then
+    echo "$p: ready ($(( $(date +%s) - t0 ))s)"; return 0; fi
+  why="$(printf '%s\n' "$out" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -1 | redact | cut -c1-200)"
+  [ "$rc" = 0 ] && [ -n "$why" ] && why="no READY line; it said: $why"
   echo "$p: failed (${why:-exit $rc})"; return 1
 }
 
@@ -573,15 +627,21 @@ sign_in() {
       SIGNED="$SIGNED $p"; return 0
     fi
   fi
+  if [ "$p" = gemini ] && command -v "${ADE_GEMINI_CLI:-gemini}" > /dev/null 2>&1; then
+    ask "Gemini: sign in with your Google account in the Gemini CLI (a) or a Gemini API key (k)? [a/k]"
+    case "$ANSWER" in k|K) ;; *) echo "The Gemini CLI opens: pick \"Login with Google\", then leave it (/quit); ade stores nothing."
+      "${ADE_GEMINI_CLI:-gemini}" || { echo "gemini: sign-in did not finish"; return 1; }; SIGNED="$SIGNED $p"; return 0 ;; esac
+  fi
   store_key "$hub" "$p" || { echo "$p: skipped (no key)"; return 1; }
   SIGNED="$SIGNED $p"
 }
 
+unsign() { SIGNED=" $(printf '%s' " $SIGNED " | sed "s/ $1 / /g") "; }   # a failed provider asks for its key again
 READY=""
 provider_ready() {   # sign in, then the live test once per provider; READY collects the ones that passed
   case " $READY " in *" $2 "*) echo "$2: ready (tested above)"; return 0 ;; esac
   sign_in "$@" || return 1
-  live_test "$1" "$2" || return 1
+  live_test "$1" "$2" || { unsign "$2"; return 1; }
   READY="$READY $2"
 }
 
@@ -615,7 +675,11 @@ setup_top() {   # the everything agent: exactly one; GLM and Muse only after the
       *) echo "pick one number from 1 to 5"; continue ;;
     esac
     sign_in "$hub" "$p" $how || continue
-    if live_test "$hub" "$p"; then READY="$READY $p"; conf_set "$hub" HUB_ROOT_PROVIDER "$p"; echo "everything agent: $p"; return 0; fi
+    if live_test "$hub" "$p"; then READY="$READY $p"; conf_set "$hub" HUB_ROOT_PROVIDER "$p"
+      local old; old="$(conf_get "$hub" HUB_PROVIDERS_ALLOWED)"   # the new top plus the old list
+      conf_set "$hub" HUB_PROVIDERS_ALLOWED "$(printf '%s\n' $p $old | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//')"
+      echo "everything agent: $p"; return 0; fi
+    unsign "$p"
     case "$p" in glm|muse) echo "$p cannot be the everything agent until its live check passes" ;;
       *) echo "$p failed its live test; pick it again once fixed, or another" ;; esac
   done
@@ -688,11 +752,17 @@ cmd_setup() {
     *) die 2 "usage: ade setup [--check | --test [provider|telegram] | --top | --telegram]" ;;
   esac
   if ! command -v claude > /dev/null 2>&1; then
-    yes_no "Claude Code is not installed. Install it now with the official installer ($CLAUDE_INSTALL_CMD)?" ||
+    local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"   # file:// only for tests
+    case "$ADE_CLAUDE_INSTALLER" in https://*) ;; file://*) [ "$proto" != "=https" ] || die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;;
+      *) die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;; esac
+    yes_no "Claude Code is not installed. Install it now? This runs: curl -fsSL $ADE_CLAUDE_INSTALLER | bash" ||
       die 1 "install Claude Code yourself, then run ade setup again: $CLAUDE_INSTALL_CMD"
-    curl -fsSL "$ADE_CLAUDE_INSTALLER" | bash || die 1 "the Claude Code installer failed; try: $CLAUDE_INSTALL_CMD"
+    curl --proto "$proto" --proto-redir "$proto" --tlsv1.2 -fsSL "$ADE_CLAUDE_INSTALLER" | bash || die 1 "the Claude Code installer failed; try: $CLAUDE_INSTALL_CMD"
     PATH="$HOME/.local/bin:$PATH"; command -v claude > /dev/null 2>&1 || die 1 "claude is still not on PATH; open a new terminal and run ade setup again"
+    claude_update
   fi
+  local herr; herr="$(find_hub 2>&1 > /dev/null)"
+  if [ -n "$herr" ] && ! printf '%s' "$herr" | grep -q "no hub found"; then echo "$herr" >&2; exit 2; fi
   if ! hub="$(find_hub 2> /dev/null)"; then
     echo "No hub yet: ade makes one now (ade hub new)."
     ask "Name for your hub (lower-case letters, digits and -, e.g. acme-sre):"; name="$ANSWER"
@@ -704,14 +774,15 @@ cmd_setup() {
   setup_focus "$hub"
   setup_telegram "$hub"
   echo "Starting the guided session (ade claude); it asks before each change."
-  cmd_claude -- "$SETUP_PROMPT"
+  cmd_claude -- --permission-mode default "$SETUP_PROMPT"
 }
 
 # ade ui / ade dash: a tmux workspace with a tab per agent, on ade's own tmux server (tmux -L ade), so its key table
 # and theme never touch the user's tmux (story A6; hub calls in .ade/context/hub-interface.md)
 ADE_TMUX_SOCKET="${ADE_TMUX_SOCKET:-ade}"
 ui_tmux() { tmux -L "$ADE_TMUX_SOCKET" "$@"; }
-ui_session() { echo "ade-$(hub_label "$1" | tr -c 'A-Za-z0-9-\n' '-')"; }
+# ui_session <hub>: ade-<name>-<6 hex of the hub path's checksum>, so two hubs with one name never share a session
+ui_session() { echo "ade-$(hub_label "$1" | tr -c 'A-Za-z0-9-\n' '-')-$(printf '%s' "$1" | cksum | awk '{ printf "%06x", $1 % 16777216 }')"; }
 ade_self() {   # the absolute path of this script, for the commands tmux runs
   local p="$0" l; while [ -L "$p" ]; do l="$(readlink "$p")"; case "$l" in /*) p="$l" ;; *) p="$(dirname "$p")/$l" ;; esac; done
   echo "$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")"
@@ -733,7 +804,10 @@ work_in_ui() {
   hub="$(find_hub 2> /dev/null)" || return 0; s="$(ui_live "$hub")" || return 0
   AGENT_TERMINAL=tmux; ADE_UI_SESSION="$s"; export AGENT_TERMINAL ADE_UI_SESSION
 }
-sq() { case "$1" in *"'"*|*'"'*) die 2 "paths with quotes are not supported by ade ui: $1" ;; esac; printf "'%s'" "$1"; }
+sq() {   # a path quoted for a tmux command; anything tmux or the shell could expand is refused
+  case "$1" in *"'"*|*'"'*|*'$'*|*'\'*|*'#'*|*'`'*) die 2 "ade ui does not support this path (quotes, \$, \\, # or backticks): $1" ;; esac
+  printf "'%s'" "$1"
+}
 
 # theme: ~/.config/ade/theme (key=colour lines); a colour must be a tmux colour word or #rrggbb, else the default stays
 THEME_KEYS="bg fg accent orchestrator busy idle blocked unread"
@@ -758,6 +832,18 @@ ui_data() {
   theme_env > "$d/theme"
   printf '%s\n' "${AGENT_STATE:-$HOME/.agent-hub/$(hub_label "$hub")}/events.jsonl" > "$d/events_path"
   hub_label "$hub" > "$d/name"
+}
+
+# ui_bar <hub> <session>: the tab bar, from data cached for 2 s in ~/.config/ade/ui-cache/<session> (every attached
+# client redraws every 2 s; the hub's scripts run once per period, not once per client)
+ui_bar() {
+  local c="$CONF_DIR/ui-cache/$2" now t=0; now="$(date +%s)"
+  [ -f "$c/at" ] && t="$(cat "$c/at" 2> /dev/null)"; [[ $t =~ ^[0-9]+$ ]] || t=0
+  local keep="${ADE_UI_CACHE_SECONDS:-2}"; [[ $keep =~ ^[0-9]+$ ]] || keep=2
+  if [ $((now - t)) -ge "$keep" ] || [ ! -f "$c/sessions" ]; then
+    ( umask 077; mkdir -p "$c" ) || return 1; ui_data "$1" "$c" "$2"; echo "$now" > "$c/at"
+  else ui_tmux list-windows -t "=$2" -F "#{window_index}	#{window_name}	#{window_active}" > "$c/windows" 2> /dev/null; fi
+  ui_render bar "$c"
 }
 
 ui_render() {   # ui_render bar|dash <dir>
@@ -902,6 +988,7 @@ ui_menu() {   # ui_menu new|role <folder>|approve|preview <index>
   case "$what" in
     new)
       set --; for d in "$hub"/projects/*/ "$hub"/ops/*/; do [ -d "$d" ] || continue; f="${d%/}"; f="${f#"$hub"/}"
+        [[ $f =~ ^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] || continue   # never a name tmux or the shell could run
         set -- "$@" "$f" "" "run-shell \"$run ui --menu role $f\""; done
       [ $# -gt 0 ] || { ui_tmux display-message "no folders in this hub (projects/ or ops/)"; return 0; }
       ui_tmux display-menu -T "New agent: folder" "$@" ;;
@@ -913,12 +1000,12 @@ ui_menu() {   # ui_menu new|role <folder>|approve|preview <index>
       set -- "$@" "(no role)" "" "run-shell -b \"$run work $f\""
       ui_tmux display-menu -T "New agent: role for $f" "$@" ;;
     approve)
-      d="$(mktemp -d)"; ui_data "$hub" "$d"; set --
+      d="$(mk_tmp)" || die 1 "could not make a temp folder"; ui_data "$hub" "$d"; set --
       while IFS="$(printf '\t')" read -r st r f; do
         [ "$st" = waiting ] || continue
         matches "$r" '^[A-Za-z0-9][A-Za-z0-9._/-]*$' && matches "$f" '^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$' || continue
         set -- "$@" "$r  $f" "" "display-popup -E -w 80% -h 50% \"$run dispatch --approve $r $f\""
-      done < "$d/tickets"; rm -rf "$d"
+      done < "$d/tickets"; rm_tmp "$d"
       [ $# -gt 0 ] || { ui_tmux display-message "no ticket is waiting for you"; return 0; }
       ui_tmux display-menu -T "Approve a ticket" "$@" ;;
     preview)
@@ -951,21 +1038,24 @@ cmd_ui() {
   local hub s d conf detach=0
   case "${1:-}" in
     --bar) [ -n "${2:-}" ] || die 2 "usage: ade ui --bar <session>"; hub="$(find_hub)" || exit $?
-      d="$(mktemp -d)"; ui_data "$hub" "$d" "$2"; ui_render bar "$d"; rm -rf "$d"; return 0 ;;
+      ui_bar "$hub" "$2"; return 0 ;;
     --tab-name) matches "${2:-}" '^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$' || die 2 "usage: ade ui --tab-name <folder> [ticket]"
       echo "$2${3:+:$3}"; return 0 ;;
     --menu) shift; ui_menu "$@"; return ;;
     --preview) ui_preview "${2:-}"; return ;;
     --sidebar) ui_sidebar; return ;;
     --keys) echo "ade ui keys:"; echo "$UI_KEYS"; [ -t 0 ] && read -r _; return 0 ;;
-    --tickets) hub="$(find_hub)" || exit $?; d="$(mktemp -d)"; ui_data "$hub" "$d"
-      ui_render dash "$d" | awk '/^TICKETS/ { on = 1 } /^EVENTS/ { on = 0 } on'; rm -rf "$d"; [ -t 0 ] && read -r _; return 0 ;;
+    --tickets) hub="$(find_hub)" || exit $?; d="$(mk_tmp)" || die 1 "could not make a temp folder"; ui_data "$hub" "$d"
+      ui_render dash "$d" | awk '/^TICKETS/ { on = 1 } /^EVENTS/ { on = 0 } on'; rm_tmp "$d"; [ -t 0 ] && read -r _; return 0 ;;
+    --session) hub="$(find_hub)" || exit $?; ui_session "$hub"; return 0 ;;
     --detach) detach=1 ;;
     "") ;;
     *) die 2 "usage: ade ui [--detach]" ;;
   esac
   need_tmux; hub="$(find_hub)" || exit $?; s="$(ui_session "$hub")"
+  sq "$hub" > /dev/null; sq "$(ade_self)" > /dev/null   # checked here: inside $(...) a refusal would only end a subshell
   if ! ui_tmux has-session -t "=$s" 2> /dev/null; then
+    claude_update "$hub"
     conf="$CONF_DIR/ui-$s.tmux.conf"; ui_conf "$hub" "$s" | write_conf_file "ui-$s.tmux.conf"
     ui_tmux new-session -d -s "$s" -n orchestrator -c "$hub" \
       "exec env AGENT_TERMINAL=tmux ADE_UI_SESSION=$s ADE_HUB=$(sq "$hub") $(sq "$(ade_self)") claude" || die 1 "tmux could not start $s"
@@ -980,7 +1070,7 @@ cmd_ui() {
 cmd_dash() {
   local hub d once=0; [ "${1:-}" = --once ] && once=1
   [ $# -eq 0 ] || [ "$once" = 1 ] || die 2 "usage: ade dash [--once]"
-  hub="$(find_hub)" || exit $?; DASH_DIR="$(mktemp -d)"; d="$DASH_DIR"; trap 'rm -rf "$DASH_DIR"' EXIT
+  hub="$(find_hub)" || exit $?; DASH_DIR="$(mk_tmp)" || die 1 "could not make a temp folder"; d="$DASH_DIR"; trap 'rm_tmp "$DASH_DIR"' EXIT
   while :; do
     ui_data "$hub" "$d"
     if [ "$once" = 1 ]; then ui_render dash "$d"; return 0; fi

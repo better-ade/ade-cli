@@ -72,7 +72,7 @@ skills_add_calls_claude() {   # AC8
   fresh; stub_claude; make_skills_repo; P="$T/proj"; mkdir -p "$P"; cd "$P"
   bash "$ADE" skills add notes > "$T/out" 2>&1 || { cat "$T/out"; fail "skills add exit"; }
   bash "$ADE" skills add browser > "$T/out" 2>&1 || { cat "$T/out"; fail "second skills add exit"; }
-  assert_contains "$CLAUDE_LOG" "plugin marketplace add better-ade/ade-skills" "marketplace added"
+  assert_contains "$CLAUDE_LOG" "plugin marketplace add $K" "marketplace added (from ADE_SKILLS_REPO)"
   assert_eq "$(grep -c 'marketplace add' "$CLAUDE_LOG")" 1 "marketplace added once"
   assert_contains "$CLAUDE_LOG" "plugin install notes@ade-skills --scope project" "project-scope install"
   assert_contains "$CLAUDE_LOG" "plugin install browser@ade-skills --scope project" "second install"
@@ -153,6 +153,11 @@ symlinked_version() {   # review: a symlinked dev install finds VERSION beside t
   assert_eq "$("$T/bin/ade" version)" "ade $(cat "$REPO/VERSION")" "version through a symlink"
 }
 
-ALL="finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors symlinked_version"
+tests_clean_up() {   # review: every test's folder is removed when it ends (the disk filled from leaked folders)
+  T=""; t1="$(fresh; echo "$T")"; [ -n "$t1" ] && [ ! -e "$t1" ] || fail "a test's folder is removed on exit"
+  t2="$(fresh; a="$T"; fresh; [ ! -e "$a" ] && echo "$T")"; [ -n "$t2" ] && [ ! -e "$t2" ] || fail "a second fresh removes the first folder"
+}
+
+ALL="tests_clean_up finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors symlinked_version"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

@@ -26,8 +26,9 @@ new_registers_and_sets_up() {   # AC1
   bash "$ADE" orchestrator new acme --hub "$T/a" --channel telegram > "$T/out" 2>&1 || { cat "$T/out"; fail "new exit"; }
   assert_eq "$(cat "$(REG)")" "acme	$T/a" "registered name and hub"
   assert_contains "$CHAT_LOG" "a setup telegram HUB=$T/a" "setup ran in that hub"
-  for bad in Acme "a b" "x_y" ""; do
-    bash "$ADE" orchestrator new "$bad" --hub "$T/b" > "$T/out" 2>&1; assert_eq "$?" 2 "bad name [$bad]"; done
+  for bad in Acme "a b" "x_y" "" "-x" "-" "a
+b"; do
+    bash "$ADE" orchestrator new "$(printf -- "$bad")" --hub "$T/b" > "$T/out" 2>&1; assert_eq "$?" 2 "bad name [$bad]"; done
   bash "$ADE" orchestrator new acme --hub "$T/b" > "$T/out" 2>&1; assert_eq "$?" 2 "duplicate name"
   assert_contains "$T/out" "acme" "names the duplicate"
   bash "$ADE" orchestrator new other --hub "$T/a" > "$T/out" 2>&1; assert_eq "$?" 2 "second orchestrator for a hub"
