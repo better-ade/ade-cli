@@ -17,7 +17,7 @@ Owner's intent (2026-11-21): updates must not need to terminate the session. Ver
   plugins changed).
 - **restart-needed parts** (e.g. a new bin/chat for a running orchestrator): never kill; schedule a graceful restart
   for when the session is idle (bin/sessions shows idle), or ask; a busy session is never interrupted.
-- A daily check (stamp file) offers `ade update` when a newer release exists; it never installs by itself.
+- A daily check (stamp file) runs the auto-update policy of A12 (patch/minor install automatically, majors ask).
 - `ade update --check` prints what would change and changes nothing.
 
 ## Acceptance criteria (`tests/test_update.sh`; fake release server dir, fake claude/tmux, fixture hub)
@@ -29,5 +29,5 @@ Owner's intent (2026-11-21): updates must not need to terminate the session. Ver
 | 4 | No session, agent or orchestrator process is killed during `ade update` (the fakes record no signals) |
 | 5 | A restart-needed part on a busy session is scheduled for idle, not applied; on an idle session the graceful restart happens and is journaled |
 | 6 | Running sessions get one notify line naming what changed |
-| 7 | `--check` changes nothing; the daily check only offers |
+| 7 | `--check` changes nothing; the daily check follows A12's auto-update policy |
 | 8 | `ade ui` reloads its config without detaching; `ade dash` re-execs on a version change |
