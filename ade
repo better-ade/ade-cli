@@ -1,0 +1,177 @@
+#!/bin/bash
+# ade: one command for ADE in any terminal. Hub commands run the hub's own bin/ scripts (the single source of truth);
+# project commands copy ade-method and registry files at their pinned tags. Bash 3.2 and Linux bash.
+set -u
+ADE_VERSION=""   # install.sh stamps this; a repo checkout reads VERSION beside the script
+ADE_METHOD_REPO="${ADE_METHOD_REPO:-https://github.com/better-ade/ade-method}"
+ADE_METHOD_REF="${ADE_METHOD_REF:-v2.0.0}"
+ADE_REGISTRY_REPO="${ADE_REGISTRY_REPO:-https://github.com/better-ade/ade-agent-registry}"
+ADE_REGISTRY_REF="${ADE_REGISTRY_REF:-v1.1.0}"
+
+die() { echo "ade: $2" >&2; exit "$1"; }
+
+usage() {
+  cat <<'HELP'
+usage: ade <command> [args]
+
+Hub commands (run the hub's bin/ scripts):
+  work        start or resume a work session (bin/work)
+  status      list sessions (bin/sessions)
+  dispatch    hand a task to an agent (bin/dispatch)
+  notify      send a notification (bin/notify)
+  chat        chat with the hub (bin/chat)
+  method      the hub's method tools (bin/method)
+  keys        manage provider keys (bin/keys)
+  models      show or set models (bin/models)
+  roles       show or set roles (bin/roles)
+  doctor      check the hub's health (bin/doctor)
+  sync        sync the hub (bin/sync)
+  context     the hub's context store (bin/context)
+  agent-run   run an agent (bin/agent)
+
+Project commands (no hub needed):
+  init        copy ade-method at its pinned tag into this project (git top level, or --here); never overwrites
+  agent       ade agent list | ade agent add <name>: specialists from ade-agent-registry
+  skills      ade skills add <plugin>: install an ade-skills plugin for this project
+  open        open in the ADE app (inside the ADE app only)
+  version     print the version
+  help        this list
+
+The hub is $ADE_HUB, else the nearest folder above with bin/lib.sh and hub.conf, else the path in ~/.config/ade/hub.
+HELP
+}
+
+is_hub() { [ -f "$1/bin/lib.sh" ] && [ -f "$1/hub.conf" ]; }
+
+find_hub() {
+  if [ -n "${ADE_HUB:-}" ]; then is_hub "$ADE_HUB" || die 2 "ADE_HUB=$ADE_HUB is not a hub (no bin/lib.sh and hub.conf)"
+    echo "$ADE_HUB"; return; fi
+  local d="$PWD"
+  while [ -n "$d" ]; do is_hub "$d" && { echo "$d"; return; }; [ "$d" = / ] && break; d="$(dirname "$d")"; done
+  local cfg="$HOME/.config/ade/hub" h=""
+  if [ -f "$cfg" ]; then
+    IFS= read -r h < "$cfg"; h="$(printf '%s' "$h" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    case "$h" in "~") h="$HOME" ;; "~/"*) h="$HOME/${h#\~/}" ;; esac
+    if [ -n "$h" ]; then is_hub "$h" && { echo "$h"; return; }
+      die 2 "~/.config/ade/hub points to $h, which is not a hub"; fi
+  fi
+  die 2 "no hub found: set ADE_HUB, run ade inside a hub, or put the hub's path in ~/.config/ade/hub"
+}
+
+run_hub() {   # $1 = script name under bin/
+  local script="$1" hub; shift; hub="$(find_hub)" || exit $?
+  [ -e "$hub/bin/$script" ] || die 2 "this hub has no bin/$script; update it"
+  [ -x "$hub/bin/$script" ] || die 2 "bin/$script is not executable"
+  HUB="$hub"; export HUB   # a stale HUB in the caller's environment would win in the hub's lib.sh
+  exec "$hub/bin/$script" "$@"
+}
+
+# fetch <repo> <ref>: a temp checkout of repo at ref; prints its path
+fetch() {
+  local tmp err; tmp="$(mktemp -d)"
+  if [ -d "$1" ]; then err="$(git clone -q --branch "$2" "$1" "$tmp/src" 2>&1)"
+  else err="$(git -c advice.detachedHead=false clone -q --depth 1 --branch "$2" "$1" "$tmp/src" 2>&1)"; fi \
+    || { rm -rf "$tmp"; die 1 "could not fetch $1 at $2: $(printf '%s\n' "$err" | tail -1)"; }
+  echo "$tmp/src"
+}
+
+# put <src> <dest>: copy unless dest exists; counts KEPT, exits 1 on a failed copy
+KEPT=0
+put() {
+  if [ -e "$2" ]; then echo "kept $2 (already there)"; KEPT=$((KEPT + 1))
+  else { mkdir -p "$(dirname "$2")" && cp "$1" "$2"; } 2>/dev/null || die 1 "could not copy $2"; echo "copied $2"; fi
+}
+
+# project_root [args]: cd to the git top level, or stay here with --here; outside git without --here, exit 2
+project_root() {
+  local a top; for a in "$@"; do [ "$a" = --here ] && return 0; done
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || die 2 "not inside a git repository: run ade in a project, or pass --here"
+  cd "$top" || die 1 "cannot enter $top"
+}
+
+cmd_init() {
+  project_root "$@"
+  local src f list old=""; src="$(fetch "$ADE_METHOD_REPO" "$ADE_METHOD_REF")" || exit $?
+  trap 'rm -rf "$(dirname "$src")"' EXIT
+  list="$(dirname "$src")/list"; : > "$list"   # src<TAB>dest, read without a subshell so put's counts and exits hold
+  [ -f "$src/rules.md" ] && printf '%s\t%s\n' "$src/rules.md" .ade/rules.md >> "$list"
+  for f in "$src"/agents/*.md; do [ -f "$f" ] && printf '%s\t%s\n' "$f" ".ade/agents/$(basename "$f")" >> "$list"; done
+  for f in "$src"/bmad/custom/*.toml; do [ -f "$f" ] && printf '%s\t%s\n' "$f" "_bmad/custom/$(basename "$f")" >> "$list"; done
+  if [ -d "$src/templates/context" ]; then
+    (cd "$src/templates/context" && find . -type f | sort) | while IFS= read -r f; do
+      printf '%s\t%s\n' "$src/templates/context/${f#./}" ".ade/context/${f#./}"; done >> "$list"
+  fi
+  [ -f "$src/templates/standards.md" ] && printf '%s\t%s\n' "$src/templates/standards.md" docs/standards.md >> "$list"
+  while IFS="$(printf '\t')" read -r f dest; do put "$f" "$dest"; done < "$list"
+  [ -f .ade/method-version ] && old="$(cat .ade/method-version)"
+  if [ "$KEPT" -gt 0 ] && [ -n "$old" ] && [ "$old" != "$ADE_METHOD_REF" ]; then
+    echo "kept files are from $old: .ade/method-version left at $old"
+  else
+    { mkdir -p .ade && echo "$ADE_METHOD_REF" > .ade/method-version; } || die 1 "could not write .ade/method-version"
+    echo "ade-method $ADE_METHOD_REF recorded in .ade/method-version"
+  fi
+}
+
+# registry rows as name<TAB>file<TAB>description
+registry_rows() {
+  python3 -c 'import json,sys
+for r in json.load(open(sys.argv[1])).get("roles", []):
+    print("%s\t%s\t%s" % (r.get("name",""), r.get("file",""), r.get("description","")))' "$1/registry.json" \
+    || die 1 "could not read registry.json"
+}
+
+cmd_agent() {
+  local sub="${1:-}" src rows name file desc
+  case "$sub" in
+    list|add) ;;
+    *) die 2 "usage: ade agent list | ade agent add <name>" ;;
+  esac
+  [ "$sub" = add ] && { [ -z "${2:-}" ] || [ "$2" = --here ]; } && die 2 "usage: ade agent add <name> [--here]"
+  [ "$sub" = add ] && project_root "$@"
+  src="$(fetch "$ADE_REGISTRY_REPO" "$ADE_REGISTRY_REF")" || exit $?
+  rows="$(registry_rows "$src")" || exit $?
+  if [ "$sub" = list ]; then
+    echo "$rows" | while IFS="$(printf '\t')" read -r name file desc; do printf '%-20s %s\n' "$name" "$desc"; done
+  else
+    file="$(echo "$rows" | awk -F '\t' -v n="$2" '$1 == n { print $2; exit }')"
+    if [ -z "$file" ] || [ ! -f "$src/$file" ]; then rm -rf "$(dirname "$src")"; die 2 "no specialist named $2; ade agent list shows them"; fi
+    put "$src/$file" ".ade/agents/$2.md"
+  fi
+  rm -rf "$(dirname "$src")"
+}
+
+cmd_skills() {
+  [ "${1:-}" = add ] && [ -n "${2:-}" ] || die 2 "usage: ade skills add <plugin>"
+  command -v claude > /dev/null 2>&1 || die 2 "claude is not on PATH; install Claude Code first"
+  if ! claude plugin marketplace list 2>/dev/null | grep -q 'ade-skills'; then
+    claude plugin marketplace add better-ade/ade-skills || die 1 "could not add the ade-skills marketplace"
+  fi
+  claude plugin install "$2@ade-skills" --scope project
+}
+
+cmd_open() {
+  [ -n "${ADE_HOOK_BIN:-}" ] || die 2 "ade open works inside the ADE app"
+  exec "$ADE_HOOK_BIN" open "$@"
+}
+
+cmd_version() {
+  local v="$ADE_VERSION"
+  local p="$0" l
+  while [ -L "$p" ]; do l="$(readlink "$p")"; case "$l" in /*) p="$l" ;; *) p="$(dirname "$p")/$l" ;; esac; done
+  [ -n "$v" ] || v="$(cat "$(cd "$(dirname "$p")" && pwd)/VERSION" 2>/dev/null)"
+  echo "ade ${v:-unknown}"
+}
+
+cmd="${1:-help}"; [ $# -gt 0 ] && shift
+case "$cmd" in
+  work|dispatch|notify|chat|method|keys|models|roles|doctor|sync|context) run_hub "$cmd" "$@" ;;
+  status) run_hub sessions "$@" ;;
+  agent-run) run_hub agent "$@" ;;
+  init) cmd_init "$@" ;;
+  agent) cmd_agent "$@" ;;
+  skills) cmd_skills "$@" ;;
+  open) cmd_open "$@" ;;
+  version|--version|-v) cmd_version ;;
+  help|--help|-h) usage ;;
+  *) usage >&2; die 2 "unknown command: $cmd" ;;
+esac

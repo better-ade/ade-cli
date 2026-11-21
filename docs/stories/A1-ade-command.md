@@ -1,6 +1,6 @@
 # A1: `ade`, one command in any terminal
 
-Status: Ready for development (2026-11-21). Risk: medium. Verification command: `bash tests/run.sh`.
+Status: **Done (2026-11-21)**: CI (`bash tests/run.sh` on ubuntu-latest) green after the quick review's 7 fixes; also green on macOS Bash 3.2. Risk: medium. Verification command: `bash tests/run.sh`.
 Owner's intent (2026-11-21): "create ade-cli where it can be spawned on terminals"; `ade` absorbs the ADE app's
 existing `ade open`; it is the command Telegram and a future server use. Keep it thin: the hub's `bin/` scripts stay the
 single source of truth.
