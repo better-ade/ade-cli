@@ -4,13 +4,13 @@
 # coverage/). Fails when the suite fails or ade's line coverage drops below tests/coverage-floor.
 set -u; cd "$(dirname "$0")/.." || exit 1; out="${1:-$PWD/coverage}"; rm -rf "$out"; mkdir -p "$out/runs"
 command -v kcov > /dev/null || { echo "coverage: kcov is not installed" >&2; exit 2; }
-real="$(command -v bash)"; wrap="$(mktemp -d)"
+real="$(command -v bash)"; kc="$(command -v kcov)"; wrap="$(mktemp -d)"   # absolute: some tests narrow PATH
 cat > "$wrap/bash" <<W
 #!$real
 # coverage wrapper: bash <this repo's ade> ... runs under kcov; anything else is plain bash
 if [ -z "\${ADE_KCOV_INSIDE:-}" ] && [ "\${1:-}" = "$PWD/ade" ]; then
   shift; ADE_KCOV_INSIDE=1; export ADE_KCOV_INSIDE
-  exec kcov --include-pattern=/ade "$out/runs/\$\$-\$RANDOM" "$PWD/ade" "\$@"
+  exec "$kc" --include-pattern=/ade "$out/runs/\$\$-\$RANDOM" "$PWD/ade" "\$@"
 fi
 exec "$real" "\$@"
 W
