@@ -12,6 +12,14 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - `HUB_NAME`: the hub's display name (`ade` alone, `ade hub list`); default the folder name.
 - `HUB_CHANNELS` (space-separated channel types, ADR 0006): shown by `ade orchestrator list`.
 
+- `HUB_ROOT_MODEL` (the orchestrator's model), `HUB_CLAUDE` (the claude command, default `claude`),
+  `HUB_CLAUDE_CONFIG_DIR` (exported as `CLAUDE_CONFIG_DIR`): `ade claude` (A4).
+
+## The hub's `.claude/settings.json` (A4)
+- `ade claude` adds, only when absent: `extraKnownMarketplaces["ade-skills"] = {"source": {"source": "github", "repo":
+  "better-ade/ade-skills"}}` and `enabledPlugins["ade@ade-skills"] = true`. Every other key is kept; invalid JSON is
+  refused (exit 1) and left as it is.
+
 ## `bin/chat` (ade-brain C5) as `ade orchestrator` calls it
 - `bin/chat setup <channel>`: interactive; exit 2 for an unknown channel (`ade` shows the hub's message and exit). Called
   with `ADE_ORCHESTRATOR=<name>` in the environment.

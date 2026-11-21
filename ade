@@ -33,6 +33,7 @@ Orchestrators (one per hub, run by the hub's bin/chat):
   orchestrator  new <name> --hub <path> [--channel telegram] | start | stop | list | logs <name> [-n N] | remove
 
 Hubs:
+  claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root; with a folder, ade work <folder>
   hub         ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] | ade hub list | ade hub use <path>
   (none)      ade alone: the hub, its sessions and what to do next
 
@@ -325,9 +326,51 @@ cmd_home() {
   echo "hub: $(hub_label "$hub") ($hub)"
   [ -x "$hub/bin/sessions" ] && (HUB="$hub"; export HUB; "$hub/bin/sessions")
   echo "next:"
+  echo "  ade claude           open the orchestrator (Claude Code at the hub root)"
   echo "  ade work <folder>    start a focus agent on a folder"
-  echo "  ade dispatch         hand a ready ticket to an agent"
   echo "  ade help             every command"
+}
+
+# ade claude [<folder>] [-- args]: Claude Code at the hub root as the orchestrator (story A4)
+ADE_SKILLS_MARKETPLACE="better-ade/ade-skills"
+enable_ade_plugin() {   # <settings.json>: list the ade-skills marketplace and enable ade@ade-skills; other keys kept
+  mkdir -p "$(dirname "$1")" || return 1
+  python3 - "$1" "$ADE_SKILLS_MARKETPLACE" <<'PY'
+import json, os, sys
+p, repo = sys.argv[1], sys.argv[2]
+d = {}
+if os.path.exists(p):
+    try:
+        d = json.load(open(p))
+    except ValueError:
+        sys.exit("ade: %s is not valid JSON; fix it, then run ade claude again" % p)
+    if not isinstance(d, dict):
+        sys.exit("ade: %s is not a JSON object" % p)
+before = json.dumps(d, sort_keys=True)
+d.setdefault("extraKnownMarketplaces", {}).setdefault("ade-skills", {"source": {"source": "github", "repo": repo}})
+d.setdefault("enabledPlugins", {}).setdefault("ade@ade-skills", True)
+if json.dumps(d, sort_keys=True) != before:
+    tmp = p + ".ade-tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2); f.write("\n")
+    os.replace(tmp, p)
+PY
+}
+
+cmd_claude() {
+  local a hub model name cl cfg
+  for a in "$@"; do [ "$a" = --dangerously-skip-permissions ] && die 2 "ade claude never skips permissions (--dangerously-skip-permissions refused)"; done
+  if [ $# -gt 0 ] && [ "$1" != -- ]; then run_hub work "$@"; fi
+  [ $# -gt 0 ] && shift
+  hub="$(find_hub)" || exit $?
+  enable_ade_plugin "$hub/.claude/settings.json" || exit 1
+  model="$(conf_get "$hub" HUB_ROOT_MODEL)"; name="$(hub_label "$hub")"
+  cl="$(conf_get "$hub" HUB_CLAUDE)"; cl="${cl:-claude}"; cfg="$(conf_get "$hub" HUB_CLAUDE_CONFIG_DIR)"
+  command -v "$cl" > /dev/null 2>&1 || die 2 "$cl is not on PATH; install Claude Code first (ade setup does it)"
+  cd "$hub" || die 1 "cannot enter $hub"
+  HUB="$hub"; export HUB; [ -z "$cfg" ] || { CLAUDE_CONFIG_DIR="$cfg"; export CLAUDE_CONFIG_DIR; }
+  set -- --remote-control "$name" "$@"; [ -z "$model" ] || set -- --model "$model" "$@"   # opus[1m] never globbed
+  exec "$cl" "$@"
 }
 
 cmd_version() {
@@ -347,6 +390,7 @@ case "$cmd" in
   agent) cmd_agent "$@" ;;
   skills) cmd_skills "$@" ;;
   "") cmd_home ;;
+  claude) cmd_claude "$@" ;;
   hub) cmd_hub "$@" ;;
   orchestrator) cmd_orchestrator "$@" ;;
   open) cmd_open "$@" ;;
