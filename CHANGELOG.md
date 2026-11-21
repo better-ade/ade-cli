@@ -8,6 +8,9 @@
   the question is answered (remembered per machine in `~/.config/ade/accounts`). The record is checked value by value
   and rejected whole when anything in it is off; answers come from a person at the terminal, never a pipe or an agent;
   plugins are verified at their recorded version, for the hub and its projects.
+- `ade init` installs ade-method's `install_templates` (`.github/pull_request_template.md`, `.ade/commit-template.txt`,
+  never overwriting) and sets `git config commit.template .ade/commit-template.txt` in that repo unless one is set;
+  the default `ADE_METHOD_REF` is now `v2.1.0`; the temp checkout is removed again (the exit trap no longer fails).
 - `ade clean [--yes]`, `ade reset [--keys] [--hub <path>]`, `ade uninstall` (A9): each lists what it would do first.
   clean removes stale locks, old dispatch markers and event cursors, ade's old temp folders, dead `ade-*` tmux sessions
   and clean merged worktrees; reset stops orchestrators, removes the chat and monitor services, the `ade@ade-skills`
