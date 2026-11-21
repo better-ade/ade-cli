@@ -275,7 +275,7 @@ In plain words:
   | 5. Upgrade | the previous release tag, a hub and a project, then this checkout: nothing lost or overwritten (network) | `bash tests/e2e/upgrade.sh` |
   | 6. Interactive | `ade setup` on a real pty (expect) and in a tmux pane: a typed key never on screen, in `ps` or in a file | `bash tests/e2e/interactive.sh` (needs `expect`, `tmux`) |
   | 7. `ade ui` | real tmux at 120x36 and 80x24: tab bar, sidebar and popups against `tests/golden/ui-*.txt` | `bash tests/e2e/ui_snapshots.sh`; `UPDATE_GOLDEN=1` rewrites |
-  | 8. Coverage | kcov line coverage of `ade` over the suite; fails below `tests/coverage-floor` | `bash tests/coverage.sh` (Linux, `kcov`) |
+  | 8. Coverage | traced line coverage of `ade` over the suite (report and JSON as an artifact); fails below `tests/coverage-floor` | `bash tests/coverage.sh` (bash 4.1+) |
 
 - **CI.** Every pull request and every push to `main` runs layer 1 on both systems (job `suite`) through the shared
   [`verify.yml`](https://github.com/better-ade/.github) workflow, and layers 2 and 4-8 as their own jobs
