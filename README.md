@@ -208,6 +208,8 @@ or tool. A hub command exits with whatever the hub's script returns.
 | `ADE_METHOD_REPO` | `https://github.com/better-ade/ade-method` | Where ade-method comes from (tests use a local fixture) |
 | `ADE_REGISTRY_REPO` | `https://github.com/better-ade/ade-agent-registry` | Where the registry comes from |
 | `ADE_HOOK_BIN` | set by the ADE app | What `ade open` hands off to |
+| `ADE_NO_UPDATE_CHECK` | unset | `1`: no daily release check (no request) |
+| `ADE_NO_AUTO_UPDATE` | unset | `1`: a new ade-cli release is announced, never installed by itself |
 
 ## Providers
 

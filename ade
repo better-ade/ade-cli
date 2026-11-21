@@ -852,6 +852,7 @@ ui_data() {
   if [ -x "$hub/bin/dispatch" ] && hub_run "$hub" dispatch --list > "$d/tickets" 2> /dev/null; then :; else echo "unavailable" > "$d/tickets"; fi
   if [ -n "$s" ]; then ui_tmux list-windows -t "=$s" -F "#{window_index}	#{window_name}	#{window_active}" > "$d/windows" 2> /dev/null || : > "$d/windows"; fi
   theme_env > "$d/theme"
+  update_badge > "$d/updates" 2> /dev/null || : > "$d/updates"
   printf '%s\n' "${AGENT_STATE:-$HOME/.agent-hub/$(hub_label "$hub")}/events.jsonl" > "$d/events_path"
   hub_label "$hub" > "$d/name"
 }
@@ -928,6 +929,8 @@ if mode == "bar":
         if n > 0: tab += " #[fg=%s]✉%d" % (theme["unread"], n)
         out.append(tab + " ")
     out.append("#[bg=%s]#[fg=%s][+ new]" % (theme["bg"], theme["accent"]))
+    ups = (read("updates") or ["0"])[0].strip()
+    if ups.isdigit() and int(ups) > 0: out.append("#[fg=%s]⬆ %s update%s (ade update)" % (theme["accent"], ups, "" if ups == "1" else "s"))
     print(" ".join(out))
 else:
     name = (read("name") or ["hub"])[0]
@@ -1789,16 +1792,24 @@ dl() {   # dl <url> [file]: https only (file:// for tests), never more than ADE_
 }
 latest_version() { local v; v="$(dl "$ADE_CLI_BASE/main/VERSION" | tr -d ' \r\n')"; matches "$v" '^[0-9]+\.[0-9]+\.[0-9]+$' && echo "$v"; }
 UPD_CHANGED=""
-self_update() {   # <check 0|1>: 1 = the new file failed its check (the old one stays)
-  local v self dir tmp
+self_update() {   # <check 0|1> [version]: 1 = the new file failed a check (the old one stays)
+  local v="${2:-}" self dir tmp sf want url
   if [ -z "$ADE_VERSION" ]; then echo "ade: a checkout ($(dirname "$(ade_self)")); update it with git pull"; return 0; fi
-  v="$(latest_version)" || { echo "ade: could not read the latest version (offline?); ade $ADE_VERSION stays"; return 0; }
+  [ -n "$v" ] || v="$(latest_version)" || { echo "ade: could not read the latest version (offline?); ade $ADE_VERSION stays"; return 0; }
   ver_gt "$v" "$ADE_VERSION" || { echo "ade $ADE_VERSION is current"; return 0; }
   [ "$1" = 1 ] && { echo "ade $ADE_VERSION -> $v"; return 0; }
   self="$(ade_self)"; dir="$(dirname "$self")"
   tmp="$(mktemp "$dir/.ade-update.XXXXXX")" || { echo "ade: cannot write in $dir; ade $ADE_VERSION stays"; return 1; }
-  if ! dl "$ADE_CLI_BASE/v$v/ade" "$tmp.raw" || [ "$(head -1 "$tmp.raw")" != "#!/bin/bash" ]; then
+  url="$ADE_CLI_BASE/v$v/ade"; want=""   # A12: release.json names the file and its sha256; a mismatch refuses
+  if releases_on && dl "$ADE_RELEASES_BASE/better-ade/ade-cli/releases/download/v$v/release.json" "$tmp.json" &&
+      sf="$(manifest_field "$tmp.json" file:ade)" && [ -n "$sf" ]; then
+    want="${sf%%"$TAB"*}"; [ -n "${sf#*"$TAB"}" ] && url="${sf#*"$TAB"}"
+  else echo "ade: no release.json with a sha256 for ade $v; the download is checked by ade version only"; fi
+  rm -f "$tmp.json"
+  if ! dl "$url" "$tmp.raw" || [ "$(head -1 "$tmp.raw")" != "#!/bin/bash" ]; then
     rm -f "$tmp" "$tmp.raw"; echo "ade: could not download ade $v; ade $ADE_VERSION stays"; return 1; fi
+  if [ -n "$want" ] && [ "$(sha256_of "$tmp.raw")" != "$want" ]; then
+    rm -f "$tmp" "$tmp.raw"; echo "ade: the download of ade $v does not match its sha256 in release.json; ade $ADE_VERSION stays"; return 1; fi
   sed "s/^ADE_VERSION=\"\"/ADE_VERSION=\"$v\"/" "$tmp.raw" > "$tmp"; rm -f "$tmp.raw"; chmod 755 "$tmp"
   if [ "$(bash "$tmp" version 2> /dev/null < /dev/null)" != "ade $v" ]; then
     rm -f "$tmp"; echo "ade: the new ade $v failed its check (ade version); ade $ADE_VERSION stays"; return 1; fi
@@ -1883,6 +1894,108 @@ cmd_update() {
   return $rc
 }
 
+# release manifests and update notifications (story A12): release.json of each better-ade component in use, checked
+# at most once a day (2 s at most, offline = try tomorrow); a banner once per new version (security: every command);
+# ade-cli patch and minor versions install themselves (A11's rename), majors and min_supported jumps ask first.
+ADE_RELEASES_BASE_SET="${ADE_RELEASES_BASE:+1}"
+ADE_RELEASES_BASE="${ADE_RELEASES_BASE:-https://github.com}"
+UPD_DIR="$CONF_DIR/updates"
+COMPONENTS="ade-cli ade-brain ade-method ade-skills ade-agent-registry"
+releases_on() {   # the manifest is read from GitHub unless a test points ade at another release folder
+  [ -n "$ADE_RELEASES_BASE_SET" ] || [ "$ADE_CLI_BASE" = https://raw.githubusercontent.com/better-ade/ade-cli ]
+}
+sha256_of() { if command -v shasum > /dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1; else sha256sum "$1" | cut -d' ' -f1; fi; }
+manifest_field() {   # <release.json> <field|file:NAME>: one value, or nothing when the manifest is not one
+  python3 - "$1" "$2" <<'PY' 2> /dev/null
+import json, re, sys
+try:
+    d = json.load(open(sys.argv[1]))
+    assert isinstance(d, dict) and re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", d["version"])
+except Exception:
+    sys.exit(1)
+k = sys.argv[2]
+if k.startswith("file:"):
+    for f in d.get("files") or []:
+        if f.get("name") == k[5:] and re.match(r"^[0-9a-f]{64}$", str(f.get("sha256", ""))):
+            print("%s\t%s" % (f["sha256"], f.get("url", ""))); break
+else:
+    v = d.get(k); print("" if v is None else re.sub(r"[\t\r\n]", " ", str(v)))
+PY
+}
+comp_installed() {   # <component> <hub>: the installed version (X.Y.Z), or nothing when it is not in use here
+  local v="" top
+  case "$1" in
+    ade-cli) v="$ADE_VERSION" ;;
+    ade-brain) [ -n "$2" ] && [ -f "$2/VERSION" ] && v="$(tr -d ' \r\n' < "$2/VERSION")" ;;
+    ade-method) top="$(git rev-parse --show-toplevel 2> /dev/null)" && [ -f "$top/.ade/method-version" ] && v="$(tr -d ' \r\n' < "$top/.ade/method-version")" ;;
+    ade-skills) [ -n "$(ade_plugins)" ] && v="$ADE_SKILLS_REF" ;;
+    ade-agent-registry) top="$(git rev-parse --show-toplevel 2> /dev/null)" && [ -d "$top/.ade/agents" ] && v="$ADE_REGISTRY_REF" ;;
+  esac
+  v="${v#v}"; matches "$v" '^[0-9]+\.[0-9]+\.[0-9]+$' && echo "$v"
+}
+fetch_manifest() {   # <component>: the latest release.json into $UPD_DIR/<c>.latest (version urgency min summary); 2 s at most
+  local c="$1" tmp proto="=https" v
+  releases_on || return 1
+  [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"
+  tmp="$(mktemp "$UPD_DIR/.$c.XXXXXX")" || return 1
+  if curl --proto "$proto" --proto-redir "$proto" -fsSL --connect-timeout 2 --max-time 2 \
+      "$ADE_RELEASES_BASE/better-ade/$c/releases/latest/download/release.json" -o "$tmp" 2> /dev/null < /dev/null &&
+      v="$(manifest_field "$tmp" version)"; then
+    local u m sm; u="$(manifest_field "$tmp" urgency)"; m="$(manifest_field "$tmp" min_supported)"
+    sm="$(manifest_field "$tmp" summary | cut -c1-160)"   # "-" for an empty field: IFS=tab would merge two tabs
+    printf '%s\t%s\t%s\t%s\n' "$v" "${u:--}" "${m:--}" "${sm:--}" > "$UPD_DIR/$c.latest"
+    rm -f "$tmp"; return 0
+  fi
+  rm -f "$tmp"; return 1
+}
+major_of() { echo "${1%%.*}"; }
+update_check() {   # before a command: the daily check, the banner, the Telegram line, the auto-update policy
+  [ "${ADE_NO_UPDATE_CHECK:-}" = 1 ] && return 0
+  local hub c inst now t ver urg min sum seen fetched line
+  ( umask 077; mkdir -p "$UPD_DIR" ) 2> /dev/null || return 0
+  hub="$( (find_hub) 2> /dev/null)" || hub=""; now="$(date +%s)"
+  for c in $COMPONENTS; do
+    inst="$(comp_installed "$c" "$hub" 2> /dev/null)" || continue
+    t=0; [ -f "$UPD_DIR/$c.checked" ] && t="$(cat "$UPD_DIR/$c.checked" 2> /dev/null)"; matches "$t" '^[0-9]+$' || t=0
+    fetched=0
+    if [ $((now - t)) -ge 86400 ]; then echo "$now" > "$UPD_DIR/$c.checked"; fetch_manifest "$c" && fetched=1; fi
+    [ -f "$UPD_DIR/$c.latest" ] || continue
+    IFS="$TAB" read -r ver urg min sum < "$UPD_DIR/$c.latest" || [ -n "$ver" ] || continue
+    [ "$urg" = - ] && urg=""; [ "$min" = - ] && min=""; [ "$sum" = - ] && sum=""
+    ver_gt "$ver" "$inst" || continue
+    seen=""; [ -f "$UPD_DIR/$c.seen" ] && seen="$(cat "$UPD_DIR/$c.seen" 2> /dev/null)"
+    if [ "$c" = ade-cli ] && [ "$fetched" = 1 ] && [ "${ADE_NO_AUTO_UPDATE:-}" != 1 ]; then
+      if [ "$(major_of "$ver")" != "$(major_of "$inst")" ] || { [ -n "$min" ] && ver_gt "$min" "$inst"; }; then
+        echo "ade: ade $ver is a major update (or needs $min first); it asks first: run ade update to install it" >&2
+        echo "$ver" > "$UPD_DIR/$c.seen"; update_telegram "$hub" "ade $ver is out (you have $inst); it needs ade update by hand"; continue
+      fi
+      if line="$(self_update 0 "$ver" 2>&1)"; then
+        echo "ade: auto-updated: $(printf '%s\n' "$line" | tail -1) (ADE_NO_AUTO_UPDATE=1 turns this off)" >&2
+        echo "$ver" > "$UPD_DIR/$c.seen"; update_telegram "$hub" "ade updated itself to $ver"; continue
+      fi
+      echo "ade: the auto-update to ade $ver failed: $(printf '%s\n' "$line" | tail -1)" >&2
+    fi
+    if [ "$urg" = security ] || [ "$ver" != "$seen" ]; then
+      echo "ade: $c $ver is out (you have $inst)${sum:+: $sum}${urg:+$([ "$urg" = security ] && echo ' [security update]')}; ade update installs it" >&2
+      [ "$ver" != "$seen" ] && update_telegram "$hub" "$c $ver is out (you have $inst)${sum:+: $sum}"
+      echo "$ver" > "$UPD_DIR/$c.seen"
+    fi
+  done
+  return 0
+}
+update_telegram() {   # <hub> <text>: one line through the orchestrator's channel when the hub has one (bin/chat send)
+  [ -n "$1" ] && [ -n "$(conf_get "$1" HUB_CHANNELS)" ] && [ -x "$1/bin/chat" ] || return 0
+  hub_run "$1" chat send "$2" < /dev/null > /dev/null 2>&1 || true
+}
+update_badge() {   # the number of components with a newer release, for ade ui's tab bar
+  local hub n=0 c inst ver; hub="$( (find_hub) 2> /dev/null)" || hub=""
+  for c in $COMPONENTS; do
+    [ -f "$UPD_DIR/$c.latest" ] || continue; inst="$(comp_installed "$c" "$hub" 2> /dev/null)" || continue
+    IFS="$TAB" read -r ver _ < "$UPD_DIR/$c.latest"; ver_gt "$ver" "$inst" && n=$((n + 1))
+  done
+  echo "$n"
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -1892,6 +2005,11 @@ cmd_version() {
 }
 
 cmd="${1:-}"; [ $# -gt 0 ] && shift
+case "$cmd" in   # A12: the daily update check, never for the commands tmux and ade itself run all the time
+  version|--version|-v|help|--help|-h|update) ;;
+  ui) { [ $# -eq 0 ] || [ "$1" = --detach ]; } && update_check ;;
+  *) update_check ;;
+esac
 case "$cmd" in
   work) work_in_ui; run_hub work "$@" ;;
   chat) if [ "${1:-}" = setup ] && [ $# -ge 2 ]; then   # the channel is recorded once its setup succeeds

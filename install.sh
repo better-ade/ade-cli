@@ -22,6 +22,16 @@ else
   tmp="$(mktemp -d)"; script="$tmp/ade"
   curl -fsSL "$base/$ref/ade" -o "$script" || die "could not download ade $ref"
   [ "$(head -1 "$script")" = "#!/bin/bash" ] || die "the download of ade $ref is not the ade script"
+  # release.json (A12) names the sha256 of ade; a mismatch installs nothing. GitHub's unless ADE_CLI_BASE points elsewhere
+  rbase="${ADE_RELEASES_BASE:-}"; [ -z "$rbase" ] && [ -z "${ADE_CLI_BASE:-}" ] && rbase=https://github.com
+  if [ -n "$rbase" ] && curl -fsSL --max-time 20 "$rbase/better-ade/ade-cli/releases/download/$ref/release.json" -o "$tmp/release.json" 2> /dev/null; then
+    want="$(python3 -c 'import json, sys
+for f in json.load(open(sys.argv[1])).get("files") or []:
+    if f.get("name") == "ade": print(f.get("sha256", ""))' "$tmp/release.json" 2> /dev/null || true)"
+    [ -n "$want" ] || die "release.json of $ref names no sha256 for ade; nothing installed"
+    got="$( (shasum -a 256 "$script" 2> /dev/null || sha256sum "$script") | cut -d' ' -f1)"
+    [ "$got" = "$want" ] || die "the download of ade $ref does not match its sha256 in release.json; nothing installed"
+  fi
 fi
 mkdir -p "$prefix/bin"
 sed "s/^ADE_VERSION=\"\"/ADE_VERSION=\"$version\"/" "$script" > "$prefix/bin/ade.tmp"

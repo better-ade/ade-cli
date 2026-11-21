@@ -118,3 +118,13 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   as `idle` (`bin/chat stop`, then `bin/chat start`, journaled); else `~/.config/ade/restart-pending` (one hub path
   per line) keeps it for the next `ade update`.
 - `bin/notify all <text>`: one line per `ade update` that changed something.
+
+## Release manifests and update checks (A12)
+- `https://github.com/better-ade/<repo>/releases/latest/download/release.json` (and `.../download/v<X.Y.Z>/release.json`),
+  written by better-ade/.github's `release.yml`: `component`, `version`, `released`, `notes_url`, `summary`, `urgency`
+  (`normal`|`security`), `min_supported` (X.Y.Z or null), `files` [{`name`, `url`, `sha256`}].
+- `~/.config/ade/updates/<component>.checked` (epoch of the last check), `.latest` (version, urgency, min_supported,
+  summary; `-` for empty), `.seen` (the last version announced).
+- Installed versions: ade-cli the stamped version; ade-brain the hub's `VERSION`; ade-method the project's
+  `.ade/method-version`; ade-skills and ade-agent-registry their pins, when in use.
+- Needed from the hub: `bin/chat send <text>` sends one line on the hub's channel (Telegram); faked in tests.

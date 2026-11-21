@@ -1,6 +1,6 @@
 # A12: release manifests and update notifications
 
-Status: Ready for development (2026-11-21). Risk: medium. Depends on A11. Owner's intent (2026-11-21): notify users when
+Status: In review (2026-11-22); part 1 is better-ade/.github#3. Risk: medium. Depends on A11. Owner's intent (2026-11-21): notify users when
 there is a new version, through a JSON file that `ade` checks.
 
 ## Goal
