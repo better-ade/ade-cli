@@ -17,8 +17,9 @@ ade hub new acme-sre [--private|--public] [--dir ~/hubs] [--no-github]
   - with GitHub (default): `gh repo create <name> --template better-ade/ade-brain --private --clone` into `--dir`
     (default `~/hubs`); `--public` only when asked;
   - `--no-github`: clones the template locally instead and leaves the remote unset;
-  - then runs the hub's `bin/init` (interactive: it asks its own questions), and saves the hub as the default in
-    `~/.config/ade/hub`.
+  - then runs the hub's `bin/init --persona P --client C --owner O --name <name>`: `bin/init` is not interactive, so
+    `ade hub new` takes `--persona`, `--client` and `--owner` and asks for any that are missing itself (listing
+    `bin/init --list`); then it saves the hub as the default in `~/.config/ade/hub`.
 - `ade` with no arguments: no hub → "no hub yet: run `ade hub new <name>`"; a hub → its name, `ade status`, and the
   three most useful next commands.
 - `ade hub list` / `ade hub use <path>`: the hubs `ade` knows and switching the default.
