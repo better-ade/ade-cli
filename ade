@@ -74,6 +74,7 @@ find_hub() {
 
 run_hub() {   # $1 = script name under bin/
   local script="$1" hub; shift; hub="$(find_hub)" || exit $?
+  [ "$script" = work ] && claude_update "$hub"
   [ -e "$hub/bin/$script" ] || die 2 "this hub has no bin/$script; update it"
   [ -x "$hub/bin/$script" ] || die 2 "bin/$script is not executable"
   HUB="$hub"; export HUB   # a stale HUB in the caller's environment would win in the hub's lib.sh
@@ -174,6 +175,26 @@ cmd_open() {
   exec "$ADE_HOOK_BIN" open "$@"
 }
 
+# claude_update [hub]: before ade launches Claude Code, `claude update` at most once per 24 h per machine (stamp
+# ~/.config/ade/claude-updated, written per attempt), cut off after ADE_CLAUDE_UPDATE_TIMEOUT s (default 60); offline or
+# failing prints one line and the installed version runs. ADE_NO_CLAUDE_UPDATE=1 skips it.
+claude_update() {
+  [ "${ADE_NO_CLAUDE_UPDATE:-}" = 1 ] && return 0
+  local cl="" now t=0 stamp="$HOME/.config/ade/claude-updated" lim="${ADE_CLAUDE_UPDATE_TIMEOUT:-60}" pid w rc
+  [ -n "${1:-}" ] && cl="$(conf_get "$1" HUB_CLAUDE)"; cl="${cl:-claude}"
+  command -v "$cl" > /dev/null 2>&1 || return 0
+  now="$(date +%s)"; [ -f "$stamp" ] && t="$(cat "$stamp" 2> /dev/null)"; [[ $t =~ ^[0-9]+$ ]] || t=0
+  [ $((now - t)) -lt 86400 ] && return 0
+  [[ $lim =~ ^[0-9]+$ ]] || lim=60
+  echo "$now" | write_conf_file claude-updated
+  "$cl" update > /dev/null 2>&1 < /dev/null & pid=$!
+  ( sleep "$lim"; kill "$pid" 2> /dev/null ) > /dev/null 2>&1 & w=$!
+  wait "$pid" 2> /dev/null; rc=$?; kill "$w" 2> /dev/null; wait "$w" 2> /dev/null
+  if [ "$rc" = 0 ]; then echo "ade: Claude Code is up to date" >&2
+  else echo "ade: Claude Code update skipped (offline, failed or over ${lim}s); using the installed version" >&2; fi
+  return 0
+}
+
 # conf_get <hub> <KEY>: a hub.conf value (sourced in a subshell, as the hub's own scripts read it)
 conf_get() {
   case "$2" in *[!A-Z0-9_]*|"") return 1 ;; esac
@@ -233,6 +254,7 @@ cmd_orchestrator() {
       [ -n "${1:-}" ] && [ $# -eq 1 ] || die 2 "$ORCH_USAGE"
       hub="$(orch_hub "$1")"; [ -n "$hub" ] || die 2 "no orchestrator named $1; ade orchestrator list shows them"
       is_hub "$hub" || die 2 "the hub of $1 ($hub) is gone"
+      [ "$sub" = start ] && claude_update "$hub"
       chat "$hub" "$sub"; exit $? ;;
     list)
       [ $# -eq 0 ] || die 2 "$ORCH_USAGE"
@@ -394,6 +416,7 @@ cmd_claude() {
   model="$(conf_get "$hub" HUB_ROOT_MODEL)"; name="$(hub_label "$hub")"
   cl="$(conf_get "$hub" HUB_CLAUDE)"; cl="${cl:-claude}"; cfg="$(conf_get "$hub" HUB_CLAUDE_CONFIG_DIR)"
   command -v "$cl" > /dev/null 2>&1 || die 2 "$cl is not on PATH; install Claude Code first (ade setup does it)"
+  claude_update "$hub"
   enable_ade_plugin "$hub/.claude/settings.json" || exit 1
   cd "$hub" || die 1 "cannot enter $hub"
   HUB="$hub"; export HUB; [ -z "$cfg" ] || { CLAUDE_CONFIG_DIR="$cfg"; export CLAUDE_CONFIG_DIR; }
@@ -603,6 +626,7 @@ cmd_setup() {
       die 1 "install Claude Code yourself, then run ade setup again: $CLAUDE_INSTALL_CMD"
     curl --proto "$proto" --proto-redir "$proto" --tlsv1.2 -fsSL "$ADE_CLAUDE_INSTALLER" | bash || die 1 "the Claude Code installer failed; try: $CLAUDE_INSTALL_CMD"
     PATH="$HOME/.local/bin:$PATH"; command -v claude > /dev/null 2>&1 || die 1 "claude is still not on PATH; open a new terminal and run ade setup again"
+    claude_update
   fi
   local herr; herr="$(find_hub 2>&1 > /dev/null)"
   if [ -n "$herr" ] && ! printf '%s' "$herr" | grep -q "no hub found"; then echo "$herr" >&2; exit 2; fi

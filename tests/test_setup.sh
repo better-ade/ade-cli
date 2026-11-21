@@ -57,11 +57,12 @@ installer_asks_first() {   # AC1
   assert_contains "$T/out" "file://$T/inst/install.sh" "the prompt shows the URL that will run"
   assert_contains "$T/out" "curl -fsSL https://claude.ai/install.sh | bash" "names the manual command"
   assert_not_contains "$CALLS" "installer-ran" "nothing installed without a yes"
-  printf 'y\n' | bash "$ADE" setup > "$T/out" 2>&1
+  printf 'y\n' | ADE_NO_CLAUDE_UPDATE= bash "$ADE" setup > "$T/out" 2>&1
   assert_contains "$CALLS" "installer-ran" "a yes runs the installer"
+  [ "$(grep -n '^claude update' "$CALLS" | head -1 | cut -d: -f1)" -gt "$(grep -n 'installer-ran' "$CALLS" | cut -d: -f1)" ] 2>/dev/null || fail "installs, then updates"
   [ -x "$HOME/.local/bin/claude" ] || fail "claude installed"
 }
-no_claude_path() { local d="$T/noclaude"; mkdir -p "$d"; local c p; for c in git python3 bash sed awk grep mkdir cat dirname basename tr head tail mktemp mv chmod rm ls cp find sort env pwd date wc curl touch rmdir sleep; do
+no_claude_path() { local d="$T/noclaude"; mkdir -p "$d"; local c p; for c in git python3 bash sed awk grep mkdir cat dirname basename tr head tail mktemp mv chmod rm ls cp find sort env pwd date wc curl touch rmdir sleep cut kill; do
   p="$(command -v "$c")" && ln -sf "$p" "$d/$c"; done; echo "$d"; }
 
 account_signin() {   # AC2
