@@ -15,7 +15,9 @@ fi
 exec "$real" "\$@"
 W
 chmod +x "$wrap/bash"
-PATH="$wrap:$PATH" "$real" tests/run.sh; rc=$?
+# the hostile-input table (hundreds of calls that stop at the first check) adds little coverage and most of the time
+subset=""; for t in tests/test_*.sh; do t="${t#tests/}"; [ "$t" = test_hostile.sh ] || subset="$subset $t"; done
+ADE_TESTS="$subset" PATH="$wrap:$PATH" "$real" tests/run.sh; rc=$?
 [ "$rc" = 0 ] || { echo "coverage: the suite failed under kcov (exit $rc)" >&2; exit 1; }
 kcov --merge "$out" "$out"/runs/* > /dev/null || { echo "coverage: kcov could not merge the runs" >&2; exit 1; }
 pct="$(python3 - "$out/kcov-merged/coverage.json" <<'PY'
