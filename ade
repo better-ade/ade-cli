@@ -206,7 +206,7 @@ cmd_orchestrator() {
         --channel) [ $# -ge 2 ] || die 2 "--channel needs a name"; channels="$channels $2"; shift 2 ;;
         *) die 2 "$ORCH_USAGE" ;;
       esac; done
-      printf '%s' "$name" | grep -Eq '^[a-z0-9-]+$' || die 2 "orchestrator names are lower-case letters, digits and -"
+      [[ $name =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || die 2 "orchestrator names are lower-case letters, digits and - (a letter or digit first, at most 64)"
       [ -n "$hub" ] || die 2 "$ORCH_USAGE"
       is_hub "$hub" || die 2 "$hub is not a hub (no bin/lib.sh and hub.conf)"
       hub="$(cd "$hub" && pwd -P)"
