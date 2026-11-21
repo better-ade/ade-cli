@@ -186,7 +186,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade hub list` · `ade hub use <path>` | The hubs `ade` knows; switch the default | **built** (A3) |
 | `ade` (no arguments) | Say what to do next: the hub, its status and the next commands | **built** (A3) |
 | `ade claude [<folder>] [-- args]` | Claude Code at the hub root as the orchestrator; with a folder, `ade work <folder>` | **built** (A4) |
-| `ade setup [--check\|--test\|--top\|--telegram]` | Sign-in, providers and live tests, Telegram, hub, guided session | planned (A5) |
+| `ade setup [--check\|--test\|--top\|--telegram]` | Sign-in, providers and live tests, Telegram, hub, guided session | **built** (A5; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade ui` | One tmux window, a tab per agent, live busy/idle | planned (A6) |
 | `ade skills list\|enable\|disable\|search` | Skills and plugins on the fly, with a reload hint to running sessions | planned (A7) |
 

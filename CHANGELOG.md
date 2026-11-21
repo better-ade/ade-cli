@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- `ade setup [--check | --test [provider|telegram] | --top | --telegram]` (A5): installs Claude Code (asks first), makes
+  a hub when there is none, picks one everything agent and any focus providers (each signed in and live-tested; only
+  ready ones enter `HUB_PROVIDERS_ALLOWED`), offers Telegram, then a guided `ade claude` session. Keys and the bot
+  token go only to the hub's `bin/keys set <tool>` on stdin.
 - `ade claude [<folder>] [-- args]` (A4): Claude Code at the hub root with the hub's `HUB_ROOT_MODEL` and Remote
   Control named after the hub, the `ade@ade-skills` plugin enabled in the hub's settings; `--dangerously-skip-permissions`
   is refused.
