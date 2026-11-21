@@ -15,6 +15,7 @@ drop_t() {
 fresh() {
   unset ADE_HUB ADE_HOOK_BIN ADE_METHOD_REPO ADE_REGISTRY_REPO ADE_METHOD_REF ADE_REGISTRY_REF
   drop_t; T="$(mktemp -d "${TMPDIR:-/tmp}/ade-test.XXXXXX")"; T="$(cd "$T" && pwd -P)"; trap drop_t EXIT
+  export ADE_NO_CLAUDE_UPDATE=1   # the Claude Code update step is tested on its own (test_update.sh)
   export HOME="$T/home"; mkdir -p "$HOME"
   export GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 }
