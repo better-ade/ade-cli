@@ -32,6 +32,11 @@ Hub commands (run the hub's bin/ scripts):
 Orchestrators (one per hub, run by the hub's bin/chat):
   orchestrator  new <name> --hub <path> [--channel telegram] | start | stop | list | logs <name> [-n N] | remove
 
+Hubs:
+  hub         ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]
+              | ade hub list | ade hub use <path>
+  (none)      ade alone: the hub, its sessions and what to do next
+
 Project commands (no hub needed):
   init        copy ade-method at its pinned tag into this project (git top level, or --here); never overwrites
   agent       ade agent list | ade agent add <name>: specialists from ade-agent-registry
@@ -58,7 +63,7 @@ find_hub() {
     if [ -n "$h" ]; then is_hub "$h" && { echo "$h"; return; }
       die 2 "~/.config/ade/hub points to $h, which is not a hub"; fi
   fi
-  die 2 "no hub found: set ADE_HUB, run ade inside a hub, or put the hub's path in ~/.config/ade/hub"
+  die 2 "no hub found: set ADE_HUB, run ade inside a hub, or put the hub's path in ~/.config/ade/hub (no hub yet: ade hub new <name>)"
 }
 
 run_hub() {   # $1 = script name under bin/
@@ -250,6 +255,93 @@ EOF
   esac
 }
 
+# hubs: ~/.config/ade/hub is the default; ~/.config/ade/hubs lists every hub ade made or was pointed at (story A3)
+ADE_HUB_TEMPLATE="${ADE_HUB_TEMPLATE:-better-ade/ade-brain}"
+ADE_HUB_TEMPLATE_URL="${ADE_HUB_TEMPLATE_URL:-https://github.com/$ADE_HUB_TEMPLATE}"
+hub_label() { local n; n="$(conf_get "$1" HUB_NAME)"; echo "${n:-$(basename "$1")}"; }
+default_hub() { local h=""; [ -f "$CONF_DIR/hub" ] && IFS= read -r h < "$CONF_DIR/hub"; printf '%s' "$h"; }
+remember_hub() {   # <path>: make it the default and add it to the known list once
+  local p="$1"
+  { [ -f "$CONF_DIR/hubs" ] && grep -vxF -- "$p" "$CONF_DIR/hubs"; echo "$p"; } | write_conf_file hubs
+  echo "$p" | write_conf_file hub
+}
+
+cmd_hub() {
+  local sub="${1:-}"; [ $# -gt 0 ] && shift
+  case "$sub" in
+    new) hub_new "$@" ;;
+    list)
+      [ $# -eq 0 ] || die 2 "usage: ade hub list"
+      local d p; d="$(default_hub)"
+      { [ -f "$CONF_DIR/hubs" ] && cat "$CONF_DIR/hubs"; [ -n "$d" ] && echo "$d"; } | awk 'NF && !seen[$0]++' |
+        while IFS= read -r p; do
+          if [ "$p" = "$d" ]; then printf '* '; else printf '  '; fi
+          if is_hub "$p"; then echo "$p"; else echo "$p (missing)"; fi
+        done ;;
+    use)
+      [ $# -eq 1 ] || die 2 "usage: ade hub use <path>"
+      is_hub "$1" || die 2 "$1 is not a hub (no bin/lib.sh and hub.conf)"
+      local p; p="$(cd "$1" && pwd -P)"; remember_hub "$p"; echo "default hub: $p" ;;
+    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] | ade hub list | ade hub use <path>" ;;
+  esac
+}
+
+hub_ask() { printf '%s ' "$1"; IFS= read -r HUB_ANSWER || { echo; die 1 "stopped: no answer"; }; [ -t 0 ] || echo
+  [ -n "$HUB_ANSWER" ] || die 2 "an answer is needed"; }
+
+hub_new() {
+  local name="${1:-}" vis=--private dir="$HOME/hubs" gh=1 target persona="" client="" owner=""; [ $# -gt 0 ] && shift
+  while [ $# -gt 0 ]; do case "$1" in
+    --private|--public) vis="$1"; shift ;;
+    --persona|--client|--owner) [ $# -ge 2 ] && [ -n "$2" ] || die 2 "$1 needs a value"
+      case "$1" in --persona) persona="$2" ;; --client) client="$2" ;; *) owner="$2" ;; esac; shift 2 ;;
+    --dir) [ $# -ge 2 ] || die 2 "--dir needs a folder"; dir="$2"; shift 2 ;;
+    --no-github) gh=0; shift ;;
+    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]" ;;
+  esac; done
+  printf '%s' "$name" | grep -Eq '^[a-z0-9-]+$' || die 2 "hub names are lower-case letters, digits and - (e.g. acme-sre)"
+  case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+  target="$dir/$name"
+  [ ! -e "$target" ] || die 2 "$target already exists; pick another name or --dir"
+  if [ "$gh" = 1 ]; then
+    command -v gh > /dev/null 2>&1 || die 2 "gh (GitHub CLI) is not installed: install it, or pass --no-github for a local hub"
+    mkdir -p "$dir" || die 1 "cannot create $dir"
+    (cd "$dir" && gh repo create "$name" --template "$ADE_HUB_TEMPLATE" "$vis" --clone) || die 1 "gh could not create $name"
+  else
+    mkdir -p "$dir" || die 1 "cannot create $dir"
+    git clone -q "$ADE_HUB_TEMPLATE_URL" "$target" || die 1 "could not clone $ADE_HUB_TEMPLATE_URL"
+    git -C "$target" remote remove origin 2> /dev/null
+  fi
+  [ -x "$target/bin/init" ] || die 1 "$target has no bin/init; is $ADE_HUB_TEMPLATE the hub template?"
+  echo "hub $name created in $target"
+  # bin/init needs a persona, the client and the owner: the flags, else asked here
+  if [ -z "$persona" ]; then echo "Personas:"; (cd "$target" && ./bin/init --list) 2> /dev/null | sed 's/^/  /'
+    hub_ask "Persona for this hub (one of the names above):"; persona="$HUB_ANSWER"; fi
+  [ -n "$client" ] || { hub_ask "Client or team this hub works for:"; client="$HUB_ANSWER"; }
+  [ -n "$owner" ] || { hub_ask "Owner (your name, as it should appear in the hub):"; owner="$HUB_ANSWER"; }
+  (cd "$target" && HUB="$target" && export HUB && ./bin/init --persona "$persona" --client "$client" --owner "$owner" --name "$name") ||
+    die 1 "bin/init did not finish: run it again with cd $target && bin/init --persona <p> --client <c> --owner <o> --name $name"
+  is_hub "$target" || die 1 "bin/init wrote no hub.conf: run it again with cd $target && bin/init"
+  target="$(cd "$target" && pwd -P)"; remember_hub "$target"
+  echo "default hub: $target"; echo "next: ade (what to do next)"
+}
+
+# ade with no arguments: what to do next (story A3)
+cmd_home() {
+  local hub err; err="$(mktemp)"
+  if ! hub="$(find_hub 2> "$err")"; then
+    grep -q "no hub found" "$err" || cat "$err" >&2; rm -f "$err"
+    echo 'no hub yet: run `ade hub new <name>`'; return 0
+  fi
+  rm -f "$err"
+  echo "hub: $(hub_label "$hub") ($hub)"
+  [ -x "$hub/bin/sessions" ] && (HUB="$hub"; export HUB; "$hub/bin/sessions")
+  echo "next:"
+  echo "  ade work <folder>    start a focus agent on a folder"
+  echo "  ade dispatch         hand a ready ticket to an agent"
+  echo "  ade help             every command"
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -258,7 +350,7 @@ cmd_version() {
   echo "ade ${v:-unknown}"
 }
 
-cmd="${1:-help}"; [ $# -gt 0 ] && shift
+cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   work|dispatch|notify|chat|method|keys|models|roles|doctor|sync|context) run_hub "$cmd" "$@" ;;
   status) run_hub sessions "$@" ;;
@@ -266,6 +358,8 @@ case "$cmd" in
   init) cmd_init "$@" ;;
   agent) cmd_agent "$@" ;;
   skills) cmd_skills "$@" ;;
+  "") cmd_home ;;
+  hub) cmd_hub "$@" ;;
   orchestrator) cmd_orchestrator "$@" ;;
   open) cmd_open "$@" ;;
   version|--version|-v) cmd_version ;;

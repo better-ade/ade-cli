@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+- `ade hub new <name> [--private|--public] [--dir] [--no-github]`, `ade hub list|use`, and `ade` alone saying what
+  to do next (A3); `install.sh` piped from curl installs the release tag main's `VERSION` names.
 - `ade orchestrator new|start|stop|list|logs|remove` (A2): named orchestrators, one per hub, in
   `~/.config/ade/orchestrators` (0600); the hub's `bin/chat` does the work (`.ade/context/hub-interface.md`).
 
