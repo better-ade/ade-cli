@@ -13,7 +13,12 @@ Verification command: `bash tests/run.sh`.
    hidden prompt into `bin/keys`), then a **live test**: one tiny read-only task in a throwaway folder ("reply with the
    word READY"), timed, through the same path a real focus agent uses. Result per provider: ready, failed (with the
    reason), or skipped. Only ready providers can be put in a role; the role table is written from them.
-3. `ade setup --test [provider]` re-runs the live tests any time.
+3. **Telegram (optional, asked after the providers):** "Do you want to reach your everything agent from Telegram?"
+   Yes: explains creating a bot with @BotFather in three lines, reads the bot token with a hidden prompt into
+   `bin/keys set telegram` (never echoed, never argv, never a file in the repo), then runs the hub's
+   `bin/chat setup telegram` (C5): pair the user's Telegram account, switch the allowlist on, send a test message and
+   wait for the user's reply in Telegram. No: skipped, and `ade setup --telegram` adds it later.
+4. `ade setup --test [provider|telegram]` re-runs the live tests any time.
 
 `ade setup` takes a new user from nothing to a working hub and project:
 1. **Claude Code:** installs it with the official installer when `claude` is missing (asks first).
@@ -43,4 +48,5 @@ Verification command: `bash tests/run.sh`.
 | 8 | The top agent is asked first and only one can be chosen; Gemini is not offered for it |
 | 9 | Focus providers are multi-select; each selected one is signed in and live-tested; a failed test leaves it out of every role, with the reason shown |
 | 11 | GPT and Codex are never offered |
+| 12 | Telegram is asked once after the providers; the token is read without echo and goes only to `bin/keys set telegram` on stdin; then `bin/chat setup telegram` runs; "no" skips it, and `--telegram` runs this step alone |
 | 10 | `--test` re-runs the live tests and changes nothing else; the test runs in a throwaway folder and never in a real checkout |
