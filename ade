@@ -2,6 +2,8 @@
 # ade: one command for ADE in any terminal. Hub commands run the hub's own bin/ scripts (the single source of truth);
 # project commands copy ade-method and registry files at their pinned tags. Bash 3.2 and Linux bash.
 set -u
+# names ade uses for typed answers and secrets: never inherited, so an exported one cannot carry a key to a child
+unset SECRET ANSWER HUB_ANSWER
 ADE_VERSION=""   # install.sh stamps this; a repo checkout reads VERSION beside the script
 ADE_METHOD_REPO="${ADE_METHOD_REPO:-https://github.com/better-ade/ade-method}"
 ADE_METHOD_REF="${ADE_METHOD_REF:-v2.0.0}"
@@ -33,6 +35,7 @@ Orchestrators (one per hub, run by the hub's bin/chat):
   orchestrator  new <name> --hub <path> [--channel telegram] | start | stop | list | logs <name> [-n N] | remove
 
 Hubs:
+  setup       ade setup [--check | --test [provider|telegram] | --top | --telegram]: sign in, providers, Telegram, hub, guided session
   claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root; with a folder, ade work <folder>
   hub         ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]
               | ade hub list | ade hub use <path>
@@ -76,12 +79,18 @@ run_hub() {   # $1 = script name under bin/
   exec "$hub/bin/$script" "$@"
 }
 
+# mk_tmp: a fresh temp folder under the temp root, or failure (never an empty or current path);
+# rm_tmp <path>: removes only a folder mk_tmp made (under the temp root, named ade.*)
+TMP_ROOT="${TMPDIR:-/tmp}"; TMP_ROOT="${TMP_ROOT%/}"
+mk_tmp() { local d; d="$(mktemp -d "$TMP_ROOT/ade.XXXXXX" 2> /dev/null)" && [ -n "$d" ] && [ -d "$d" ] || return 1; printf '%s' "$d"; }
+rm_tmp() { case "${1:-}" in "$TMP_ROOT"/ade.?*) [ -d "$1" ] && rm -rf -- "$1" ;; esac; return 0; }
+
 # fetch <repo> <ref>: a temp checkout of repo at ref; prints its path
 fetch() {
-  local tmp err; tmp="$(mktemp -d)"
+  local tmp err; tmp="$(mk_tmp)" || die 1 "could not make a temp folder"
   if [ -d "$1" ]; then err="$(git clone -q --branch "$2" "$1" "$tmp/src" 2>&1)"
   else err="$(git -c advice.detachedHead=false clone -q --depth 1 --branch "$2" "$1" "$tmp/src" 2>&1)"; fi \
-    || { rm -rf "$tmp"; die 1 "could not fetch $1 at $2: $(printf '%s\n' "$err" | tail -1)"; }
+    || { rm_tmp "$tmp"; die 1 "could not fetch $1 at $2: $(printf '%s\n' "$err" | tail -1)"; }
   echo "$tmp/src"
 }
 
@@ -102,7 +111,7 @@ project_root() {
 cmd_init() {
   project_root "$@"
   local src f list old=""; src="$(fetch "$ADE_METHOD_REPO" "$ADE_METHOD_REF")" || exit $?
-  trap 'rm -rf "$(dirname "$src")"' EXIT
+  trap 'rm_tmp "$(dirname "$src")"' EXIT
   list="$(dirname "$src")/list"; : > "$list"   # src<TAB>dest, read without a subshell so put's counts and exits hold
   [ -f "$src/rules.md" ] && printf '%s\t%s\n' "$src/rules.md" .ade/rules.md >> "$list"
   for f in "$src"/agents/*.md; do [ -f "$f" ] && printf '%s\t%s\n' "$f" ".ade/agents/$(basename "$f")" >> "$list"; done
@@ -144,10 +153,10 @@ cmd_agent() {
     echo "$rows" | while IFS="$(printf '\t')" read -r name file desc; do printf '%-20s %s\n' "$name" "$desc"; done
   else
     file="$(echo "$rows" | awk -F '\t' -v n="$2" '$1 == n { print $2; exit }')"
-    if [ -z "$file" ] || [ ! -f "$src/$file" ]; then rm -rf "$(dirname "$src")"; die 2 "no specialist named $2; ade agent list shows them"; fi
+    if [ -z "$file" ] || [ ! -f "$src/$file" ]; then rm_tmp "$(dirname "$src")"; die 2 "no specialist named $2; ade agent list shows them"; fi
     put "$src/$file" ".ade/agents/$2.md"
   fi
-  rm -rf "$(dirname "$src")"
+  rm_tmp "$(dirname "$src")"
 }
 
 cmd_skills() {
@@ -414,6 +423,226 @@ cmd_claude() {
   exec "$cl" "$@"
 }
 
+# ade setup: sign in, providers with live tests, Telegram, the hub, then a guided session (story A5).
+# Keys and tokens: read with a hidden prompt into a shell variable (never exported) and written only to the hub's
+# bin/keys set <tool> on stdin; never argv, a file, a log or a child's environment.
+ADE_CLAUDE_INSTALLER="${ADE_CLAUDE_INSTALLER:-https://claude.ai/install.sh}"
+CLAUDE_INSTALL_CMD="curl -fsSL https://claude.ai/install.sh | bash"
+KEY_PROVIDERS="anthropic deepseek glm muse gemini"   # the ones that can be signed in with a key
+LIVE_PROVIDERS="anthropic gemini deepseek glm muse"
+LIVE_TASK="Reply with the word READY and nothing else."
+
+ask() {   # ask <prompt>: one answer line into ANSWER; no answer (end of input) stops setup
+  printf '%s ' "$1"; IFS= read -r ANSWER || { echo; die 1 "setup stopped: no answer"; }
+  [ -t 0 ] || echo
+}
+ask_secret() {   # ask_secret <prompt>: a hidden answer into SECRET (not echoed, not exported)
+  printf '%s ' "$1"
+  if [ -t 0 ]; then IFS= read -rs SECRET || die 1 "setup stopped: no answer"; else IFS= read -r SECRET || die 1 "setup stopped: no answer"; fi
+  echo
+}
+yes_no() { ask "$1 [y/N]"; case "$ANSWER" in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac; }
+hub_run() { local hub="$1" s="$2"; shift 2; [ -x "$hub/bin/$s" ] || die 2 "this hub has no bin/$s; update it"; ( HUB="$hub"; export HUB; "$hub/bin/$s" "$@" ); }
+
+store_key() {   # store_key <hub> <tool>: hidden prompt, then the hub's bin/keys set <tool> on stdin; 1 = skipped
+  local hub="$1" tool="$2"
+  ask_secret "Paste the $tool key (hidden; empty skips):"
+  [ -n "$SECRET" ] || { SECRET=""; return 1; }
+  printf '%s\n' "$SECRET" | hub_run "$hub" keys set "$tool" > /dev/null; local rc=$?
+  SECRET=""; [ "$rc" = 0 ] || die 1 "bin/keys could not store the $tool key"
+  echo "$tool key stored in the hub's key store"
+}
+
+# live_test <hub> <provider>: one tiny read-only task in a throwaway folder through the hub's bin/agent --live-test.
+# Prints "<p>: ready (Ns)" or "<p>: failed (<reason>)"; returns 0 only when ready.
+SCRUB_VARS="ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_OAUTH_TOKEN
+  CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX DEEPSEEK_API_KEY GEMINI_API_KEY GOOGLE_API_KEY ZAI_API_KEY GLM_API_KEY
+  TELEGRAM_BOT_TOKEN"
+# redact: hide key-shaped strings and Telegram bot tokens in text ade prints
+redact() { sed -E 's#bot[0-9]+:[A-Za-z0-9_-]+#bot<hidden>#g; s#(sk|pk|ak|key)-[A-Za-z0-9_-]{8,}#<hidden key>#g; s#[A-Za-z0-9_-]{32,}#<hidden>#g'; }
+live_test() {
+  local hub="$1" p="$2" tmp out rc t0 why
+  tmp="$(mk_tmp)" || { echo "$p: failed (no temp folder)"; return 1; }
+  t0=$(date +%s)
+  # run from the throwaway folder only; no provider key or backend switch from this shell reaches the test
+  out="$(cd "$tmp" && { unset $SCRUB_VARS; printf '%s\n' "$LIVE_TASK" | AGENT_TIMEOUT=120 hub_run "$hub" agent --live-test "$p" --dir "$tmp"; } 2>&1)"; rc=$?
+  rm_tmp "$tmp"
+  if [ "$rc" = 0 ] && printf '%s\n' "$out" | tr -d '\r' | grep -qx '[[:space:]]*READY[[:space:]]*'; then
+    echo "$p: ready ($(( $(date +%s) - t0 ))s)"; return 0; fi
+  why="$(printf '%s\n' "$out" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -1 | redact | cut -c1-200)"
+  [ "$rc" = 0 ] && [ -n "$why" ] && why="no READY line; it said: $why"
+  echo "$p: failed (${why:-exit $rc})"; return 1
+}
+
+claude_signed_in() { claude auth status > /dev/null 2>&1; }
+key_stored() { hub_run "$1" keys 2> /dev/null | grep -Eq "^$2 +stored"; }
+
+# sign_in <hub> <provider> [account|key]: account = Claude Code's own login (ade stores nothing); else a key
+SIGNED=""
+sign_in() {
+  local hub="$1" p="$2" how="${3:-}"
+  case " $SIGNED " in *" $p "*) return 0 ;; esac
+  if [ "$p" = anthropic ]; then
+    if [ -z "$how" ]; then
+      if claude_signed_in || key_stored "$hub" anthropic; then SIGNED="$SIGNED $p"; return 0; fi
+      ask "Claude Code: sign in with your Claude account (a) or an Anthropic API key (k)? [a/k]"
+      case "$ANSWER" in k|K) how=key ;; *) how=account ;; esac
+    fi
+    if [ "$how" = account ]; then
+      claude_signed_in || claude auth login || { echo "anthropic: sign-in did not finish"; return 1; }
+      SIGNED="$SIGNED $p"; return 0
+    fi
+  fi
+  if [ "$p" = gemini ] && command -v "${ADE_GEMINI_CLI:-gemini}" > /dev/null 2>&1; then
+    ask "Gemini: sign in with your Google account in the Gemini CLI (a) or a Gemini API key (k)? [a/k]"
+    case "$ANSWER" in k|K) ;; *) echo "The Gemini CLI opens: pick \"Login with Google\", then leave it (/quit); ade stores nothing."
+      "${ADE_GEMINI_CLI:-gemini}" || { echo "gemini: sign-in did not finish"; return 1; }; SIGNED="$SIGNED $p"; return 0 ;; esac
+  fi
+  store_key "$hub" "$p" || { echo "$p: skipped (no key)"; return 1; }
+  SIGNED="$SIGNED $p"
+}
+
+unsign() { SIGNED=" $(printf '%s' " $SIGNED " | sed "s/ $1 / /g") "; }   # a failed provider asks for its key again
+READY=""
+provider_ready() {   # sign in, then the live test once per provider; READY collects the ones that passed
+  case " $READY " in *" $2 "*) echo "$2: ready (tested above)"; return 0 ;; esac
+  sign_in "$@" || return 1
+  live_test "$1" "$2" || { unsign "$2"; return 1; }
+  READY="$READY $2"
+}
+
+# conf_set <hub> <KEY> <value>: replace or add one hub.conf line (shell-quoted), atomically
+conf_set() {
+  python3 - "$1/hub.conf" "$2" "$3" <<'PY' || die 1 "could not write hub.conf"
+import os, re, shlex, sys
+p, k, v = sys.argv[1:4]
+lines = open(p).read().splitlines(); line = "%s=%s" % (k, shlex.quote(v)); done = False
+for i, l in enumerate(lines):
+    if re.match(r"^%s=" % re.escape(k), l):
+        lines[i] = line; done = True
+if not done:
+    lines.append(line)
+open(p + ".ade-tmp", "w").write("\n".join(lines) + "\n"); os.replace(p + ".ade-tmp", p)
+PY
+}
+
+setup_top() {   # the everything agent: exactly one; GLM and Muse only after their live check passes
+  local hub="$1" p how
+  while :; do
+    echo "Your everything agent (the orchestrator, one only; change it later with ade setup --top):"
+    echo "  1) Claude Code with your Claude account (Pro, Max, Team, Enterprise)"
+    echo "  2) Claude Code with an Anthropic API key"
+    echo "  3) DeepSeek"
+    echo "  4) GLM (needs the live check)"
+    echo "  5) Muse (needs the live check)"
+    ask "Pick one [1-5]:"
+    how=""; case "$ANSWER" in
+      1) p=anthropic; how=account ;; 2) p=anthropic; how=key ;; 3) p=deepseek ;; 4) p=glm ;; 5) p=muse ;;
+      *) echo "pick one number from 1 to 5"; continue ;;
+    esac
+    sign_in "$hub" "$p" $how || continue
+    if live_test "$hub" "$p"; then READY="$READY $p"; conf_set "$hub" HUB_ROOT_PROVIDER "$p"
+      local old; old="$(conf_get "$hub" HUB_PROVIDERS_ALLOWED)"   # the new top plus the old list
+      conf_set "$hub" HUB_PROVIDERS_ALLOWED "$(printf '%s\n' $p $old | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//')"
+      echo "everything agent: $p"; return 0; fi
+    unsign "$p"
+    case "$p" in glm|muse) echo "$p cannot be the everything agent until its live check passes" ;;
+      *) echo "$p failed its live test; pick it again once fixed, or another" ;; esac
+  done
+}
+
+setup_focus() {   # focus agents: several; each signed in and live-tested; only ready ones enter the roles
+  local hub="$1" n p allowed="" top
+  echo "Your focus agents (pick any; each is signed in and live-tested):"
+  echo "  1) Claude Code   2) Gemini (Gemini CLI)   3) DeepSeek   4) GLM (needs the live check)   5) Muse (needs the live check)"
+  ask "Numbers separated by spaces (empty for none):"
+  for n in $(printf '%s' "$ANSWER" | tr ',' ' '); do
+    case "$n" in 1) p=anthropic ;; 2) p=gemini ;; 3) p=deepseek ;; 4) p=glm ;; 5) p=muse ;; *) echo "skipped $n (not 1-5)"; continue ;; esac
+    provider_ready "$hub" "$p" || true
+  done
+  top="$(conf_get "$hub" HUB_ROOT_PROVIDER)"
+  for p in $top $READY; do case " $allowed " in *" $p "*) ;; *) allowed="${allowed:+$allowed }$p" ;; esac; done
+  conf_set "$hub" HUB_PROVIDERS_ALLOWED "$allowed"
+  echo "providers in the roles: $allowed (HUB_PROVIDERS_ALLOWED); bin/roles shows which model each role gets"
+}
+
+setup_telegram() {
+  local hub="$1"
+  yes_no "Do you want to reach your everything agent from Telegram?" || { echo "Telegram skipped (later: ade setup --telegram)"; return 0; }
+  echo "1. In Telegram, open @BotFather and send /newbot."
+  echo "2. Give the bot a name; BotFather replies with its token."
+  echo "3. Paste the token below; it goes only to the hub's key store."
+  ask_secret "Bot token (hidden):"
+  [ -n "$SECRET" ] || { echo "Telegram skipped (no token)"; return 0; }
+  printf '%s\n' "$SECRET" | hub_run "$hub" keys set telegram > /dev/null; local rc=$?; SECRET=""
+  [ "$rc" = 0 ] || die 1 "bin/keys could not store the Telegram token"
+  hub_run "$hub" chat setup telegram
+}
+
+setup_check() {   # one line per step; reads only
+  local hub="" n=0 keys="" p ch d
+  if command -v claude > /dev/null 2>&1; then echo "claude code: installed ($(command -v claude))"; else echo "claude code: missing"; fi
+  hub="$(find_hub 2> /dev/null)" || hub=""
+  if command -v claude > /dev/null 2>&1 && claude_signed_in; then echo "sign-in: signed in (account)"
+  else
+    [ -n "$hub" ] && for p in $KEY_PROVIDERS; do key_stored "$hub" "$p" && keys="${keys:+$keys, }$p"; done
+    if [ -n "$keys" ]; then echo "sign-in: signed in (key: $keys)"; else echo "sign-in: not signed in"; fi
+  fi
+  if [ -z "$hub" ]; then echo "hub: none (ade hub new <name>)"; echo "projects: none"; echo "channel: none"; return 0; fi
+  echo "hub: $hub"
+  for d in "$hub"/projects/*/; do [ -d "$d" ] && n=$((n + 1)); done; echo "projects: $n"
+  ch="$(conf_get "$hub" HUB_CHANNELS)"; echo "channel: ${ch:-none}"
+}
+
+setup_test() {   # --test [provider|telegram]: re-run live tests; changes nothing
+  local hub what="${1:-}" p rc=0; hub="$(find_hub)" || exit $?
+  case "$what" in
+    telegram) hub_run "$hub" chat test telegram; return $? ;;
+    "") what="$(conf_get "$hub" HUB_PROVIDERS_ALLOWED)"; [ -n "$what" ] || what=anthropic ;;
+    *) case " $LIVE_PROVIDERS " in *" $what "*) ;; *) die 2 "unknown provider $what (known: $LIVE_PROVIDERS, telegram)" ;; esac ;;
+  esac
+  for p in $what; do live_test "$hub" "$p" || rc=1; done
+  return $rc
+}
+
+SETUP_PROMPT="Run the ADE setup guide for this hub. Ask me in plain words about my projects and my work first. Then propose a plan and carry it out one step at a time, and ask before each change (wait for my yes): 1) ade init in each project; 2) ade agent add for the specialists each project needs; 3) ade skills add for useful ade-skills plugins; 4) set the role models with bin/models; 5) offer the Telegram channel with bin/chat setup telegram. Say what each step changes before you run it."
+
+cmd_setup() {
+  local mode="${1:-}" hub name
+  case "$mode" in
+    --check) [ $# -eq 1 ] || die 2 "usage: ade setup --check"; setup_check; return 0 ;;
+    --test) [ $# -le 2 ] || die 2 "usage: ade setup --test [provider|telegram]"; setup_test "${2:-}"; exit $? ;;
+    --top|--telegram) [ $# -eq 1 ] || die 2 "usage: ade setup $mode"; hub="$(find_hub)" || exit $?
+      if [ "$mode" = --top ]; then setup_top "$hub"; else setup_telegram "$hub"; fi; return ;;
+    "") ;;
+    *) die 2 "usage: ade setup [--check | --test [provider|telegram] | --top | --telegram]" ;;
+  esac
+  if ! command -v claude > /dev/null 2>&1; then
+    local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"   # file:// only for tests
+    case "$ADE_CLAUDE_INSTALLER" in https://*) ;; file://*) [ "$proto" != "=https" ] || die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;;
+      *) die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;; esac
+    yes_no "Claude Code is not installed. Install it now? This runs: curl -fsSL $ADE_CLAUDE_INSTALLER | bash" ||
+      die 1 "install Claude Code yourself, then run ade setup again: $CLAUDE_INSTALL_CMD"
+    curl --proto "$proto" --proto-redir "$proto" --tlsv1.2 -fsSL "$ADE_CLAUDE_INSTALLER" | bash || die 1 "the Claude Code installer failed; try: $CLAUDE_INSTALL_CMD"
+    PATH="$HOME/.local/bin:$PATH"; command -v claude > /dev/null 2>&1 || die 1 "claude is still not on PATH; open a new terminal and run ade setup again"
+    claude_update
+  fi
+  local herr; herr="$(find_hub 2>&1 > /dev/null)"
+  if [ -n "$herr" ] && ! printf '%s' "$herr" | grep -q "no hub found"; then echo "$herr" >&2; exit 2; fi
+  if ! hub="$(find_hub 2> /dev/null)"; then
+    echo "No hub yet: ade makes one now (ade hub new)."
+    ask "Name for your hub (lower-case letters, digits and -, e.g. acme-sre):"; name="$ANSWER"
+    if yes_no "Create it as a private GitHub repository (needs gh)?"; then (hub_new "$name") || exit $?
+    else (hub_new "$name" --no-github) || exit $?; fi
+    hub="$(find_hub)" || exit $?
+  fi
+  setup_top "$hub"
+  setup_focus "$hub"
+  setup_telegram "$hub"
+  echo "Starting the guided session (ade claude); it asks before each change."
+  cmd_claude -- --permission-mode default "$SETUP_PROMPT"
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -432,6 +661,7 @@ case "$cmd" in
   skills) cmd_skills "$@" ;;
   "") cmd_home ;;
   claude) cmd_claude "$@" ;;
+  setup) cmd_setup "$@" ;;
   hub) cmd_hub "$@" ;;
   orchestrator) cmd_orchestrator "$@" ;;
   open) cmd_open "$@" ;;

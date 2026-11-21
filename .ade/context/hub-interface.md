@@ -15,6 +15,23 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - `HUB_ROOT_MODEL` (the orchestrator's model), `HUB_CLAUDE` (the claude command, default `claude`),
   `HUB_CLAUDE_CONFIG_DIR` (exported as `CLAUDE_CONFIG_DIR`): `ade claude` (A4).
 
+- `ade setup` writes two keys (A5), each one line, shell-quoted, replaced in place: `HUB_ROOT_PROVIDER` (the everything
+  agent's provider: `anthropic`, `deepseek`, `glm` or `muse`) and `HUB_PROVIDERS_ALLOWED` (the top provider plus every
+  focus provider whose live test passed). It reads `HUB_PROVIDERS_ALLOWED` for `ade setup --test`.
+
+## `ade setup` and the hub (A5)
+- Provider ids: `anthropic`, `gemini`, `deepseek`, `glm`, `muse`. GPT and Codex are never offered. Gemini is a focus
+  provider only.
+- `bin/keys set <tool>` reads the value on stdin (tools `anthropic`, `deepseek`, `glm`, `muse`, `gemini`, `telegram`);
+  `bin/keys` (no arguments) prints `<tool> stored` lines for stored keys and never a value.
+- `bin/agent --live-test <provider> --dir <throwaway folder>`: the task (one line) on stdin, run from that folder through
+  the path a real focus agent uses; exit 0 with a line that is exactly `READY` (spaces and CR ignored) = ready; else the last output line,
+  with key-shaped strings and Telegram bot tokens hidden, is the reason. It runs with provider key and backend
+  variables (`ANTHROPIC_*`, `CLAUDE_CODE_OAUTH_TOKEN`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, ...) unset.
+  `ade` makes and removes the folder (never a checkout) and sets `AGENT_TIMEOUT=120`.
+- `bin/chat setup telegram` (after the token is stored) and `bin/chat test telegram` (`ade setup --test telegram`).
+- Claude Code: `claude auth status` (exit 0 = signed in with an account) and `claude auth login`.
+
 ## The hub's `.claude/settings.json` (A4)
 - `ade claude` adds, only when absent: `extraKnownMarketplaces["ade-skills"] = {"source": {"source": "github", "repo":
   "better-ade/ade-skills"}}` and `enabledPlugins["ade@ade-skills"] = true`. Every other key is kept; invalid JSON is
