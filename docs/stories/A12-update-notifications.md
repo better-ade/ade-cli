@@ -13,7 +13,11 @@ there is a new version, through a JSON file that `ade` checks.
    cache; offline means try tomorrow. It notifies **once per new version**: a banner on the next `ade` command, a badge
    in `ade ui`'s tab bar, and one Telegram line through the orchestrator when a channel is set up. `security` urgency
    repeats on every command until updated. `ADE_NO_UPDATE_CHECK=1` turns it off.
-3. **`ade update`** (A11) installs a file only when its sha256 matches the manifest; a mismatch refuses and says so.
+3. **Auto-update (owner, 2026-11-21: "if there's a new version, push new"):** on the daily check, patch and minor
+   versions are installed automatically through `ade update` (A11: atomic, sha256-verified, no session stopped), then
+   one line says what was updated; `security` urgency installs at once; a major version or a version whose
+   `min_supported` is above the installed one asks first. `ADE_NO_AUTO_UPDATE=1` keeps notify-only.
+4. **`ade update`** (A11) installs a file only when its sha256 matches the manifest; a mismatch refuses and says so.
    The one-line installer (A3) checks the same sha256.
 
 ## Acceptance criteria (fake release server folder, no network)
@@ -26,3 +30,4 @@ there is a new version, through a JSON file that `ade` checks.
 | 5 | A sha256 mismatch makes `ade update` and the installer refuse and keep the old version |
 | 6 | Offline, a 404 or a malformed manifest never blocks or slows a command by more than 2 s, and is retried tomorrow |
 | 7 | `ADE_NO_UPDATE_CHECK=1` makes no request |
+| 8 | Patch/minor auto-install on the daily check (then one line); security installs at once; major or min_supported jumps ask; `ADE_NO_AUTO_UPDATE=1` only notifies |
