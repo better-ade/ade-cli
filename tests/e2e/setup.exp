@@ -1,0 +1,14 @@
+#!/usr/bin/expect -f
+# story A8 layer 6: drive `ade setup --top` on a real pseudo-terminal and type a key at the hidden prompt.
+# argv: <ade> <log>; the key comes on stdin (never argv); the screen is logged to <log> for the caller's checks.
+set timeout 20
+lassign $argv ade log
+gets stdin key
+log_file -noappend $log
+spawn /bin/bash $ade setup --top
+expect "Pick one" { send "3\r" } timeout { exit 2 }
+expect "hidden" { send "$key\r" } timeout { exit 3 }
+expect "everything agent: deepseek" {} timeout { exit 4 }
+expect eof
+catch wait result
+exit [lindex $result 3]

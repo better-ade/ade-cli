@@ -53,6 +53,9 @@ The hub is $ADE_HUB, else the nearest folder above with bin/lib.sh and hub.conf,
 HELP
 }
 
+# matches <text> <ERE>: the whole text (newlines included) matches; never a per-line grep
+matches() { [[ $1 =~ $2 ]]; }
+
 is_hub() { [ -f "$1/bin/lib.sh" ] && [ -f "$1/hub.conf" ]; }
 
 find_hub() {
@@ -63,8 +66,10 @@ find_hub() {
   local cfg="$HOME/.config/ade/hub" h=""
   if [ -f "$cfg" ]; then
     IFS= read -r h < "$cfg"; h="$(printf '%s' "$h" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    # shellcheck disable=SC2088  # a literal ~ in the file is expanded here on purpose
     case "$h" in "~") h="$HOME" ;; "~/"*) h="$HOME/${h#\~/}" ;; esac
     if [ -n "$h" ]; then is_hub "$h" && { echo "$h"; return; }
+      # shellcheck disable=SC2088  # the message names the file as the user writes it
       die 2 "~/.config/ade/hub points to $h, which is not a hub"; fi
   fi
   die 2 "no hub found: set ADE_HUB, run ade inside a hub, or put the hub's path in ~/.config/ade/hub (no hub yet: ade hub new <name>)"
@@ -226,6 +231,7 @@ skills_folder() {
   for d in "$hub"/projects/*/ "$hub"/ops/*/; do
     [ -f "$d/ACCESS.md" ] || continue
     for c in $(awk -F'|' '/^\|/ { c = $3; gsub(/^[ \t]+|[ \t]+$/, "", c); if (c ~ /^[\/~]/) print c }' "$d/ACCESS.md"); do
+      # shellcheck disable=SC2088  # a literal ~ in ACCESS.md is expanded here on purpose
       case "$c" in "~/"*) c="$HOME/${c#\~/}" ;; esac
       [ -d "$c" ] && [ "$(cd "$c" && pwd -P)" = "$top" ] && { f="${d%/}"; echo "${f#"$hub"/}"; return 0; }
     done
@@ -323,7 +329,7 @@ cmd_orchestrator() {
         --channel) [ $# -ge 2 ] || die 2 "--channel needs a name"; channels="$channels $2"; shift 2 ;;
         *) die 2 "$ORCH_USAGE" ;;
       esac; done
-      printf '%s' "$name" | grep -Eq '^[a-z0-9-]+$' || die 2 "orchestrator names are lower-case letters, digits and -"
+      matches "$name" '^[a-z0-9][a-z0-9-]{0,63}$' || die 2 "orchestrator names are lower-case letters, digits and - (start with a letter or digit, at most 64)"
       [ -n "$hub" ] || die 2 "$ORCH_USAGE"
       is_hub "$hub" || die 2 "$hub is not a hub (no bin/lib.sh and hub.conf)"
       hub="$(cd "$hub" && pwd -P)"
@@ -355,7 +361,7 @@ EOF
       name="${1:-}"; [ $# -gt 0 ] && shift; n=50
       [ -n "$name" ] || die 2 "$ORCH_USAGE"
       if [ $# -gt 0 ]; then { [ "$1" = -n ] && [ $# -eq 2 ]; } || die 2 "$ORCH_USAGE"; n="$2"; fi
-      printf '%s' "$n" | grep -Eq '^[1-9][0-9]{0,5}$' || die 2 "-n needs a number of lines"
+      matches "$n" '^[1-9][0-9]{0,5}$' || die 2 "-n needs a number of lines"
       hub="$(orch_hub "$name")"; [ -n "$hub" ] || die 2 "no orchestrator named $name; ade orchestrator list shows them"
       is_hub "$hub" || die 2 "the hub of $name ($hub) is gone"
       chat "$hub" logs -n "$n"; exit $? ;;
@@ -416,7 +422,7 @@ hub_new() {
     --no-github) gh=0; shift ;;
     *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]" ;;
   esac; done
-  printf '%s' "$name" | grep -Eq '^[a-z0-9-]+$' || die 2 "hub names are lower-case letters, digits and - (e.g. acme-sre)"
+  matches "$name" '^[a-z0-9][a-z0-9-]{0,63}$' || die 2 "hub names are lower-case letters, digits and - (start with a letter or digit, at most 64; e.g. acme-sre)"
   case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
   target="$dir/$name"
   [ ! -e "$target" ] || die 2 "$target already exists; pick another name or --dir"
@@ -670,7 +676,7 @@ cmd_setup() {
   local mode="${1:-}" hub name
   case "$mode" in
     --check) [ $# -eq 1 ] || die 2 "usage: ade setup --check"; setup_check; return 0 ;;
-    --test) [ $# -le 2 ] || die 2 "usage: ade setup --test [provider|telegram]"; setup_test "${2:-}"; exit $? ;;
+    --test) [ $# -le 2 ] && { [ $# -eq 1 ] || [ -n "$2" ]; } || die 2 "usage: ade setup --test [provider|telegram]"; setup_test "${2:-}"; exit $? ;;
     --top|--telegram) [ $# -eq 1 ] || die 2 "usage: ade setup $mode"; hub="$(find_hub)" || exit $?
       if [ "$mode" = --top ]; then setup_top "$hub"; else setup_telegram "$hub"; fi; return ;;
     "") ;;
@@ -730,7 +736,7 @@ theme_get() {
   local v="" d; case "$1" in bg) d="#1e1e2e" ;; fg) d="#cdd6f4" ;; accent) d="#89b4fa" ;; orchestrator) d="#cba6f7" ;;
     busy) d="#f9e2af" ;; idle) d="#a6e3a1" ;; blocked) d="#f38ba8" ;; unread) d="#fab387" ;; *) return 1 ;; esac
   [ -f "$CONF_DIR/theme" ] && v="$(sed -n "s/^$1=//p" "$CONF_DIR/theme" | tail -1)"
-  printf '%s' "$v" | grep -Eq '^(#[0-9a-fA-F]{6}|[a-z]+[0-9]*)$' || v="$d"; printf '%s' "$v"
+  matches "$v" '^(#[0-9a-fA-F]{6}|[a-z]+[0-9]*)$' || v="$d"; printf '%s' "$v"
 }
 theme_env() { local k; for k in $THEME_KEYS; do printf 'ADE_THEME_%s=%s\n' "$k" "$(theme_get "$k")"; done; }
 
@@ -887,7 +893,7 @@ ui_menu() {   # ui_menu new|role <folder>|approve|preview <index>
       [ $# -gt 0 ] || { ui_tmux display-message "no folders in this hub (projects/ or ops/)"; return 0; }
       ui_tmux display-menu -T "New agent: folder" "$@" ;;
     role)
-      f="${1:-}"; printf '%s' "$f" | grep -Eq '^(projects|ops)/[A-Za-z0-9._-]+$' || die 2 "not a folder: $f"
+      f="${1:-}"; matches "$f" '^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$' || die 2 "not a folder: $f"
       items="$(hub_run "$hub" roles 2> /dev/null | awk '/^[a-z][a-z0-9-]* / { print $1 }')"
       [ -n "$items" ] || items="builder routine reviewer architect triage"
       set --; for r in $items; do set -- "$@" "$r" "" "run-shell -b \"$run work --role $r $f\""; done
@@ -897,7 +903,7 @@ ui_menu() {   # ui_menu new|role <folder>|approve|preview <index>
       d="$(mktemp -d)"; ui_data "$hub" "$d"; set --
       while IFS="$(printf '\t')" read -r st r f; do
         [ "$st" = waiting ] || continue
-        printf '%s' "$r" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]*$' && printf '%s' "$f" | grep -Eq '^(projects|ops)/[A-Za-z0-9._-]+$' || continue
+        matches "$r" '^[A-Za-z0-9][A-Za-z0-9._/-]*$' && matches "$f" '^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$' || continue
         set -- "$@" "$r  $f" "" "display-popup -E -w 80% -h 50% \"$run dispatch --approve $r $f\""
       done < "$d/tickets"; rm -rf "$d"
       [ $# -gt 0 ] || { ui_tmux display-message "no ticket is waiting for you"; return 0; }
@@ -933,7 +939,7 @@ cmd_ui() {
   case "${1:-}" in
     --bar) [ -n "${2:-}" ] || die 2 "usage: ade ui --bar <session>"; hub="$(find_hub)" || exit $?
       d="$(mktemp -d)"; ui_data "$hub" "$d" "$2"; ui_render bar "$d"; rm -rf "$d"; return 0 ;;
-    --tab-name) printf '%s' "${2:-}" | grep -Eq '^(projects|ops)/[A-Za-z0-9._-]+$' || die 2 "usage: ade ui --tab-name <folder> [ticket]"
+    --tab-name) matches "${2:-}" '^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$' || die 2 "usage: ade ui --tab-name <folder> [ticket]"
       echo "$2${3:+:$3}"; return 0 ;;
     --menu) shift; ui_menu "$@"; return ;;
     --preview) ui_preview "${2:-}"; return ;;
