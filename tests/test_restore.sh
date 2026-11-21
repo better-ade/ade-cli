@@ -338,8 +338,37 @@ refusals() {   # no record, a bad label, unknown flags
   bash "$ADE" restore --nope > /dev/null 2>&1; assert_eq "$?" 2 "unknown flag"
 }
 
+restore_other_steps() {   # the other steps: account continued, Claude sign-in, a marketplace alone, failures reported
+  fresh; restore_fixture; rm -f "$HOME/.claude.json"   # not signed in at all
+  record_with 'd["focus"] = [{"provider": "gemini", "sign_in": "account"}]; d["plugins"] = []; d["services"] = ["chat"]'
+  printf '#!/bin/bash\necho "chat $*" >> "$FAKE_LOG"\n[ "$1 $2" = "info telegram" ] && echo "bot @acme_bot"\n[ "$1" = setup ] && exit 1\nexit 0\n' > "$H/bin/chat"
+  printf '#!/bin/bash\necho "schedule $*" >> "$FAKE_LOG"; exit 1\n' > "$H/bin/schedule"
+  bash "$ADE" restore --check < /dev/null > "$T/out" 2>&1
+  assert_contains "$T/out" "provider anthropic: missing (not signed in)" "not signed in"
+  assert_contains "$T/out" "provider gemini: unknown (signed in through its own CLI)" "a CLI's own sign-in cannot be checked"
+  pty_run 'c\ny\ny\ny\ntok-x-123456\ny\n' bash "$ADE" restore > "$T/out" 2>&1; assert_eq "$?" 1 "failures: exit 1"
+  assert_contains "$T/out" "account work: ready" "continued with this account"
+  assert_contains "$FAKE_LOG" "claude auth login" "signed in"; assert_contains "$T/out" "provider anthropic: ready" "then ready"
+  assert_contains "$FAKE_LOG" "claude plugin marketplace add -- $K" "a marketplace with no missing plugin, alone"
+  assert_contains "$T/out" "marketplace ade-skills: ready" "ready"
+  assert_contains "$T/out" "channel telegram: failed (bin/chat setup telegram --repair)" "a failed re-pair"
+  assert_contains "$T/out" "services chat: failed (bin/schedule install)" "a failed install"
+  # sign in to the recorded account, but Claude Code ends on yet another one
+  fresh; restore_fixture; write_record; signed_in u-2 o-2; export LOGIN_USER=u-3 LOGIN_ORG=o-3
+  pty_run 's\n' bash "$ADE" work api > "$T/out" 2>&1; assert_eq "$?" 1 "still another account"
+  assert_contains "$T/out" "still signed in to another account than work" "says so"; assert_not_contains "$T/out" "hub work" "bin/work not run"
+  # the marketplace is already here: a recorded ref no longer published still warns
+  fresh; restore_fixture; write_record v0.0.9; signed_in u-1 o-1; mkdir -p "$HOME/.claude/plugins"; echo ade-skills > "$HOME/.claude/plugins/mkt"
+  pty_run 'n\ny\nn\nn\n' bash "$ADE" restore > "$T/out" 2>&1; assert_contains "$T/out" "v0.0.9 is no longer published; installing the latest" "warns"
+  # a checkout the hub's ACCESS.md lists, with its own record
+  fresh; restore_fixture; write_record; signed_in u-1 o-1; W="$T/webrepo"; git init -q "$W"; mkdir -p "$W/.ade" "$H/projects/web"
+  echo '{"format": 1, "plugins": [{"name": "notes", "marketplace": "ade-skills", "ref": "v0.1.0"}]}' > "$W/.ade/connections.json"
+  printf '| Repo | Checkout | Branch |\n|---|---|---|\n| o/web | %s | main |\n' "$W" > "$H/projects/web/ACCESS.md"
+  bash "$ADE" restore --check < /dev/null > "$T/out" 2>&1; assert_contains "$T/out" "plugin notes@ade-skills in $W: missing" "the checkout's record is read"
+}
+
 ALL="record_kept_current record_repo_public_only fresh_machine terminal_only account_skipped_stops account_gate account_config_dir
   keys_live_tested plugin_versions project_records other_marketplace hostile_records no_regex_from_record check_changes_nothing
-  twice_nothing refusals"
+  twice_nothing refusals restore_other_steps"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
