@@ -48,11 +48,11 @@ git clone https://github.com/better-ade/ade-cli && cd ade-cli && ./install.sh
 `install.sh` writes `~/.local/bin/ade` with the version stamped in, and tells you when that folder is not on your
 `PATH`. Pass a prefix to install somewhere else: `./install.sh /usr/local`. Re-run it after a `git pull` to upgrade.
 
-**Planned** ([A3](docs/stories/A3-hub-new-and-first-run.md)): a one-line install of the tagged release named in
-`VERSION`.
+Or in one line ([A3](docs/stories/A3-hub-new-and-first-run.md)): the tagged release that main's `VERSION` names, never
+main itself (`ADE_CLI_REF=v0.1.0` picks another release).
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh | bash   # planned (A3)
+curl -fsSL https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh | bash
 ```
 
 ## Quick start
@@ -74,7 +74,7 @@ ade status                       # the hub's sessions (bin/sessions)
 ade work projects/api --role builder   # start or resume a focus agent (bin/work)
 ```
 
-**Planned:** `ade hub new my-hub` creates the hub for you ([A3](docs/stories/A3-hub-new-and-first-run.md)), and
+`ade hub new my-hub` creates the hub for you ([A3](docs/stories/A3-hub-new-and-first-run.md)); **planned:**
 `ade setup` does sign-in, providers, Telegram and a guided first session in one go
 ([A5](docs/stories/A5-ade-setup.md)).
 
@@ -181,10 +181,10 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade open …` | Open in the ADE app (inside the app only) | **built** (A1) |
 | `ade version` · `ade help` | The version; every command, one line each | **built** (A1) |
 | `ade orchestrator new\|start\|stop\|list\|logs\|remove` | Named orchestrators, one per hub, with their channels (run by the hub's `bin/chat`) | **built** (A2) |
-| `curl … \| bash` | One-line install of the tagged release | planned (A3) |
-| `ade hub new <name> [--private\|--public] [--dir <d>] [--no-github]` | Create a hub from the ade-brain template, run its `bin/init`, make it the default | planned (A3) |
-| `ade hub list` · `ade hub use <path>` | The hubs `ade` knows; switch the default | planned (A3) |
-| `ade` (no arguments) | Say what to do next: the hub, its status and the next commands | planned (A3) |
+| `curl … \| bash` | One-line install of the tagged release | **built** (A3) |
+| `ade hub new <name> [--private\|--public] [--dir <d>] [--no-github]` | Create a hub from the ade-brain template, run its `bin/init`, make it the default | **built** (A3) |
+| `ade hub list` · `ade hub use <path>` | The hubs `ade` knows; switch the default | **built** (A3) |
+| `ade` (no arguments) | Say what to do next: the hub, its status and the next commands | **built** (A3) |
 | `ade claude [<folder>] [-- args]` | Claude Code at the hub root as the orchestrator; with a folder, `ade work <folder>` | planned (A4) |
 | `ade setup [--check\|--test\|--top\|--telegram]` | Sign-in, providers and live tests, Telegram, hub, guided session | planned (A5) |
 | `ade ui` | One tmux window, a tab per agent, live busy/idle | planned (A6) |
