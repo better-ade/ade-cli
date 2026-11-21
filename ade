@@ -914,6 +914,7 @@ cmd_ui() {
   need_tmux; hub="$(find_hub)" || exit $?; s="$(ui_session "$hub")"
   sq "$hub" > /dev/null; sq "$(ade_self)" > /dev/null   # checked here: inside $(...) a refusal would only end a subshell
   if ! ui_tmux has-session -t "=$s" 2> /dev/null; then
+    claude_update "$hub"
     conf="$CONF_DIR/ui-$s.tmux.conf"; ui_conf "$hub" "$s" | write_conf_file "ui-$s.tmux.conf"
     ui_tmux new-session -d -s "$s" -n orchestrator -c "$hub" \
       "exec env AGENT_TERMINAL=tmux ADE_UI_SESSION=$s ADE_HUB=$(sq "$hub") $(sq "$(ade_self)") claude" || die 1 "tmux could not start $s"
