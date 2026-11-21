@@ -4,7 +4,7 @@
 set -u; cd "$(dirname "$0")/.." || exit 1; out="${1:-coverage}"; rm -rf "$out"
 command -v kcov > /dev/null || { echo "coverage: kcov is not installed" >&2; exit 2; }
 # kcov must get the script itself (its bash engine), not `bash script` (that traces the bash binary)
-kcov --include-pattern=/ade --bash-handle-sh-invocation "$out" tests/run.sh; rc=$?
+kcov --include-pattern=/ade --bash-handle-sh-invocation --bash-method=DEBUG "$out" tests/run.sh; rc=$?
 [ "$rc" = 0 ] || { echo "coverage: the suite failed under kcov (exit $rc)" >&2; exit 1; }
 pct="$(python3 - "$out" <<'PY'
 import glob, json, os, sys
