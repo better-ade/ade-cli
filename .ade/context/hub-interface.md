@@ -60,7 +60,8 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 
 ## The hub template (A3)
 - `ade hub new` creates the hub from `better-ade/ade-brain` (`gh repo create --template`, or `git clone` with
-  `--no-github`) and then runs its `bin/init` interactively at the hub root; the hub counts as made only when `bin/init`
+  `--no-github`) and then runs its `bin/init --persona P --client C --owner O --name <name>` at the hub root (missing answers are asked;
+  `bin/init --list` names the personas); the hub counts as made only when `bin/init`
   exits 0 and `hub.conf` exists.
 
 ## Install (A3)
