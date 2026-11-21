@@ -9,3 +9,6 @@
 - `install.sh` keeps the checkout mode (tests, dev) and adds the piped mode; `ADE_CLI_BASE` (tests: a `file://` tree)
   and `ADE_CLI_REF` (a given release tag) override the source. The new binary is written beside the old one and moved
   over it, so a failed download leaves the old one.
+- ade-brain's `bin/init` is not interactive: it needs `--persona`, `--client` and `--owner`. `ade hub new` takes them as
+  flags and asks for the missing ones (listing `bin/init --list` first), then runs `bin/init --persona P --client C
+  --owner O --name <name>`. Checked by hand against the real template: the hub initializes and becomes the default.

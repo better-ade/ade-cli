@@ -5,9 +5,14 @@
 # a local hub template: bin/lib.sh and a bin/init that writes hub.conf and logs where it ran
 make_template() {
   TPL="$T/template"; mkdir -p "$TPL/bin"; git init -q "$TPL"; : > "$TPL/bin/lib.sh"
-  printf '#!/bin/bash\necho "init in $PWD" >> "%s/init.log"\necho "HUB_NAME=$(basename "$PWD")" > hub.conf\n' "$T" > "$TPL/bin/init"
+  cat > "$TPL/bin/init" <<STUB
+#!/bin/bash
+[ "\${1:-}" = --list ] && { echo "sre                          Site reliability"; exit 0; }
+echo "init in \$PWD: \$*" >> "$T/init.log"; echo "HUB_NAME=\$(basename "\$PWD")" > hub.conf
+STUB
   chmod +x "$TPL/bin/init"; commit_tag "$TPL" tpl; export ADE_HUB_TEMPLATE_URL="$TPL"
 }
+ID="--persona sre --client Acme --owner owner1"   # bin/init's required answers, given as flags
 # a fake gh: logs "<pwd>: <args>"; repo create <name> ... --clone clones the local template into <name>
 stub_gh() {
   local d="$T/fakebin"; mkdir -p "$d"; export GH_LOG="$T/gh.log"; : > "$GH_LOG"
@@ -20,15 +25,15 @@ no_gh_path() { local d="$T/nogh"; mkdir -p "$d"; for c in git python3 bash sed a
 
 new_with_github() {   # AC1
   fresh; make_template; stub_gh
-  bash "$ADE" hub new acme < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "hub new exit"; }
+  bash "$ADE" hub new acme $ID < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "hub new exit"; }
   assert_contains "$GH_LOG" "$HOME/hubs: repo create acme --template better-ade/ade-brain --private --clone" "gh call in ~/hubs"
-  assert_contains "$T/init.log" "init in $HOME/hubs/acme" "bin/init ran in the new hub"
+  assert_contains "$T/init.log" "init in $HOME/hubs/acme: --persona sre --client Acme --owner owner1 --name acme" "bin/init ran in the new hub with its answers"
   assert_eq "$(cat "$HOME/.config/ade/hub")" "$HOME/hubs/acme" "saved as the default"
 }
 
 public_and_dir() {   # AC2
   fresh; make_template; stub_gh; mkdir -p "$T/elsewhere"
-  bash "$ADE" hub new pub --public --dir "$T/elsewhere" < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "exit"; }
+  bash "$ADE" hub new pub --public --dir "$T/elsewhere" $ID < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "exit"; }
   assert_contains "$GH_LOG" "$T/elsewhere: repo create pub --template better-ade/ade-brain --public --clone" "public in --dir"
   assert_not_contains "$GH_LOG" "--private" "private only by default"
   [ -f "$T/elsewhere/pub/hub.conf" ] || fail "hub made in --dir"
@@ -36,11 +41,12 @@ public_and_dir() {   # AC2
 
 no_github() {   # AC3
   fresh; make_template; stub_gh
-  bash "$ADE" hub new loc --no-github < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "exit"; }
+  printf 'sre\nAcme Corp\nowner1\n' | bash "$ADE" hub new loc --no-github > "$T/out" 2>&1 || { cat "$T/out"; fail "exit"; }
   [ ! -s "$GH_LOG" ] || fail "gh not called"
   [ -x "$HOME/hubs/loc/bin/init" ] || fail "template cloned"
   assert_eq "$(git -C "$HOME/hubs/loc" remote)" "" "remote unset"
-  assert_contains "$T/init.log" "init in $HOME/hubs/loc" "bin/init ran"
+  assert_contains "$T/init.log" "init in $HOME/hubs/loc: --persona sre --client Acme Corp --owner owner1 --name loc" "missing answers asked, then bin/init ran"
+  assert_contains "$T/out" "Site reliability" "the personas listed"
 }
 
 refusals_create_nothing() {   # AC4
