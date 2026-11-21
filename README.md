@@ -257,7 +257,22 @@ In plain words:
   level, built test-first.
 - **Tests.** `bash tests/run.sh` runs every `tests/test_*.sh`. Tests use local fixture repos and fake tools (`claude`,
   `gh`, hub scripts), never the network, and must pass on macOS Bash 3.2 and on Linux bash.
-- **CI.** Every pull request and every push to `main` runs `bash tests/run.sh` through the shared
-  [`verify.yml`](https://github.com/better-ade/.github) workflow.
+- **Test layers** ([A8](docs/stories/A8-thorough-testing.md)), each runnable locally:
+
+  | Layer | What | Locally |
+  |---|---|---|
+  | 1. Shells | the suite on macOS `/bin/bash` 3.2 and Ubuntu bash 5 (it prints the bash it used) | `bash tests/run.sh`; `PATH=/bin:$PATH /bin/bash tests/run.sh` for 3.2 |
+  | 2. Lint | shellcheck at warning level over `ade`, `install.sh` and `tests/e2e/`, plus a planted-warning self-test | `bash tests/lint.sh` |
+  | 3. Hostile input | every name-taking command against spaces, quotes, `$(…)`, backticks, leading `-`, unicode, newlines, 300 characters; a new command missing from the table fails | `bash tests/test_hostile.sh` |
+  | 4. Clean machine | install this checkout, `ade hub new --no-github` from the real template, `ade init`, `agent add`, `skills add`, `status`, `doctor`, `ui` (network) | `bash tests/e2e/clean.sh` |
+  | 5. Upgrade | the previous release tag, a hub and a project, then this checkout: nothing lost or overwritten (network) | `bash tests/e2e/upgrade.sh` |
+  | 6. Interactive | `ade setup` on a real pty (expect) and in a tmux pane: a typed key never on screen, in `ps` or in a file | `bash tests/e2e/interactive.sh` (needs `expect`, `tmux`) |
+  | 7. `ade ui` | real tmux at 120x36 and 80x24: tab bar, sidebar and popups against `tests/golden/ui-*.txt` | `bash tests/e2e/ui_snapshots.sh`; `UPDATE_GOLDEN=1` rewrites |
+  | 8. Coverage | traced line coverage of `ade` over the suite (report and JSON as an artifact); fails below `tests/coverage-floor` | `bash tests/coverage.sh` (bash 4.1+) |
+
+- **CI.** Every pull request and every push to `main` runs layer 1 on both systems (job `suite`) through the shared
+  [`verify.yml`](https://github.com/better-ade/.github) workflow, and layers 2 and 4-8 as their own jobs
+  (`.github/workflows/ci.yml`): `lint`, `e2e-linux` (a fresh `ubuntu:24.04` container), `e2e-macos`, `coverage`. One
+  job, `ci`, needs all of them and is the check to require on `main`.
 - **Releases.** Bump `VERSION` and add its entry to [`CHANGELOG.md`](CHANGELOG.md) in the same pull request. When the
   change to `VERSION` reaches `main`, the release workflow runs the tests again and publishes the release.

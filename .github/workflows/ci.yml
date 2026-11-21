@@ -2,7 +2,75 @@ name: ci
 on:
   pull_request:
   push: { branches: [main] }
+permissions: { contents: read }
 jobs:
-  ci:
+  # layer 1: the suite on macOS with /bin/bash 3.2 first on PATH, and on Ubuntu with bash 5 (both must pass)
+  suite:
+    strategy:
+      fail-fast: false
+      matrix: { os: [ubuntu-latest, macos-latest] }
     uses: better-ade/.github/.github/workflows/verify.yml@v1
-    with: { command: "bash tests/run.sh" }
+    with:
+      runs-on: ${{ matrix.os }}
+      setup: |
+        mkdir -p "$RUNNER_TEMP/sysbash" && ln -sf /bin/bash "$RUNNER_TEMP/sysbash/bash" && echo "$RUNNER_TEMP/sysbash" >> "$GITHUB_PATH"
+        if [ "$(uname)" = Linux ] && ! command -v tmux > /dev/null; then sudo apt-get install -y tmux; fi
+      command: "bash tests/run.sh"
+  # layer 2: shellcheck, pinned
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: shellcheck v0.10.0 (pinned), then the planted-warning self-test
+        run: |
+          curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz | tar xJ
+          sudo install shellcheck-v0.10.0/shellcheck /usr/local/bin/shellcheck
+          bash tests/lint.sh
+  # layers 4-7 on a fresh ubuntu:24.04 container: clean machine, upgrade, interactive, ade ui snapshots
+  e2e-linux:
+    runs-on: ubuntu-latest
+    container: ubuntu:24.04
+    steps:
+      - name: tools of a fresh machine
+        run: apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq git python3 curl ca-certificates tmux expect procps > /dev/null
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { fetch-depth: 0 }
+      - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+      - run: bash tests/e2e/clean.sh
+      - run: bash tests/e2e/upgrade.sh
+      - run: bash tests/e2e/interactive.sh
+      - run: UI_CAPTURES="$GITHUB_WORKSPACE/ui-captures" bash tests/e2e/ui_snapshots.sh
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: { name: ui-captures, path: ui-captures, if-no-files-found: ignore }
+  # layers 4-6 on a fresh macOS runner with /bin/bash 3.2
+  e2e-macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with: { fetch-depth: 0 }
+      - run: brew install tmux > /dev/null
+      - run: /bin/bash tests/e2e/clean.sh
+      - run: /bin/bash tests/e2e/upgrade.sh
+      - run: /bin/bash tests/e2e/interactive.sh
+  # layer 8: line coverage of ade (traced); the report is an artifact; fails below tests/coverage-floor
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - run: if ! command -v tmux > /dev/null; then sudo apt-get install -y tmux; fi
+      - name: traced line coverage of ade over tests/run.sh
+        timeout-minutes: 20
+        run: bash tests/coverage.sh "$PWD/coverage"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with: { name: coverage, path: coverage, if-no-files-found: ignore }
+  # the one check to require: green only when every job above is green
+  ci:
+    if: always()
+    needs: [suite, lint, e2e-linux, e2e-macos, coverage]
+    runs-on: ubuntu-latest
+    steps:
+      - name: every layer passed
+        run: |
+          echo '${{ toJSON(needs) }}' | python3 -c 'import json,sys; n=json.load(sys.stdin); bad=[k for k,v in n.items() if v["result"]!="success"]; print("failed: " + ", ".join(bad) if bad else "all layers passed"); sys.exit(1 if bad else 0)'

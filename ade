@@ -55,6 +55,9 @@ The hub is $ADE_HUB, else the nearest folder above with bin/lib.sh and hub.conf,
 HELP
 }
 
+# matches <text> <ERE>: the whole text (newlines included) matches; never a per-line grep
+matches() { [[ $1 =~ $2 ]]; }
+
 is_hub() { [ -f "$1/bin/lib.sh" ] && [ -f "$1/hub.conf" ]; }
 
 find_hub() {
@@ -65,8 +68,10 @@ find_hub() {
   local cfg="$HOME/.config/ade/hub" h=""
   if [ -f "$cfg" ]; then
     IFS= read -r h < "$cfg"; h="$(printf '%s' "$h" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    # shellcheck disable=SC2088  # a literal ~ in the file is expanded here on purpose
     case "$h" in "~") h="$HOME" ;; "~/"*) h="$HOME/${h#\~/}" ;; esac
     if [ -n "$h" ]; then is_hub "$h" && { echo "$h"; return; }
+      # shellcheck disable=SC2088  # the message names the file as the user writes it
       die 2 "~/.config/ade/hub points to $h, which is not a hub"; fi
   fi
   die 2 "no hub found: set ADE_HUB, run ade inside a hub, or put the hub's path in ~/.config/ade/hub (no hub yet: ade hub new <name>)"
@@ -264,6 +269,7 @@ skills_folder() {
   for d in "$hub"/projects/*/ "$hub"/ops/*/; do
     [ -f "$d/ACCESS.md" ] || continue
     for c in $(awk -F'|' '/^\|/ { c = $3; gsub(/^[ \t]+|[ \t]+$/, "", c); if (c ~ /^[\/~]/) print c }' "$d/ACCESS.md"); do
+      # shellcheck disable=SC2088  # a literal ~ in ACCESS.md is expanded here on purpose
       case "$c" in "~/"*) c="$HOME/${c#\~/}" ;; esac
       [ -d "$c" ] && [ "$(cd "$c" && pwd -P)" = "$top" ] && { f="${d%/}"; echo "${f#"$hub"/}"; return 0; }
     done
@@ -385,7 +391,9 @@ cmd_orchestrator() {
       name="${1:-}"; [ $# -gt 0 ] && shift; hub=""
       while [ $# -gt 0 ]; do case "$1" in
         --hub) [ $# -ge 2 ] || die 2 "--hub needs a path"; hub="$2"; shift 2 ;;
-        --channel) [ $# -ge 2 ] || die 2 "--channel needs a name"; channels="$channels $2"; shift 2 ;;
+        --channel) [ $# -ge 2 ] || die 2 "--channel needs a name"
+          [[ $2 =~ ^[a-z][a-z0-9-]{0,31}$ ]] || die 2 "channel names are lower-case letters, digits and - (e.g. telegram)"
+          channels="$channels $2"; shift 2 ;;
         *) die 2 "$ORCH_USAGE" ;;
       esac; done
       [[ $name =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || die 2 "orchestrator names are lower-case letters, digits and - (a letter or digit first, at most 64)"
@@ -421,7 +429,7 @@ EOF
       name="${1:-}"; [ $# -gt 0 ] && shift; n=50
       [ -n "$name" ] || die 2 "$ORCH_USAGE"
       if [ $# -gt 0 ]; then { [ "$1" = -n ] && [ $# -eq 2 ]; } || die 2 "$ORCH_USAGE"; n="$2"; fi
-      printf '%s' "$n" | grep -Eq '^[1-9][0-9]{0,5}$' || die 2 "-n needs a number of lines"
+      matches "$n" '^[1-9][0-9]{0,5}$' || die 2 "-n needs a number of lines"
       hub="$(orch_hub "$name")"; [ -n "$hub" ] || die 2 "no orchestrator named $name; ade orchestrator list shows them"
       is_hub "$hub" || die 2 "the hub of $name ($hub) is gone"
       chat "$hub" logs -n "$n"; exit $? ;;
@@ -482,7 +490,7 @@ hub_new() {
     --no-github) gh=0; shift ;;
     *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]" ;;
   esac; done
-  printf '%s' "$name" | grep -Eq '^[a-z0-9-]+$' || die 2 "hub names are lower-case letters, digits and - (e.g. acme-sre)"
+  matches "$name" '^[a-z0-9][a-z0-9-]{0,63}$' || die 2 "hub names are lower-case letters, digits and - (start with a letter or digit, at most 64; e.g. acme-sre)"
   case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
   target="$dir/$name"
   [ ! -e "$target" ] || die 2 "$target already exists; pick another name or --dir"
@@ -587,9 +595,14 @@ ask() {   # ask <prompt>: one answer line into ANSWER; no answer (end of input) 
   [ -t 0 ] || echo
 }
 ask_secret() {   # ask_secret <prompt>: a hidden answer into SECRET (not echoed, not exported)
-  printf '%s ' "$1"
-  if [ -t 0 ]; then IFS= read -rs SECRET || die 1 "setup stopped: no answer"; else IFS= read -r SECRET || die 1 "setup stopped: no answer"; fi
-  echo
+  local rc=0
+  if [ -t 0 ]; then
+    # echo goes off before the prompt shows, so keys typed (or pasted) the moment it appears are never echoed
+    stty -echo 2> /dev/null; trap 'stty echo 2> /dev/null' EXIT INT TERM
+    printf '%s ' "$1"; IFS= read -rs SECRET || rc=1
+    stty echo 2> /dev/null; trap - EXIT INT TERM
+  else printf '%s ' "$1"; IFS= read -r SECRET || rc=1; fi
+  echo; [ "$rc" = 0 ] || die 1 "setup stopped: no answer"
 }
 yes_no() { ask "$1 [y/N]"; case "$ANSWER" in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac; }
 hub_run() { local hub="$1" s="$2"; shift 2; [ -x "$hub/bin/$s" ] || die 2 "this hub has no bin/$s; update it"; ( HUB="$hub"; export HUB; "$hub/bin/$s" "$@" ); }
@@ -761,7 +774,7 @@ cmd_setup() {
   local mode="${1:-}" hub name
   case "$mode" in
     --check) [ $# -eq 1 ] || die 2 "usage: ade setup --check"; setup_check; return 0 ;;
-    --test) [ $# -le 2 ] || die 2 "usage: ade setup --test [provider|telegram]"; setup_test "${2:-}"; exit $? ;;
+    --test) [ $# -le 2 ] && { [ $# -eq 1 ] || [ -n "$2" ]; } || die 2 "usage: ade setup --test [provider|telegram]"; setup_test "${2:-}"; exit $? ;;
     --top|--telegram) [ $# -eq 1 ] || die 2 "usage: ade setup $mode"; hub="$(find_hub)" || exit $?
       if [ "$mode" = --top ]; then setup_top "$hub"; else setup_telegram "$hub"; fi; return ;;
     "") ;;
@@ -831,7 +844,7 @@ theme_get() {
   local v="" d; case "$1" in bg) d="#1e1e2e" ;; fg) d="#cdd6f4" ;; accent) d="#89b4fa" ;; orchestrator) d="#cba6f7" ;;
     busy) d="#f9e2af" ;; idle) d="#a6e3a1" ;; blocked) d="#f38ba8" ;; unread) d="#fab387" ;; *) return 1 ;; esac
   [ -f "$CONF_DIR/theme" ] && v="$(sed -n "s/^$1=//p" "$CONF_DIR/theme" | tail -1)"
-  printf '%s' "$v" | grep -Eq '^(#[0-9a-fA-F]{6}|[a-z]+[0-9]*)$' || v="$d"; printf '%s' "$v"
+  matches "$v" '^(#[0-9a-fA-F]{6}|[a-z]+[0-9]*)$' || v="$d"; printf '%s' "$v"
 }
 theme_env() { local k; for k in $THEME_KEYS; do printf 'ADE_THEME_%s=%s\n' "$k" "$(theme_get "$k")"; done; }
 
@@ -871,12 +884,16 @@ def read(n):
     except OSError: return []
 theme = {l.split("=", 1)[0][len("ADE_THEME_"):]: l.split("=", 1)[1] for l in read("theme") if "=" in l}
 rows = []
+head = (read("sessions") or [""])[0].split()
+tok_i = head.index("TOKENS") if "TOKENS" in head else None   # usage, when the hub's bin/sessions reports it
 for l in read("sessions")[1:]:
     f = l.split()
     if len(f) >= 7:
         name, folder, started, role, status = f[0], f[1], f[4], f[5], f[6]
         ticket = "" if name == folder.rsplit("/", 1)[-1] else name
-        rows.append(dict(name=name, folder=folder, started=started, role="" if role == "-" else role, status=status, ticket=ticket))
+        tok = f[tok_i] if tok_i is not None and len(f) > tok_i and f[tok_i] != "-" else ""
+        rows.append(dict(name=name, folder=folder, started=started, role="" if role == "-" else role, status=status, ticket=ticket, tokens=tok))
+show_tok = any(r["tokens"] for r in rows)
 unread = {}
 for l in read("unread"):
     k, _, v = l.partition("\t")
@@ -925,12 +942,17 @@ else:
     def c(s, code): return "\033[%sm%s\033[0m" % (code, s) if color else s
     print(c("ADE fleet · %s" % name, "1"))
     print(""); print(c("AGENTS", "1"))
-    if rows: print("    %-24s %-10s %-8s %-7s %s" % ("FOLDER", "ROLE", "TICKET", "RUN", "TOKENS"))
-    else: print("  (no focus agents running)")
+    try: width = int(os.environ.get("COLUMNS") or 0) or os.get_terminal_size().columns
+    except OSError: width = 80
+    narrow = width < 70   # the sidebar: one compact line per agent, ticket and event
+    if rows and not narrow: print(("    %-24s %-10s %-8s %-7s" % ("FOLDER", "ROLE", "TICKET", "RUN") + ("  TOKENS" if show_tok else "")).rstrip())
+    if not rows: print("  (no focus agents running)")
     for r in rows:
         st = state(r["status"])
         mark = "  ✉%d" % unread[r["name"]] if unread.get(r["name"], 0) > 0 else ""
-        print("  %s %-24s %-10s %-8s %-7s %s%s" % (ICON[st], r["folder"], r["role"] or "-", r["ticket"] or "-", age(r["started"]), "-", mark))
+        if narrow: print("  %s %s" % (ICON[st], " · ".join(x for x in (r["folder"], r["role"], r["ticket"], age(r["started"]), r["tokens"]) if x)) + mark)
+        else: print(("  %s %-24s %-10s %-8s %-7s" % (ICON[st], r["folder"], r["role"] or "-", r["ticket"] or "-", age(r["started"]))
+                     + ("  %-6s" % (r["tokens"] or "-") if show_tok else "")).rstrip() + mark)
     print(""); print(c("TICKETS", "1"))
     t = read("tickets")
     if t == ["unavailable"]: print("  (this hub's bin/dispatch has no --list yet)")
@@ -938,7 +960,8 @@ else:
     for l in t:
         p = l.split("\t")
         if len(p) == 3 and p != ["unavailable"]:
-            print("  %-8s %-8s %s%s" % (p[0], p[1], p[2], "   approve: prefix a" if p[0] == "waiting" else ""))
+            if narrow: print("  %s %s %s" % (p[0], p[1], p[2]))
+            else: print("  %-8s %-8s %s%s" % (p[0], p[1], p[2], "   approve: prefix a" if p[0] == "waiting" else ""))
     print(""); print(c("EVENTS (last 8)", "1"))
     ev = []
     path = (read("events_path") or [""])[0]
@@ -948,7 +971,13 @@ else:
             except ValueError: continue
             tm = ts(str(e.get("time", "")))
             text = " ".join(str(e.get("text", "")).split())[:80]
-            ev.append("  %s %s → %s  %s  %s" % (tm.strftime("%H:%M") if tm else "--:--", e.get("from", "?"), e.get("to", "?"), e.get("kind", "?"), text))
+            hm = tm.strftime("%H:%M") if tm else "--:--"
+            who = str(e.get("from", "?")).rstrip("/").rsplit("/", 1)[-1] or "?"; kind = str(e.get("kind", "?"))
+            # a plain sentence: "api pushed feat/1.2", "db idle", "web blocked: <reason>"
+            if kind in ("idle", "ended"): line = "%s %s" % (who, kind)
+            elif kind == "blocked": line = "%s blocked: %s" % (who, text) if text else "%s blocked" % who
+            else: line = ("%s %s %s" % (who, kind, text)).rstrip()
+            ev.append(("  %s %s" % (hm, line))[:width - 1])
     except OSError:
         pass
     print("\n".join(ev) if ev else "  (no events)")
@@ -956,12 +985,13 @@ PY
 }
 
 UI_KEYS="  prefix n   new agent: pick a folder, then a role
-  prefix a   approve a ticket waiting for you (you type its ref back in the popup)
+  prefix a   approve a waiting ticket (type its ref back)
   prefix t   tickets ready and waiting
   prefix p   preview the current agent's plan
   prefix f   show or hide the fleet sidebar (ade dash)
   prefix ?   this help
-  prefix 0-9, prefix Left/Right   switch tabs; prefix d detaches (agents keep running)"
+  prefix 0-9, Left, Right   switch tabs
+  prefix d   detach (agents keep running)"
 
 ui_conf() {   # ui_conf <hub> <session>: the tmux config ade ui loads
   local hub="$1" s="$2" run
@@ -984,7 +1014,7 @@ bind-key -T prefix a run-shell "$run ui --menu approve"
 bind-key -T prefix t display-popup -E -w 80% -h 60% "$run ui --tickets"
 bind-key -T prefix p run-shell "$run ui --menu preview #{window_index}"
 bind-key -T prefix f run-shell "$run ui --sidebar"
-bind-key -T prefix ? display-popup -E -w 70% -h 50% "$run ui --keys"
+bind-key -T prefix ? display-popup -E -w 66 -h 16 "$run ui --keys"
 bind-key -T prefix Left previous-window
 bind-key -T prefix Right next-window
 CONF
@@ -1001,7 +1031,7 @@ ui_menu() {   # ui_menu new|role <folder>|approve|preview <index>
       [ $# -gt 0 ] || { ui_tmux display-message "no folders in this hub (projects/ or ops/)"; return 0; }
       ui_tmux display-menu -T "New agent: folder" "$@" ;;
     role)
-      f="${1:-}"; printf '%s' "$f" | grep -Eq '^(projects|ops)/[A-Za-z0-9._-]+$' || die 2 "not a folder: $f"
+      f="${1:-}"; matches "$f" '^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$' || die 2 "not a folder: $f"
       items="$(hub_run "$hub" roles 2> /dev/null | awk '/^[a-z][a-z0-9-]* / { print $1 }')"
       [ -n "$items" ] || items="builder routine reviewer architect triage"
       set --; for r in $items; do set -- "$@" "$r" "" "run-shell -b \"$run work --role $r $f\""; done
@@ -1011,7 +1041,7 @@ ui_menu() {   # ui_menu new|role <folder>|approve|preview <index>
       d="$(mk_tmp)" || die 1 "could not make a temp folder"; ui_data "$hub" "$d"; set --
       while IFS="$(printf '\t')" read -r st r f; do
         [ "$st" = waiting ] || continue
-        printf '%s' "$r" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]*$' && printf '%s' "$f" | grep -Eq '^(projects|ops)/[A-Za-z0-9._-]+$' || continue
+        matches "$r" '^[A-Za-z0-9][A-Za-z0-9._/-]*$' && matches "$f" '^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$' || continue
         set -- "$@" "$r  $f" "" "display-popup -E -w 80% -h 50% \"$run dispatch --approve $r $f\""
       done < "$d/tickets"; rm_tmp "$d"
       [ $# -gt 0 ] || { ui_tmux display-message "no ticket is waiting for you"; return 0; }
@@ -1047,7 +1077,7 @@ cmd_ui() {
   case "${1:-}" in
     --bar) [ -n "${2:-}" ] || die 2 "usage: ade ui --bar <session>"; hub="$(find_hub)" || exit $?
       ui_bar "$hub" "$2"; return 0 ;;
-    --tab-name) printf '%s' "${2:-}" | grep -Eq '^(projects|ops)/[A-Za-z0-9._-]+$' || die 2 "usage: ade ui --tab-name <folder> [ticket]"
+    --tab-name) matches "${2:-}" '^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$' || die 2 "usage: ade ui --tab-name <folder> [ticket]"
       echo "$2${3:+:$3}"; return 0 ;;
     --menu) shift; ui_menu "$@"; return ;;
     --preview) ui_preview "${2:-}"; return ;;

@@ -1,0 +1,24 @@
+orchestrator ready                 │ADE fleet · snap
+                                   │
+                                   │AGENTS
+                                   │  ⟳ projects/api · builder · 1.2 · 45m  ✉2
+                                   │  ○ ops/db · 2h45m
+                                   │
+                                   │TICKETS
+                                   │  ready 1.3 projects/api
+                                   │  waiting 2.1 projects/api
+                                   │
+                                   │EVENTS (last 8)
+                                   │  10:01 api pushed event 1
+                                   │  10:02 api pushed event 2
+                                   │  10:03 api pushed event 3
+                                   │
+                                   │
+                                   │
+                                   │
+                                   │
+                                   │
+                                   │
+                                   │
+                                   │
+● 0 orchestrator  ⟳ 1 projects/api · builder · 1.2 ✉2  ○ 2 ops/db  [+ new]
