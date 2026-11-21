@@ -47,7 +47,7 @@ Housekeeping (each lists what it would do first; nothing of yours is deleted):
   clean       ade clean [--yes]: stale locks, old markers, cursors and temp folders, dead ade tmux sessions, clean merged worktrees
   reset       ade reset [--keys] [--hub <path>]: undo ade setup here; --keys forgets its keys; --hub moves that hub to the Trash
   uninstall   ade uninstall [--keys] [--hub <path>]: ade reset, then remove the installed ade
-  update      ade update [--check]: ade, the hub, its plugins and Claude Code, with nothing stopped
+  update      ade update [--check | --rollback]: ade, the hub, its plugins and Claude Code, with nothing stopped; --rollback: the previous ade
   restore     ade restore [--check] [--label <name>]: bring back every connection .ade/connections.json names
 
 Project commands (no hub needed):
@@ -622,8 +622,8 @@ live_test() {
   echo "$p: failed (${why:-exit $rc})"; return 1
 }
 
-claude_signed_in() { claude auth status > /dev/null 2>&1; }
-key_stored() { hub_run "$1" keys 2> /dev/null | grep -Eq "^$2 +stored"; }
+claude_signed_in() { if [ -n "${1:-}" ]; then hub_claude "$1" auth status; else claude auth status; fi > /dev/null 2>&1; }   # [hub]
+key_stored() { hub_run "$1" keys 2> /dev/null | awk -v n="$2" '$1 == n && $2 == "stored" { f = 1 } END { exit !f }'; }
 
 # sign_in <hub> <provider> [account|key]: account = Claude Code's own login (ade stores nothing); else a key
 SIGNED=""
@@ -1515,38 +1515,127 @@ EOF
 }
 
 # connections (story A10): <folder>/.ade/connections.json names what the work depends on, never a secret, an email or
-# an account id; ade restore compares it with this machine and walks each gap (.ade/context/hub-interface.md)
-conn_py() {   # conn_py <record file> <op> [args]: get prints tab-separated lines; the other ops update the record
-  python3 - "$@" <<'PY'
+# an account id; ade restore compares it with this machine and walks each gap (.ade/context/hub-interface.md). The
+# record comes from a cloned repo: it is data, checked value by value where it is read, and rejected whole on any
+# failure (nothing in a rejected record is used)
+US="$(printf '\037')"   # the field separator of conn_py get and conn_state (never in a checked value)
+conn_py() {   # conn_py <record file> <op> [args]: get prints US-separated lines; the other ops update the record
+  CONN_BUILTIN="$ADE_SKILLS_REPO" python3 - "$@" <<'PY'
 import json, os, re, sys
 p, op, a = sys.argv[1], sys.argv[2], sys.argv[3:]
-clean = lambda s: re.sub(r"[\t\r\n]", " ", str(s))
+NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
+REF = re.compile(r"v[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}")
+GH = re.compile(r"https://github\.com/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})")
+SHORT = re.compile(r"([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})")
+LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}")
+FP = re.compile(r"[0-9a-f]{16}")
+BOT = re.compile(r"@[A-Za-z0-9_]{1,64}")
+MODEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:\[\]-]{0,63}")
+SIGN_IN, SERVICES, PINS = ("account", "key"), ("chat", "monitor", "sync"), ("ade-method", "ade-agent-registry", "ade-skills")
+MAX_LIST, MAX_BYTES = 64, 65536
+safe = lambda s: re.sub(r"[^\x20-\x7e]", "?", s)[:200]   # a path in a message: no control character reaches the terminal
+class Bad(Exception):
+    pass
+def gh(repo):   # owner/repo of a GitHub repo (lower case, no .git), else None
+    m = GH.fullmatch(repo) or SHORT.fullmatch(repo)
+    if not m or any(x in (".", "..") for x in m.groups()):
+        return None
+    o, r = m.group(1).lower(), m.group(2).lower()
+    r = r[:-4] if r.endswith(".git") else r
+    return "%s/%s" % (o, r) if r else None
+def text(v, rx, what):
+    if not isinstance(v, str) or len(v) > 200 or not rx.fullmatch(v):
+        raise Bad("%s is not valid" % what)
+    return v
+def items(v, what):
+    if not isinstance(v, list) or len(v) > MAX_LIST:
+        raise Bad("%s is not a list of at most %d" % (what, MAX_LIST))
+    return v
+def obj(v, what, need, may=()):
+    if not isinstance(v, dict):
+        raise Bad("%s is not an object" % what)
+    if set(v) - set(need) - set(may):
+        raise Bad("%s has a key ade does not know" % what)
+    if set(need) - set(v):
+        raise Bad("%s lacks %s" % (what, ", ".join(sorted(set(need) - set(v)))))
+    return v
+def unique(v, what):
+    if len(set(v)) != len(v):
+        raise Bad("%s names one thing twice" % what)
+def check(d):
+    obj(d, "the record", ("format",), ("account", "top", "focus", "channels", "marketplaces", "plugins", "specialists", "pins", "services"))
+    if type(d["format"]) is not int or d["format"] != 1:
+        raise Bad("format is not 1")
+    if "account" in d:
+        acc = obj(d["account"], "account", ("label", "fingerprint"))
+        text(acc["label"], LABEL, "account.label"); text(acc["fingerprint"], FP, "account.fingerprint")
+    if "top" in d:
+        t = obj(d["top"], "top", ("provider", "sign_in"), ("model",))
+        text(t["provider"], NAME, "top.provider")
+        if t["sign_in"] not in SIGN_IN: raise Bad("top.sign_in is not account or key")
+        if "model" in t: text(t["model"], MODEL, "top.model")
+    for i, f in enumerate(items(d.get("focus", []), "focus")):
+        obj(f, "focus[%d]" % i, ("provider", "sign_in")); text(f["provider"], NAME, "focus[%d].provider" % i)
+        if f["sign_in"] not in SIGN_IN: raise Bad("focus[%d].sign_in is not account or key" % i)
+    unique([f["provider"] for f in d.get("focus", [])], "focus")
+    for i, c in enumerate(items(d.get("channels", []), "channels")):
+        obj(c, "channels[%d]" % i, ("type",), ("bot",)); text(c["type"], NAME, "channels[%d].type" % i)
+        if c.get("bot", "") != "": text(c["bot"], BOT, "channels[%d].bot" % i)
+    unique([c["type"] for c in d.get("channels", [])], "channels")
+    builtin = gh(os.environ.get("CONN_BUILTIN", "")) or os.environ.get("CONN_BUILTIN", "")
+    names = ["ade-skills"]
+    for i, m in enumerate(items(d.get("marketplaces", []), "marketplaces")):
+        obj(m, "marketplaces[%d]" % i, ("name", "repo")); n = text(m["name"], NAME, "marketplaces[%d].name" % i)
+        if not isinstance(m["repo"], str) or len(m["repo"]) > 200: raise Bad("marketplaces[%d].repo is not valid" % i)
+        if m["repo"] == "local":
+            if n != "ade-skills": raise Bad("marketplaces[%d].repo is local, which only the built-in ade-skills can be" % i)
+        elif gh(m["repo"]) is None:
+            raise Bad("marketplaces[%d].repo is not https://github.com/<owner>/<repo> or <owner>/<repo>" % i)
+        elif n == "ade-skills" and gh(m["repo"]) != builtin:
+            raise Bad("marketplaces[%d] binds the name ade-skills to another repo than the built-in ade-skills (ADE_SKILLS_REPO)" % i)
+        names.append(n)
+    unique([m["name"] for m in d.get("marketplaces", [])], "marketplaces")
+    for i, g in enumerate(items(d.get("plugins", []), "plugins")):
+        obj(g, "plugins[%d]" % i, ("name", "marketplace", "ref"))
+        text(g["name"], NAME, "plugins[%d].name" % i); text(g["ref"], REF, "plugins[%d].ref" % i)
+        if text(g["marketplace"], NAME, "plugins[%d].marketplace" % i) not in names:
+            raise Bad("plugins[%d].marketplace is not in marketplaces" % i)
+    unique(["%s@%s" % (g["name"], g["marketplace"]) for g in d.get("plugins", [])], "plugins")
+    for i, s in enumerate(items(d.get("specialists", []), "specialists")):
+        text(s, NAME, "specialists[%d]" % i)
+    pins = d.get("pins", {})
+    obj(pins, "pins", (), PINS)
+    for k, v in pins.items():
+        text(v, REF, "pins.%s" % k)
+    for i, s in enumerate(items(d.get("services", []), "services")):
+        if s not in SERVICES: raise Bad("services[%d] is not chat, monitor or sync" % i)
+def pairs(kv):
+    seen = {}
+    for k, v in kv:
+        if k in seen: raise Bad("a key appears twice in one object")
+        seen[k] = v
+    return seen
 d = {"format": 1}
 if os.path.exists(p):
     try:
-        d = json.load(open(p))
-    except ValueError:
-        sys.exit("ade: %s is not valid JSON; fix it first" % p)
-    if not isinstance(d, dict):
-        sys.exit("ade: %s is not a JSON object" % p)
+        if os.path.getsize(p) > MAX_BYTES: raise Bad("the file is larger than %d bytes" % MAX_BYTES)
+        with open(p) as fh:
+            d = json.load(fh, object_pairs_hook=pairs)
+        check(d)
+    except (Bad, ValueError, OSError, RecursionError) as e:
+        why = str(e) if isinstance(e, Bad) else "it is not valid JSON"
+        sys.exit("ade: %s is not a valid connections record (%s); nothing in it is used: fix it, or remove it and run ade setup" % (safe(p), why))
+elif op == "get":
+    sys.exit(0)
 if op == "get":
-    acc = d.get("account") or {}
-    if acc.get("fingerprint"):
-        print("account\t%s\t%s" % (clean(acc.get("label") or "the recorded account"), clean(acc["fingerprint"])))
-    top = d.get("top") or {}
-    if top.get("provider"):
-        print("provider\t%s\t%s\ttop" % (clean(top["provider"]), clean(top.get("sign_in", "key"))))
-    for f in d.get("focus") or []:
-        if f.get("provider"):
-            print("provider\t%s\t%s\tfocus" % (clean(f["provider"]), clean(f.get("sign_in", "key"))))
-    for m in d.get("marketplaces") or []:
-        print("marketplace\t%s\t%s" % (clean(m.get("name", "")), clean(m.get("repo", ""))))
-    for g in d.get("plugins") or []:
-        print("plugin\t%s\t%s\t%s" % (clean(g.get("name", "")), clean(g.get("marketplace", "ade-skills")), clean(g.get("ref", ""))))
-    for c in d.get("channels") or []:
-        print("channel\t%s\t%s" % (clean(c.get("type", "")), clean(c.get("bot", ""))))
-    for s in d.get("services") or []:
-        print("service\t%s" % clean(s))
+    out = lambda *f: print("\x1f".join((list(f) + ["", "", ""])[:4]))   # always four fields
+    if "account" in d: out("account", d["account"]["label"], d["account"]["fingerprint"])
+    if "top" in d: out("provider", d["top"]["provider"], d["top"]["sign_in"], "top")
+    for f in d.get("focus", []): out("provider", f["provider"], f["sign_in"], "focus")
+    for m in d.get("marketplaces", []): out("marketplace", m["name"], m["repo"])
+    for g in d.get("plugins", []): out("plugin", g["name"], g["marketplace"], g["ref"])
+    for c in d.get("channels", []): out("channel", c["type"], c.get("bot", ""))
+    for s in d.get("services", []): out("service", s)
     sys.exit(0)
 def put(lst, item, key):
     l = d.setdefault(lst, [])
@@ -1555,15 +1644,17 @@ if op == "account":
     old = d.get("account") or {}
     d["account"] = {"label": old.get("label") or a[1], "fingerprint": a[0]}
 elif op == "label":
-    d.setdefault("account", {})["label"] = a[0]
+    if "account" not in d: sys.exit("ade: no account in %s yet; ade setup records it" % safe(p))
+    d["account"]["label"] = a[0]
 elif op == "top":
-    d["top"] = {"provider": a[0], "sign_in": a[1], "model": a[2]}
+    d["top"] = {"provider": a[0], "sign_in": a[1]}
+    if a[2]: d["top"]["model"] = a[2]
 elif op == "focus":
     put("focus", {"provider": a[0], "sign_in": a[1]}, "provider")
 elif op == "channel":
     put("channels", {"type": a[0], "bot": a[1]}, "type")
-elif op == "marketplace":
-    put("marketplaces", {"name": a[0], "repo": a[1]}, "name")
+elif op == "marketplace":   # only a public GitHub repo is recorded; anything else (a path, a URL with a user) is local
+    put("marketplaces", {"name": a[0], "repo": a[1] if GH.fullmatch(a[1]) and gh(a[1]) else "local"}, "name")
 elif op == "plugin":
     put("plugins", {"name": a[0], "marketplace": a[1], "ref": a[2]}, "name")
     d.setdefault("pins", {})["ade-skills"] = a[2]
@@ -1577,6 +1668,10 @@ elif op == "services":
     d["services"] = sorted(set(a))
 else:
     sys.exit("ade: unknown record operation %s" % op)
+try:
+    check(d)
+except Bad as e:   # what this machine has does not fit the record (an override such as ADE_SKILLS_REF=main): not recorded
+    sys.exit("ade: not recorded in %s: %s" % (safe(p), e))
 os.makedirs(os.path.dirname(p), exist_ok=True)
 with open(p + ".ade-tmp", "w") as f:
     json.dump(d, f, indent=2, sort_keys=True); f.write("\n")
@@ -1584,11 +1679,16 @@ os.replace(p + ".ade-tmp", p)
 PY
 }
 conn_record() { local f="$1/.ade/connections.json"; shift; conn_py "$f" "$@" > /dev/null || echo "ade: could not update $f" >&2; return 0; }
+no_ctl() { LC_ALL=C tr -d '\000-\010\013-\037\177'; }   # printed text from a record, a manifest or a tool: no control characters
+# hub_claude <hub> <args>: claude with the hub's Claude Code config folder (HUB_CLAUDE_CONFIG_DIR) when it has one
+hub_claude() { local cfg; cfg="$(conf_get "$1" HUB_CLAUDE_CONFIG_DIR)"; shift
+  if [ -n "$cfg" ]; then CLAUDE_CONFIG_DIR="$cfg" claude "$@"; else claude "$@"; fi; }
+hub_claude_dir() { local cfg; cfg="$(conf_get "$1" HUB_CLAUDE_CONFIG_DIR)"; echo "${cfg:-${CLAUDE_CONFIG_DIR:-}}"; }
 # account_fp [hub]: a one-way fingerprint of the signed-in Claude account (organisation and user id; never stored
 # raw); empty when not signed in with an account
 account_fp() {
   local dir="${CLAUDE_CONFIG_DIR:-}"
-  [ -n "${1:-}" ] && { local hd; hd="$(conf_get "$1" HUB_CLAUDE_CONFIG_DIR)"; [ -n "$hd" ] && dir="$hd"; }
+  [ -n "${1:-}" ] && dir="$(hub_claude_dir "$1")"
   python3 - "${dir:-$HOME}/.claude.json" <<'PY' 2> /dev/null
 import hashlib, json, sys
 try:
@@ -1614,97 +1714,180 @@ record_channel() {   # <hub> <type>: the bot's public name from the hub (bin/cha
   local bot; bot="$(hub_run "$1" chat info "$2" 2> /dev/null < /dev/null | awk '$1 == "bot" { print $2; exit }')"
   conn_record "$1" channel "$2" "$bot"
 }
-plugin_installed() { python3 -c 'import json, sys
-try: d = json.load(open(sys.argv[1]))
-except Exception: sys.exit(1)
-sys.exit(0 if sys.argv[2] in (d.get("plugins", d) or {}) else 1)' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" "$1" 2> /dev/null; }
+# plugin_version <hub> <folder> <name@marketplace>: prints the installed version for that folder (unknown when Claude
+# Code did not say); 1 when it is not installed there. Project-scoped installs count only in their own folder.
+plugin_version() {
+  local dir; dir="$(hub_claude_dir "$1")"
+  python3 - "${dir:-$HOME/.claude}/plugins/installed_plugins.json" "$2" "$3" <<'PY' 2> /dev/null
+import json, os, re, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(1)
+pl = d.get("plugins", d) if isinstance(d, dict) else {}
+es = pl.get(sys.argv[3]) if isinstance(pl, dict) else None
+for e in (es if isinstance(es, list) else [es] if isinstance(es, dict) else []):
+    if not isinstance(e, dict):
+        continue
+    pp = e.get("projectPath")
+    if e.get("scope") in ("project", "local") and isinstance(pp, str) and os.path.realpath(pp) != sys.argv[2]:
+        continue
+    v = e.get("version")
+    print(v if isinstance(v, str) and re.fullmatch(r"[0-9A-Za-z.+_-]{1,40}", v) else "unknown"); sys.exit(0)
+sys.exit(1)
+PY
+}
+# repo_url <record repo>: what git and claude are given: local is this machine's ade-skills (ADE_SKILLS_REPO), owner/repo
+# a GitHub URL; the record's checker already allowed only these forms
+repo_url() { case "$1" in local) echo "$ADE_SKILLS_REPO" ;; https://*) echo "$1" ;; *) echo "https://github.com/$1" ;; esac; }
+mkt_present() {   # <hub> <name>: the marketplace is known to Claude Code here (a whole word of marketplace list)
+  command -v claude > /dev/null 2>&1 || return 1
+  hub_claude "$1" plugin marketplace list 2> /dev/null < /dev/null | awk -v n="$2" '{ for (i = 1; i <= NF; i++) if ($i == n) f = 1 } END { exit !f }'
+}
+# conn_dirs <hub>: the hub, then each of its folders (projects/*, ops/*, and the git checkouts their ACCESS.md lists)
+# that has a record; physical paths, once each
+conn_dirs() {
+  local h="$1" d c
+  { (cd "$h" && pwd -P)
+    for d in "$h"/projects/*/ "$h"/ops/*/; do [ -d "$d" ] || continue; (cd "$d" && pwd -P)
+      [ -f "$d/ACCESS.md" ] || continue
+      while IFS= read -r c; do
+        # shellcheck disable=SC2088  # a literal ~ in ACCESS.md is expanded here on purpose
+        case "$c" in "~/"*) c="$HOME/${c#\~/}" ;; esac
+        [ -d "$c" ] && [ "$(git -C "$c" rev-parse --show-toplevel 2> /dev/null)" = "$(cd "$c" && pwd -P)" ] && (cd "$c" && pwd -P)
+      done <<EOF
+$(awk -F'|' '/^\|/ { c = $3; gsub(/^[ \t]+|[ \t]+$/, "", c); if (c ~ /^[\/~]/) print c }' "$d/ACCESS.md")
+EOF
+    done; } | awk 'NF && !seen[$0]++' | while IFS= read -r d; do
+      case "$d" in *[[:cntrl:]]*) continue ;; esac; [ -f "$d/.ade/connections.json" ] && echo "$d"; done
+}
+conn_where() { local h; h="$(cd "$1" && pwd -P)"; [ "$2" = "$h" ] && return 0; case "$2" in "$h"/*) echo " in ${2#"$h"/}" ;; "$HOME"/*) echo " in ~/${2#"$HOME"/}" ;; *) echo " in $2" ;; esac; }
 
 # the account question (AC3): remembered per machine in ~/.config/ade/accounts as hub<TAB>recorded<TAB>current<TAB>continue
 acct_ok() { [ -f "$CONF_DIR/accounts" ] && grep -qxF -- "$(printf '%s\t%s\t%s\tcontinue' "$1" "$2" "$3")" "$CONF_DIR/accounts"; }
-acct_question() {   # <hub> <label> <recorded fp>: 0 once answered (continue, or signed in to the recorded account)
+acct_question() {   # <hub> <label> <recorded fp>: 0 once answered (continue, or signed in to the recorded one); a terminal only
   local h="$1" label="$2" rec="$3" cur; cur="$(account_fp "$h")"
   if [ -n "$cur" ]; then echo "This hub was set up with $label; Claude Code here is signed in to another account."
   else echo "This hub was set up with $label; Claude Code here is not signed in to an account."; fi
-  printf 'Continue with the current account and reconnect everything (c), or sign in to the recorded one (s)? [c/s] '
-  IFS= read -r ANSWER || ANSWER=""; [ -t 0 ] || echo
+  tty_ask "Continue with the current account and reconnect everything (c), or sign in to the recorded one (s)? [c/s]"
   case "$ANSWER" in
     c|C) { [ -f "$CONF_DIR/accounts" ] && cat "$CONF_DIR/accounts"; printf '%s\t%s\t%s\tcontinue\n' "$h" "$rec" "$cur"; } | write_conf_file accounts
       echo "continuing with this account; run ade restore to reconnect everything"; return 0 ;;
     s|S) command -v claude > /dev/null 2>&1 || die 2 "claude is not on PATH; install Claude Code first"
-      claude auth login || die 1 "the sign-in did not finish"
+      hub_claude "$h" auth login < /dev/tty || die 1 "the sign-in did not finish"
       [ "$(account_fp "$h")" = "$rec" ] && { echo "signed in to $label"; return 0; }
       die 1 "Claude Code is still signed in to another account than $label" ;;
   esac
   return 1
 }
-conn_gate() {   # <hub>: before a command that needs a connection; asks the account question until it is answered
-  local f="$1/.ade/connections.json" label rec cur
+conn_account() {   # <hub>: "label<US>fingerprint" from the hub's record; 1 (the reason on stderr) when it is not valid
+  local out; out="$(conn_py "$1/.ade/connections.json" get)" || return 1
+  printf '%s\n' "$out" | awk -F "$US" '$1 == "account" { print $2 FS $3; exit }'
+}
+conn_gate() {   # <hub>: before a command that needs a connection; asks the account question (a person at a terminal)
+  local f="$1/.ade/connections.json" acct label rec cur
   [ -f "$f" ] || return 0
-  IFS="$(printf '\t')" read -r _ label rec <<EOF
-$(conn_py "$f" get 2> /dev/null | grep "^account$TAB")
+  acct="$(conn_account "$1")" || die 1 "nothing runs until .ade/connections.json is fixed (ade restore --check shows why)"
+  IFS="$US" read -r label rec <<EOF
+$acct
 EOF
   [ -n "$rec" ] || return 0; cur="$(account_fp "$1")"
   [ "$cur" = "$rec" ] || acct_ok "$1" "$rec" "$cur" && return 0
+  agent_context && die 2 "this hub was set up with $label and Claude Code here is on another account; a person answers that at a terminal (ade restore), an agent cannot"
+  { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || die 2 "this hub was set up with $label and Claude Code here is on another account; answer at a terminal (ade restore)"
   acct_question "$1" "$label" "$rec" && return 0
   die 2 "answer the account question first (ade restore asks it again)"
 }
 
-# conn_state <hub>: one "kind<TAB>name<TAB>state<TAB>detail" line per connection; state ready|missing|different|unknown
+# conn_state <hub>: one line per connection, fields kind name state detail folder data (US-separated); state
+# ready|missing|different|unknown; data is the marketplace repo or the plugin ref. 1 when a record is not valid.
 conn_state() {
-  local h="$1" k a b c cur mk=""
-  command -v claude > /dev/null 2>&1 && mk="$(claude plugin marketplace list 2> /dev/null < /dev/null)"
-  while IFS="$(printf '\t')" read -r k a b c <&3; do
+  local h="$1" k a b c cur dir recs="" out v st why hp
+  while IFS= read -r dir; do [ -n "$dir" ] || continue
+    out="$(conn_py "$dir/.ade/connections.json" get)" || return 1
+    [ -z "$out" ] || recs="$recs$(printf '%s\n' "$out" | D="$dir" awk '{ print $0 "\037" ENVIRON["D"] }')
+"
+  done <<EOF
+$(conn_dirs "$h")
+EOF
+  hp="$(cd "$h" && pwd -P)"
+  conn_line() { printf '%s\037%s\037%s\037%s\037%s\037%s\n' "$@"; }   # kind name state detail folder [data]
+  while IFS="$US" read -r k a b c dir <&3; do
+    [ -n "$k" ] || continue
+    [ "$dir" = "$hp" ] || case "$k" in marketplace|plugin) ;; *) continue ;; esac   # a project names its plugins only
     case "$k" in
       account) cur="$(account_fp "$h")"
-        if [ "$cur" = "$b" ]; then printf 'account\t%s\tready\t\n' "$a"
-        elif acct_ok "$h" "$b" "$cur"; then printf 'account\t%s\tdifferent\tcontinuing with this account\n' "$a"
-        elif [ -z "$cur" ]; then printf 'account\t%s\tmissing\tnot signed in\n' "$a"
-        else printf 'account\t%s\tdifferent\t%s\n' "$a" "another account is signed in"; fi ;;
+        if [ "$cur" = "$b" ]; then conn_line account "$a" ready "" "$dir" ""
+        elif acct_ok "$h" "$b" "$cur"; then conn_line account "$a" different "continuing with this account" "$dir" ""
+        elif [ -z "$cur" ]; then conn_line account "$a" missing "not signed in" "$dir" ""
+        else conn_line account "$a" different "another account is signed in" "$dir" ""; fi ;;
       provider)
         if [ "$b" = account ]; then
-          case "$a" in anthropic) if command -v claude > /dev/null 2>&1 && claude_signed_in < /dev/null; then printf 'provider\t%s\tready\t\n' "$a"
-              else printf 'provider\t%s\tmissing\tnot signed in\n' "$a"; fi ;;
-            *) printf 'provider\t%s\tunknown\tsigned in through its own CLI\n' "$a" ;; esac
-        elif key_stored "$h" "$a" < /dev/null; then printf 'key\t%s\tready\t\n' "$a"
-        else printf 'key\t%s\tmissing\t\n' "$a"; fi ;;
-      marketplace) if printf '%s\n' "$mk" | grep -qF -- "$a"; then printf 'marketplace\t%s\tready\t%s\n' "$a" "$b"
-        else printf 'marketplace\t%s\tmissing\t%s\n' "$a" "$b"; fi ;;
-      plugin) if plugin_installed "$a@$b"; then printf 'plugin\t%s@%s\tready\t%s\n' "$a" "$b" "$c"
-        else printf 'plugin\t%s@%s\tmissing\t%s\n' "$a" "$b" "$c"; fi ;;
-      channel) if [ "$a" != telegram ]; then printf 'channel\t%s\tunknown\tbin/chat setup %s restores it\n' "$a" "$a"
-        elif key_stored "$h" telegram < /dev/null; then printf 'channel\t%s\tready\t%s\n' "$a" "$b"
-        else printf 'channel\t%s\tmissing\t%s\n' "$a" "$b"; fi ;;
-      service) if service_present "$h" "$a"; then printf 'service\t%s\tready\t\n' "$a"; else printf 'service\t%s\tmissing\t\n' "$a"; fi ;;
+          case "$a" in anthropic) if command -v claude > /dev/null 2>&1 && claude_signed_in "$h" < /dev/null; then st=ready; why=""
+              else st=missing; why="not signed in"; fi ;;
+            *) st=unknown; why="signed in through its own CLI" ;; esac
+          conn_line provider "$a" "$st" "$why" "$dir" ""
+        elif key_stored "$h" "$a" < /dev/null; then conn_line key "$a" ready "" "$dir" ""
+        else conn_line key "$a" missing "" "$dir" ""; fi ;;
+      marketplace) if mkt_present "$h" "$a"; then st=ready; else st=missing; fi
+        conn_line marketplace "$a" "$st" "$(repo_url "$b")" "$dir" "$b" ;;
+      plugin) if v="$(plugin_version "$h" "$dir" "$a@$b")"; then
+          if [ "v$v" = "$c" ]; then st=ready; why="$c"
+          else st=different; case "$v" in unknown) why="recorded $c, installed unknown" ;; *) why="recorded $c, installed v$v" ;; esac; fi
+        else st=missing; why="$c"; fi
+        conn_line plugin "$a@$b" "$st" "$why" "$dir" "$c" ;;
+      channel) if [ "$a" != telegram ]; then st=unknown; why="bin/chat setup $a restores it"
+        elif key_stored "$h" telegram < /dev/null; then st=ready; why="$b"; else st=missing; why="$b"; fi
+        conn_line channel "$a" "$st" "$why" "$dir" "" ;;
+      service) if service_present "$h" "$a"; then st=ready; else st=missing; fi
+        conn_line service "$a" "$st" "" "$dir" "" ;;
     esac
   done 3<<EOF
-$(conn_py "$h/.ade/connections.json" get)
+$recs
 EOF
 }
 conn_gap() { case "$3" in missing) return 0 ;; different) [ "$4" != "continuing with this account" ] ;; *) return 1 ;; esac; }
 
 drop_role() {   # <hub> <provider>: takes a provider out of HUB_PROVIDERS_ALLOWED
   local old new; old="$(conf_get "$1" HUB_PROVIDERS_ALLOWED)"
-  new="$(printf '%s\n' $old | grep -vx -- "$2" | tr '\n' ' ' | sed 's/ $//')"
+  new="$(printf '%s\n' $old | awk -v p="$2" 'NF && $0 != p' | tr '\n' ' ' | sed 's/ $//')"
   [ "$new" = "$old" ] || conf_set "$1" HUB_PROVIDERS_ALLOWED "$new"
 }
-restore_plugin() {   # <hub> <name> <marketplace> <ref>: the marketplace when missing, the ref when still published
-  local h="$1" n="$2" m="$3" ref="$4" repo
-  repo="$(conn_py "$h/.ade/connections.json" get | awk -F '\t' -v m="$m" '$1 == "marketplace" && $2 == m { print $3; exit }')"
-  [ -n "$repo" ] || repo="$ADE_SKILLS_REPO"
-  command -v claude > /dev/null 2>&1 || { RESULT="failed (claude is not installed)"; return 1; }
-  if [ -n "$ref" ] && ! git ls-remote --exit-code --tags "$repo" "refs/tags/$ref" > /dev/null 2>&1 < /dev/null; then
-    echo "ade: $n@$m $ref is no longer published; installing the latest ($ADE_SKILLS_REF)" >&2; fi
-  if ! claude plugin marketplace list 2> /dev/null < /dev/null | grep -qF -- "$m"; then
-    local msrc="$repo"; [ "$msrc" = https://github.com/better-ade/ade-skills ] && msrc=better-ade/ade-skills
-    claude plugin marketplace add "$msrc" < /dev/null > /dev/null || { RESULT="failed (could not add the $m marketplace)"; return 1; }
+# mkt_add <hub> <name> <repo> <ref>: a marketplace other than the built-in ade-skills is added only when its name is
+# typed back; at the recorded tag when it is still published (a git URL with #<tag>), else the latest with a warning
+mkt_add() {
+  local h="$1" m="$2" url; url="$(repo_url "$3")"
+  if [ "$m" != ade-skills ]; then
+    tty_ask "The marketplace $m comes from $url, which is not ade's own. Type its name ($m) to add it:"
+    [ "$ANSWER" = "$m" ] || { RESULT="skipped (the name was not typed back)"; return 1; }
   fi
-  (cd "$h" && claude plugin install "$n@$m" --scope project < /dev/null > /dev/null) || { RESULT="failed (claude plugin install $n@$m)"; return 1; }
-  RESULT=ready
+  local src="$url"
+  if [ -n "${4:-}" ]; then
+    if git ls-remote --exit-code --tags -- "$url" "refs/tags/$4" > /dev/null 2>&1 < /dev/null; then
+      case "$url" in https://*) src="${url%.git}.git#$4" ;; esac
+    else echo "ade: $m $4 is no longer published; adding its latest" >&2; fi
+  fi
+  hub_claude "$h" plugin marketplace add -- "$src" < /dev/null > /dev/null || { RESULT="failed (could not add the $m marketplace)"; return 1; }
+}
+# restore_plugin <hub> <folder> <name> <marketplace> <ref> <repo>: the marketplace when missing, then the plugin in
+# its folder; ready only when the installed version is the recorded one
+restore_plugin() {
+  local h="$1" dir="$2" n="$3" m="$4" ref="$5" repo="$6" v
+  command -v claude > /dev/null 2>&1 || { RESULT="failed (claude is not installed)"; return 1; }
+  if mkt_present "$h" "$m"; then
+    git ls-remote --exit-code --tags -- "$(repo_url "$repo")" "refs/tags/$ref" > /dev/null 2>&1 < /dev/null ||
+      echo "ade: $n@$m $ref is no longer published; installing the latest" >&2
+  else mkt_add "$h" "$m" "$repo" "$ref" || return 1; fi
+  (cd "$dir" && hub_claude "$h" plugin install --scope project -- "$n@$m" < /dev/null > /dev/null) || { RESULT="failed (claude plugin install $n@$m)"; return 1; }
+  v="$(plugin_version "$h" "$dir" "$n@$m")" || { RESULT="failed ($n@$m is still not installed)"; return 1; }
+  if [ "v$v" = "$ref" ]; then RESULT=ready; return 0; fi
+  case "$v" in unknown) RESULT="different (recorded $ref, installed unknown)" ;; *) RESULT="different (recorded $ref, installed v$v)" ;; esac
+  return 1
 }
 
 RESTORE_USAGE="usage: ade restore [--check] [--label <name>]"
 cmd_restore() {
-  local check=0 label="" hub f lines k n st det gaps=0 needs="" fixed=0 out
+  local check=0 label="" hub f lines k n st det dir data gaps=0 needs="" fixed=0 out where
   while [ $# -gt 0 ]; do case "$1" in
     --check) check=1; shift ;;
     --label) [ $# -ge 2 ] || die 2 "$RESTORE_USAGE"; label="$2"; shift 2
@@ -1714,43 +1897,58 @@ cmd_restore() {
   hub="$(find_hub)" || exit $?; f="$hub/.ade/connections.json"
   [ -f "$f" ] || die 2 "no .ade/connections.json in $hub; ade setup writes one"
   if [ -n "$label" ]; then conn_py "$f" label "$label" > /dev/null || exit 1; echo "account label: $label"; return 0; fi
-  lines="$(conn_state "$hub")" || exit 1
   if [ "$check" = 1 ]; then
-    while IFS="$(printf '\t')" read -r k n st det; do [ -n "$k" ] || continue
-      echo "$k $n: $st${det:+ ($det)}"; conn_gap "$k" "$n" "$st" "$det" && gaps=$((gaps + 1)); done <<EOF
+    lines="$(conn_state "$hub")" || exit 1
+    while IFS="$US" read -r k n st det dir data; do [ -n "$k" ] || continue
+      echo "$k $n$(conn_where "$hub" "$dir"): $st${det:+ ($det)}"; conn_gap "$k" "$n" "$st" "$det" && gaps=$((gaps + 1)); done <<EOF
 $lines
 EOF
     [ "$gaps" = 0 ]; return
   fi
-  while IFS="$(printf '\t')" read -r k n st det; do [ -n "$k" ] && conn_gap "$k" "$n" "$st" "$det" && gaps=$((gaps + 1)); done <<EOF
+  lines="$(conn_state "$hub")" || exit 1
+  while IFS="$US" read -r k n st det dir data; do [ -n "$k" ] && conn_gap "$k" "$n" "$st" "$det" && gaps=$((gaps + 1)); done <<EOF
 $lines
 EOF
   [ "$gaps" -gt 0 ] || { echo "nothing to restore: every connection in .ade/connections.json is ready here"; return 0; }
+  # every answer comes from a person at this terminal: never a pipe, never an agent session (as ade reset)
+  tty_ready restore; exec < /dev/tty
   echo "ade restore found:"
-  while IFS="$(printf '\t')" read -r k n st det; do [ -n "$k" ] && conn_gap "$k" "$n" "$st" "$det" && echo "  - $k $n: $st${det:+ ($det)}"; done <<EOF
+  while IFS="$US" read -r k n st det dir data; do [ -n "$k" ] && conn_gap "$k" "$n" "$st" "$det" && echo "  - $k $n$(conn_where "$hub" "$dir"): $st${det:+ ($det)}"; done <<EOF
 $lines
 EOF
-  local svc="" acct_label acct_rec
-  while IFS="$(printf '\t')" read -r k n st det <&4; do
-    [ -n "$k" ] && conn_gap "$k" "$n" "$st" "$det" || continue
-    RESULT=skipped
-    case "$k" in
-      account) IFS="$(printf '\t')" read -r _ acct_label acct_rec <<EOF
-$(conn_py "$f" get | grep "^account$TAB")
+  # the account first: nothing (a key, a plugin, a Telegram pairing) is restored under an account the user did not choose
+  while IFS="$US" read -r k n st det dir data; do
+    [ "$k" = account ] && conn_gap "$k" "$n" "$st" "$det" || continue
+    local acct; acct="$(conn_account "$hub")" || exit 1
+    IFS="$US" read -r n data <<EOF
+$acct
 EOF
-        acct_question "$hub" "$acct_label" "$acct_rec" && RESULT=ready ;;
+    acct_question "$hub" "$n" "$data" || die 2 "the account step was skipped; nothing else was restored (run ade restore again to answer it)"
+    echo "account $n: ready"; fixed=$((fixed + 1))
+  done <<EOF
+$lines
+EOF
+  local svc=""
+  while IFS="$US" read -r k n st det dir data <&4; do
+    [ -n "$k" ] && [ "$k" != account ] && conn_gap "$k" "$n" "$st" "$det" || continue
+    RESULT=skipped; where="$(conn_where "$hub" "$dir")"
+    case "$k" in
       provider) if confirm "Sign in to Claude Code with your account now?"; then
-          if claude auth login && claude_signed_in; then RESULT=ready; else RESULT="failed (the sign-in did not finish)"; fi; fi ;;
+          if hub_claude "$hub" auth login && claude_signed_in "$hub"; then RESULT=ready; else RESULT="failed (the sign-in did not finish)"; fi; fi ;;
       key) if confirm "Restore the $n key (a hidden prompt, then a live test)?"; then
           if store_key "$hub" "$n"; then
             if out="$(live_test "$hub" "$n")"; then RESULT=ready; echo "$out"
             else echo "$out"; RESULT="failed (${out#"$n: failed ("}"; RESULT="${RESULT%)}"
               drop_role "$hub" "$n"; echo "$n is left out of the roles (HUB_PROVIDERS_ALLOWED) until its live test passes"; fi
           fi; fi ;;
-      marketplace) case "$lines" in *"plugin$TAB"*"@$n${TAB}missing"*) continue ;; esac   # restored with its plugin
-        if confirm "Add the $n marketplace?"; then
-          if claude plugin marketplace add "$det" < /dev/null > /dev/null; then RESULT=ready; else RESULT="failed (claude plugin marketplace add)"; fi; fi ;;
-      plugin) confirm "Install the plugin $n${det:+ ($det)}, with its marketplace?" && restore_plugin "$hub" "${n%@*}" "${n#*@}" "$det" ;;
+      marketplace)   # restored with its plugin when one of its plugins is missing too
+        printf '%s\n' "$lines" | awk -F "$US" -v m="$n" -v d="$dir" '$1 == "plugin" && $3 != "ready" && $5 == d { split($2, x, "@"); if (x[2] == m) f = 1 } END { exit !f }' && continue
+        if confirm "Add the marketplace $n from $det$where?"; then mkt_add "$hub" "$n" "$data" "" && RESULT=ready; fi ;;
+      plugin) local pm="${n#*@}" prepo
+        prepo="$(printf '%s\n' "$lines" | awk -F "$US" -v m="$pm" '$1 == "marketplace" && $2 == m { print $6; exit }')"
+        [ -n "$prepo" ] || prepo=local   # a plugin of the built-in ade-skills with no marketplace line
+        confirm "Install the plugin $n at $data$where, from the marketplace $pm ($(repo_url "$prepo"))?" &&
+          restore_plugin "$hub" "$dir" "${n%@*}" "$pm" "$data" "$prepo" ;;
       channel) if confirm "Restore $n (its bot token at a hidden prompt, then pairing this device again)?"; then
           ask_secret "Bot token for ${det:-the bot} (hidden):"
           if [ -z "$SECRET" ]; then RESULT=skipped
@@ -1761,8 +1959,8 @@ EOF
           fi; fi ;;
       service) svc="$svc $n"; continue ;;
     esac
-    echo "$k $n: $RESULT"
-    if [ "$RESULT" = ready ]; then fixed=$((fixed + 1)); else needs="$needs, $k $n ($RESULT)"; fi
+    echo "$k $n$where: $RESULT"
+    if [ "$RESULT" = ready ]; then fixed=$((fixed + 1)); else needs="$needs, $k $n$where ($RESULT)"; fi
   done 4<<EOF
 $lines
 EOF
@@ -1792,29 +1990,63 @@ dl() {   # dl <url> [file]: https only (file:// for tests), never more than ADE_
 }
 latest_version() { local v; v="$(dl "$ADE_CLI_BASE/main/VERSION" | tr -d ' \r\n')"; matches "$v" '^[0-9]+\.[0-9]+\.[0-9]+$' && echo "$v"; }
 UPD_CHANGED=""
-self_update() {   # <check 0|1> [version]: 1 = the new file failed a check (the old one stays)
-  local v="${2:-}" self dir tmp sf want url
+ADE_END_MARKER="# ade: end of file (ade update checks this line; keep it last)"
+# temp files of an update: a trap removes every one on EXIT, INT and TERM (one path per line in UPD_TMPS)
+UPD_TMPS=""
+upd_cleanup() { local f; while IFS= read -r f; do [ -n "$f" ] && rm -rf -- "$f"; done <<EOF2
+$UPD_TMPS
+EOF2
+  UPD_TMPS=""; }
+upd_track() { UPD_TMPS="$UPD_TMPS$1
+"; }
+upd_traps() { trap upd_cleanup EXIT; trap 'upd_cleanup; exit 130' INT; trap 'upd_cleanup; exit 143' TERM; }
+upd_untrap() { upd_cleanup; trap - EXIT INT TERM; }
+# ade_check <file> <version>: the file is a whole ade script (its shebang, bash -n, the end-of-file marker as its last
+# line) and, run with bash (never made executable for this), says it is that version; prints the reason when not
+ade_check() {
+  [ "$(head -1 "$1")" = "#!/bin/bash" ] || { echo "it is not the ade script"; return 1; }
+  bash -n "$1" 2> /dev/null || { echo "it does not parse (bash -n)"; return 1; }
+  [ "$(tail -1 "$1")" = "$ADE_END_MARKER" ] || { echo "it is cut short (no end-of-file marker)"; return 1; }
+  [ "$(bash "$1" version 2> /dev/null < /dev/null)" = "ade $2" ] || { echo "ade version does not say $2"; return 1; }
+}
+# ade_put <new file> <installed path>: keeps the installed file as .ade.prev beside it (not executable), then renames
+# a copy of the new one into place; the copy is made executable only now, after its check
+ade_put() {
+  local new="$1" self="$2" dir prev put; dir="$(dirname "$self")"
+  prev="$(mktemp "$dir/.ade-prev.XXXXXX")" && upd_track "$prev" && put="$(mktemp "$dir/.ade-update.XXXXXX")" && upd_track "$put" || return 1
+  cp "$self" "$prev" && chmod 644 "$prev" && cp "$new" "$put" && chmod 755 "$put" || return 1
+  mv -f "$prev" "$dir/.ade.prev" && mv -f "$put" "$self"
+}
+self_update() {   # <check 0|1>: 1 = the new file failed its check (the old one stays)
+  local v self tmp why
   if [ -z "$ADE_VERSION" ]; then echo "ade: a checkout ($(dirname "$(ade_self)")); update it with git pull"; return 0; fi
   [ -n "$v" ] || v="$(latest_version)" || { echo "ade: could not read the latest version (offline?); ade $ADE_VERSION stays"; return 0; }
   ver_gt "$v" "$ADE_VERSION" || { echo "ade $ADE_VERSION is current"; return 0; }
   [ "$1" = 1 ] && { echo "ade $ADE_VERSION -> $v"; return 0; }
-  self="$(ade_self)"; dir="$(dirname "$self")"
-  tmp="$(mktemp "$dir/.ade-update.XXXXXX")" || { echo "ade: cannot write in $dir; ade $ADE_VERSION stays"; return 1; }
-  url="$ADE_CLI_BASE/v$v/ade"; want=""   # A12: release.json names the file and its sha256; a mismatch refuses
-  if releases_on && dl "$ADE_RELEASES_BASE/better-ade/ade-cli/releases/download/v$v/release.json" "$tmp.json" &&
-      sf="$(manifest_field "$tmp.json" file:ade)" && [ -n "$sf" ]; then
-    want="${sf%%"$TAB"*}"; [ -n "${sf#*"$TAB"}" ] && url="${sf#*"$TAB"}"
-  else echo "ade: no release.json with a sha256 for ade $v; the download is checked by ade version only"; fi
-  rm -f "$tmp.json"
-  if ! dl "$url" "$tmp.raw" || [ "$(head -1 "$tmp.raw")" != "#!/bin/bash" ]; then
-    rm -f "$tmp" "$tmp.raw"; echo "ade: could not download ade $v; ade $ADE_VERSION stays"; return 1; fi
-  if [ -n "$want" ] && [ "$(sha256_of "$tmp.raw")" != "$want" ]; then
-    rm -f "$tmp" "$tmp.raw"; echo "ade: the download of ade $v does not match its sha256 in release.json; ade $ADE_VERSION stays"; return 1; fi
-  sed "s/^ADE_VERSION=\"\"/ADE_VERSION=\"$v\"/" "$tmp.raw" > "$tmp"; rm -f "$tmp.raw"; chmod 755 "$tmp"
-  if [ "$(bash "$tmp" version 2> /dev/null < /dev/null)" != "ade $v" ]; then
-    rm -f "$tmp"; echo "ade: the new ade $v failed its check (ade version); ade $ADE_VERSION stays"; return 1; fi
-  mv -f "$tmp" "$self" || { rm -f "$tmp"; echo "ade: could not rename the new ade into place; ade $ADE_VERSION stays"; return 1; }
-  echo "ade $ADE_VERSION -> $v (renamed into place; a running ade keeps its code until it restarts)"; UPD_CHANGED="$UPD_CHANGED, ade $v"
+  self="$(ade_self)"; upd_traps
+  # the download and its check happen in a private temp folder, never in a folder on PATH
+  tmp="$(mk_tmp)" || { upd_untrap; echo "ade: no temp folder; ade $ADE_VERSION stays"; return 1; }; upd_track "$tmp"
+  if ! dl "$ADE_CLI_BASE/v$v/ade" "$tmp/raw"; then upd_untrap; echo "ade: could not download ade $v; ade $ADE_VERSION stays"; return 1; fi
+  sed "s/^ADE_VERSION=\"\"/ADE_VERSION=\"$v\"/" "$tmp/raw" > "$tmp/ade"; chmod 600 "$tmp/ade"
+  if ! why="$(ade_check "$tmp/ade" "$v")"; then upd_untrap; echo "ade: the new ade $v failed its check ($why); ade $ADE_VERSION stays"; return 1; fi
+  ade_put "$tmp/ade" "$self" || { upd_untrap; echo "ade: could not rename the new ade into place; ade $ADE_VERSION stays"; return 1; }
+  upd_untrap
+  echo "ade $ADE_VERSION -> $v (renamed into place; a running ade keeps its code until it restarts; ade update --rollback returns to $ADE_VERSION)"
+  UPD_CHANGED="$UPD_CHANGED, ade $v"
+}
+self_rollback() {   # ade update --rollback: the kept previous version (.ade.prev) back into place; the current one is kept instead
+  local self prev pv why; [ -n "$ADE_VERSION" ] || die 2 "a checkout ($(dirname "$(ade_self)")) has no kept version; use git"
+  self="$(ade_self)"; prev="$(dirname "$self")/.ade.prev"
+  [ -f "$prev" ] || die 1 "no previous version is kept ($prev); nothing changed"
+  pv="$(sed -n 's/^ADE_VERSION="\([^"]*\)".*/\1/p' "$prev" 2> /dev/null | head -1)"
+  matches "$pv" '^[0-9]+\.[0-9]+\.[0-9]+$' || die 1 "the kept previous version has no version stamp; nothing changed"
+  # a version older than the end-of-file marker has none: its shebang, bash -n and its own version line are checked
+  [ "$(head -1 "$prev")" = "#!/bin/bash" ] && bash -n "$prev" 2> /dev/null && [ "$(bash "$prev" version 2> /dev/null < /dev/null)" = "ade $pv" ] ||
+    die 1 "the kept previous version ($pv) failed its check; nothing changed"
+  upd_traps; local tmp; tmp="$(mk_tmp)" || { upd_untrap; die 1 "no temp folder; nothing changed"; }; upd_track "$tmp"
+  cp "$prev" "$tmp/ade" || { upd_untrap; die 1 "could not copy $prev; nothing changed"; }
+  ade_put "$tmp/ade" "$self" || { upd_untrap; die 1 "could not rename the previous ade into place; nothing changed"; }
+  upd_untrap; echo "ade $ADE_VERSION -> $pv (rolled back; ade update --rollback again returns to $ADE_VERSION)"
 }
 RESTART_NEEDED=0
 hub_update() {   # <hub> <check>: git pull --ff-only, then bin/method sync; 1 = refused (the hub is unchanged)
@@ -1827,12 +2059,14 @@ hub_update() {   # <hub> <check>: git pull --ff-only, then bin/method sync; 1 = 
     if [ -z "$rs" ]; then echo "hub: could not reach ${up%%/*}"; elif [ "$rs" = "$old" ]; then echo "hub: current"
     else echo "hub: new commits on $up (git pull --ff-only, then bin/method sync)"; fi; return 0
   fi
-  st="$(git -C "$h" status --porcelain 2> /dev/null)"
+  # untracked files (a journal entry, a scratch note) never block; git merge --ff-only refuses to overwrite one itself
+  st="$(git -C "$h" status --porcelain --untracked-files=no 2> /dev/null)"
   [ -z "$st" ] || { echo "hub: it has local changes (git status); commit or stash them, then ade update again; the hub is unchanged"; return 1; }
   git -C "$h" fetch -q 2> /dev/null < /dev/null || { echo "hub: could not fetch (offline?); unchanged"; return 0; }
   git -C "$h" merge-base --is-ancestor HEAD "$up" ||
     { echo "hub: not a fast-forward (it has commits $up does not); merge or rebase it yourself; the hub is unchanged"; return 1; }
-  git -C "$h" merge -q --ff-only "$up" > /dev/null 2>&1 || { echo "hub: git merge --ff-only failed; unchanged"; return 1; }
+  git -C "$h" merge -q --ff-only "$up" > /dev/null 2>&1 ||
+    { echo "hub: git merge --ff-only failed (an untracked file in the way?); the hub is unchanged"; return 1; }
   new="$(git -C "$h" rev-parse HEAD)"
   if [ "$new" = "$old" ]; then echo "hub: current"
   else echo "hub: updated ($(git -C "$h" rev-list --count "$old..$new") commit(s))"; UPD_CHANGED="$UPD_CHANGED, the hub"
@@ -1866,7 +2100,8 @@ EOF
 }
 cmd_update() {
   local check=0 rc=0 hub="" p plugins s line
-  while [ $# -gt 0 ]; do case "$1" in --check) check=1; shift ;; *) die 2 "usage: ade update [--check]" ;; esac; done
+  while [ $# -gt 0 ]; do case "$1" in --check) check=1; shift ;; --rollback) [ $# -eq 1 ] && [ "$check" = 0 ] || die 2 "usage: ade update [--check | --rollback]"; self_rollback; return ;;
+    *) die 2 "usage: ade update [--check | --rollback]" ;; esac; done
   UPD_CHANGED=""; RESTART_NEEDED=0
   self_update "$check" || rc=1
   hub="$( (find_hub) 2> /dev/null)" || hub=""
@@ -2038,3 +2273,4 @@ case "$cmd" in
   help|--help|-h) usage ;;
   *) usage >&2; die 2 "unknown command: $cmd" ;;
 esac
+# ade: end of file (ade update checks this line; keep it last)

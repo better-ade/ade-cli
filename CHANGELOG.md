@@ -8,6 +8,7 @@
   `ADE_NO_AUTO_UPDATE=1` only notifies, `ADE_NO_UPDATE_CHECK=1` makes no request. `ade update` and `install.sh` refuse
   a file whose sha256 does not match `release.json`.
 - `ade update [--check]` (A11): replaces ade by one rename after the new file passes `ade version` (a running ade keeps
+- `ade update [--check | --rollback]` (A11; the previous ade is kept as `.ade.prev`, untracked hub files never block): replaces ade by one rename after the new file passes `ade version` (a running ade keeps
   its code; `ade dash` re-execs on a new version), pulls the hub with `--ff-only` (local changes or a merge refuse),
   runs `bin/method sync`, `claude plugin update` for ade-skills plugins and `claude update`, reloads `ade ui` with
   `tmux source-file`, restarts an orchestrator on new chat code only when it is idle (else later), and sends one
@@ -16,7 +17,9 @@
   `init`, `orchestrator new --channel` and `chat setup` record what the work depends on, by name only (the Claude
   account as a label and a one-way fingerprint). `ade restore` walks each gap with a yes; `--check` prints one line per
   connection. Another Claude account stops `work`, `dispatch`, `agent-run`, `claude` and `orchestrator start` until
-  the question is answered (remembered per machine in `~/.config/ade/accounts`).
+  the question is answered (remembered per machine in `~/.config/ade/accounts`). The record is checked value by value
+  and rejected whole when anything in it is off; answers come from a person at the terminal, never a pipe or an agent;
+  plugins are verified at their recorded version, for the hub and its projects.
 - `ade clean [--yes]`, `ade reset [--keys] [--hub <path>]`, `ade uninstall` (A9): each lists what it would do first.
   clean removes stale locks, old dispatch markers and event cursors, ade's old temp folders, dead `ade-*` tmux sessions
   and clean merged worktrees; reset stops orchestrators, removes the chat and monitor services, the `ade@ade-skills`

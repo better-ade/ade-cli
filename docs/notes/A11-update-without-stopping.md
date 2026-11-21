@@ -16,3 +16,17 @@
   ever sent by ade update itself.
 - One `bin/notify all` line names what changed and "applies on your next prompt" (plus `/reload-plugins`).
 - Left for A12: the daily check (stamp, auto-update policy) and the sha256 check against the release manifest.
+
+## Fix round (2026-11-22, after the adversarial review)
+- The download goes to a private temp folder (`mk_tmp`); `ade_check` checks it there with mode 600: `#!/bin/bash`,
+  `bash -n`, the last line `# ade: end of file (ade update checks this line; keep it last)` (a cut-short download has
+  no such line), and `bash <file> version`. Only then `ade_put` makes two temp files beside the installed one (mode
+  644 for the kept copy, 755 for the new one, made just before the renames): the installed file becomes `.ade.prev`,
+  the new one is renamed over the installed path. A version stamp alone is easy to fake; A12 adds the sha256 from the
+  release manifest.
+- Every temp path is tracked; `upd_traps` removes them on EXIT, INT (exit 130) and TERM (exit 143), and clears the
+  traps when the step ends.
+- `ade update --rollback`: `.ade.prev` (shebang, `bash -n` and its own `ade version`; older files have no marker) back
+  into place; the current one is kept as `.ade.prev`, so a second rollback returns.
+- The hub: `git status --porcelain --untracked-files=no`, so an untracked journal file never blocks;
+  `git merge --ff-only` refuses an untracked file the pull would overwrite, and the hub stays unchanged.
