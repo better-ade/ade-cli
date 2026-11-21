@@ -47,6 +47,7 @@ Housekeeping (each lists what it would do first; nothing of yours is deleted):
   clean       ade clean [--yes]: stale locks, old markers, cursors and temp folders, dead ade tmux sessions, clean merged worktrees
   reset       ade reset [--keys] [--hub <path>]: undo ade setup here; --keys forgets its keys; --hub moves that hub to the Trash
   uninstall   ade uninstall [--keys] [--hub <path>]: ade reset, then remove the installed ade
+  update      ade update [--check]: ade, the hub, its plugins and Claude Code, with nothing stopped
   restore     ade restore [--check] [--label <name>]: bring back every connection .ade/connections.json names
 
 Project commands (no hub needed):
@@ -1097,6 +1098,12 @@ cmd_ui() {
   TMUX=""; export TMUX; exec tmux -L "$ADE_TMUX_SOCKET" attach-session -t "=$s"
 }
 
+dash_reexec() {   # a running ade dash re-execs itself once ade update renamed a new version into place
+  local self v; [ -n "$ADE_VERSION" ] || return 0; self="$(ade_self)"
+  v="$(sed -n 's/^ADE_VERSION="\([^"]*\)".*/\1/p' "$self" 2> /dev/null | head -1)"
+  [ -n "$v" ] && [ "$v" != "$ADE_VERSION" ] || return 0
+  echo "ade dash: ade $v is installed; restarting"; rm_tmp "$DASH_DIR"; exec "$self" dash
+}
 cmd_dash() {
   local hub d once=0; [ "${1:-}" = --once ] && once=1
   [ $# -eq 0 ] || [ "$once" = 1 ] || die 2 "usage: ade dash [--once]"
@@ -1105,6 +1112,7 @@ cmd_dash() {
     ui_data "$hub" "$d"
     if [ "$once" = 1 ]; then ui_render dash "$d"; return 0; fi
     printf '\033[H\033[2J'; ui_render dash "$d"; sleep 2
+    dash_reexec
   done
 }
 
@@ -1769,6 +1777,112 @@ EOF
   echo "every connection is ready"
 }
 
+# ade update (story A11): everything current while every session, agent and orchestrator keeps running. ade itself is
+# replaced by one rename (bash reads a script as it runs it, so the running file is never written); nothing is killed.
+ADE_CLI_BASE="${ADE_CLI_BASE:-https://raw.githubusercontent.com/better-ade/ade-cli}"
+RESTART_FILES="bin/chat bin/chat.py bin/brain bin/brain.py"   # the orchestrator's code: a running one needs a restart
+ver_gt() { awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, "."); for (i = 1; i <= 3; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 }; exit 1 }'; }
+dl() {   # dl <url> [file]: https only (file:// for tests), never more than ADE_UPDATE_TIMEOUT seconds
+  local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"
+  if [ -n "${2:-}" ]; then curl --proto "$proto" --proto-redir "$proto" -fsSL --max-time "${ADE_UPDATE_TIMEOUT:-20}" "$1" -o "$2" 2> /dev/null
+  else curl --proto "$proto" --proto-redir "$proto" -fsSL --max-time "${ADE_UPDATE_TIMEOUT:-20}" "$1" 2> /dev/null; fi
+}
+latest_version() { local v; v="$(dl "$ADE_CLI_BASE/main/VERSION" | tr -d ' \r\n')"; matches "$v" '^[0-9]+\.[0-9]+\.[0-9]+$' && echo "$v"; }
+UPD_CHANGED=""
+self_update() {   # <check 0|1>: 1 = the new file failed its check (the old one stays)
+  local v self dir tmp
+  if [ -z "$ADE_VERSION" ]; then echo "ade: a checkout ($(dirname "$(ade_self)")); update it with git pull"; return 0; fi
+  v="$(latest_version)" || { echo "ade: could not read the latest version (offline?); ade $ADE_VERSION stays"; return 0; }
+  ver_gt "$v" "$ADE_VERSION" || { echo "ade $ADE_VERSION is current"; return 0; }
+  [ "$1" = 1 ] && { echo "ade $ADE_VERSION -> $v"; return 0; }
+  self="$(ade_self)"; dir="$(dirname "$self")"
+  tmp="$(mktemp "$dir/.ade-update.XXXXXX")" || { echo "ade: cannot write in $dir; ade $ADE_VERSION stays"; return 1; }
+  if ! dl "$ADE_CLI_BASE/v$v/ade" "$tmp.raw" || [ "$(head -1 "$tmp.raw")" != "#!/bin/bash" ]; then
+    rm -f "$tmp" "$tmp.raw"; echo "ade: could not download ade $v; ade $ADE_VERSION stays"; return 1; fi
+  sed "s/^ADE_VERSION=\"\"/ADE_VERSION=\"$v\"/" "$tmp.raw" > "$tmp"; rm -f "$tmp.raw"; chmod 755 "$tmp"
+  if [ "$(bash "$tmp" version 2> /dev/null < /dev/null)" != "ade $v" ]; then
+    rm -f "$tmp"; echo "ade: the new ade $v failed its check (ade version); ade $ADE_VERSION stays"; return 1; fi
+  mv -f "$tmp" "$self" || { rm -f "$tmp"; echo "ade: could not rename the new ade into place; ade $ADE_VERSION stays"; return 1; }
+  echo "ade $ADE_VERSION -> $v (renamed into place; a running ade keeps its code until it restarts)"; UPD_CHANGED="$UPD_CHANGED, ade $v"
+}
+RESTART_NEEDED=0
+hub_update() {   # <hub> <check>: git pull --ff-only, then bin/method sync; 1 = refused (the hub is unchanged)
+  local h="$1" up old new rs st f
+  git -C "$h" rev-parse --show-toplevel > /dev/null 2>&1 || { echo "hub: not a git repository; skipped"; return 0; }
+  up="$(git -C "$h" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2> /dev/null)" || { echo "hub: no upstream branch; skipped"; return 0; }
+  old="$(git -C "$h" rev-parse HEAD)"
+  if [ "$2" = 1 ]; then
+    rs="$(git -C "$h" ls-remote "${up%%/*}" "refs/heads/${up#*/}" 2> /dev/null < /dev/null | awk '{ print $1; exit }')"
+    if [ -z "$rs" ]; then echo "hub: could not reach ${up%%/*}"; elif [ "$rs" = "$old" ]; then echo "hub: current"
+    else echo "hub: new commits on $up (git pull --ff-only, then bin/method sync)"; fi; return 0
+  fi
+  st="$(git -C "$h" status --porcelain 2> /dev/null)"
+  [ -z "$st" ] || { echo "hub: it has local changes (git status); commit or stash them, then ade update again; the hub is unchanged"; return 1; }
+  git -C "$h" fetch -q 2> /dev/null < /dev/null || { echo "hub: could not fetch (offline?); unchanged"; return 0; }
+  git -C "$h" merge-base --is-ancestor HEAD "$up" ||
+    { echo "hub: not a fast-forward (it has commits $up does not); merge or rebase it yourself; the hub is unchanged"; return 1; }
+  git -C "$h" merge -q --ff-only "$up" > /dev/null 2>&1 || { echo "hub: git merge --ff-only failed; unchanged"; return 1; }
+  new="$(git -C "$h" rev-parse HEAD)"
+  if [ "$new" = "$old" ]; then echo "hub: current"
+  else echo "hub: updated ($(git -C "$h" rev-list --count "$old..$new") commit(s))"; UPD_CHANGED="$UPD_CHANGED, the hub"
+    for f in $RESTART_FILES; do git -C "$h" diff --name-only "$old" "$new" | grep -qxF -- "$f" && RESTART_NEEDED=1; done; fi
+  [ -x "$h/bin/method" ] && { hub_run "$h" method sync < /dev/null > /dev/null 2>&1 || echo "hub: bin/method sync failed"; }
+  return 0
+}
+ade_plugins() { python3 -c 'import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: sys.exit(0)
+for k in sorted(d.get("plugins", d) or {}):
+    if k.endswith("@ade-skills"): print(k)' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" 2> /dev/null; }
+orch_idle() { hub_run "$1" sessions 2> /dev/null < /dev/null | awk '$1 == "main" { for (i = 2; i <= NF; i++) if ($i == "idle") f = 1 } END { exit !f }'; }
+restart_parts() {   # <hub>: a running orchestrator on new code restarts only when idle; a busy one is left for later
+  local h="$1" st since p="$CONF_DIR/restart-pending"
+  [ "$RESTART_NEEDED" = 1 ] || { [ -f "$p" ] && grep -qxF -- "$h" "$p"; } || return 0
+  read -r st since <<EOF
+$(orch_state "$h" < /dev/null)
+EOF
+  if [ "$st" = running ] && ! orch_idle "$h"; then
+    { [ -f "$p" ] && grep -vxF -- "$h" "$p"; echo "$h"; } | write_conf_file restart-pending
+    echo "orchestrator: busy on the old bin/chat; it restarts when it is idle (the next ade update), never interrupted"; return 0
+  fi
+  if [ "$st" = running ]; then
+    if chat "$h" stop < /dev/null > /dev/null && chat "$h" start < /dev/null > /dev/null; then
+      echo "orchestrator: idle, restarted on the new bin/chat"; journal_line "$h" "ade update: restarted the orchestrator for the new bin/chat (it was idle)"
+    else echo "orchestrator: the restart failed; run ade orchestrator start"; fi
+  fi
+  [ -f "$p" ] && grep -vxF -- "$h" "$p" | write_conf_file restart-pending
+  return 0
+}
+cmd_update() {
+  local check=0 rc=0 hub="" p plugins s line
+  while [ $# -gt 0 ]; do case "$1" in --check) check=1; shift ;; *) die 2 "usage: ade update [--check]" ;; esac; done
+  UPD_CHANGED=""; RESTART_NEEDED=0
+  self_update "$check" || rc=1
+  hub="$( (find_hub) 2> /dev/null)" || hub=""
+  [ -n "$hub" ] && { hub_update "$hub" "$check" || rc=1; }
+  plugins="$(ade_plugins)"
+  if command -v claude > /dev/null 2>&1; then
+    for p in $plugins; do
+      if [ "$check" = 1 ]; then echo "plugin $p: claude plugin update"
+      elif claude plugin update "$p" < /dev/null > /dev/null 2>&1; then echo "plugin $p: updated"; else echo "plugin $p: update failed"; fi
+    done
+    [ "$check" = 0 ] && [ -n "$plugins" ] && UPD_CHANGED="$UPD_CHANGED, plugins"
+    if [ "$check" = 1 ]; then echo "Claude Code: claude update (running sessions keep their version until they restart)"
+    else ( unset ADE_NO_CLAUDE_UPDATE; rm -f "$CONF_DIR/claude-updated"; claude_update "$hub" ) && UPD_CHANGED="$UPD_CHANGED, Claude Code (on restart)"; fi
+  fi
+  if [ -n "$hub" ] && s="$(ui_live "$hub")"; then
+    if [ "$check" = 1 ]; then echo "ade ui: reloads its theme and keys (tmux source-file; stays attached)"
+    else ui_conf "$hub" "$s" | write_conf_file "ui-$s.tmux.conf"; ui_tmux source-file "$CONF_DIR/ui-$s.tmux.conf" < /dev/null && echo "ade ui: reloaded (still attached)"; fi
+  fi
+  [ "$check" = 1 ] && return 0
+  [ -n "$hub" ] && restart_parts "$hub"
+  if [ -n "$hub" ] && [ -n "$UPD_CHANGED" ] && [ -x "$hub/bin/notify" ]; then
+    line="ade update: ${UPD_CHANGED#, }; applies on your next prompt"; case "$UPD_CHANGED" in *plugins*) line="$line (run /reload-plugins for the plugins)" ;; esac
+    hub_run "$hub" notify all "$line" < /dev/null > /dev/null 2>&1 || echo "ade: bin/notify failed"
+  fi
+  return $rc
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -1799,6 +1913,7 @@ case "$cmd" in
   open) cmd_open "$@" ;;
   clean) cmd_clean "$@" ;;
   restore) cmd_restore "$@" ;;
+  update) cmd_update "$@" ;;
   reset) cmd_reset reset "$@" ;;
   uninstall) cmd_reset uninstall "$@" ;;
   version|--version|-v) cmd_version ;;

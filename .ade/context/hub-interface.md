@@ -109,3 +109,12 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   installs the hub's services for this platform (launchd or systemd). Tests fake all three.
 - Installed plugins: Claude Code's `${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/installed_plugins.json` (`plugins` keys
   `<name>@<marketplace>`); marketplaces: `claude plugin marketplace list`.
+
+## `ade update` and the hub (A11)
+- Releases: `$ADE_CLI_BASE/main/VERSION` and `$ADE_CLI_BASE/v<version>/ade` (default
+  `https://raw.githubusercontent.com/better-ade/ade-cli`, as `install.sh`); the new file is stamped like `install.sh`.
+- The hub: `git pull --ff-only` on its upstream, then `bin/method sync`. A pull that changes `bin/chat`, `bin/chat.py`,
+  `bin/brain` or `bin/brain.py` needs a running orchestrator restarted: only when `bin/sessions` shows the row `main`
+  as `idle` (`bin/chat stop`, then `bin/chat start`, journaled); else `~/.config/ade/restart-pending` (one hub path
+  per line) keeps it for the next `ade update`.
+- `bin/notify all <text>`: one line per `ade update` that changed something.

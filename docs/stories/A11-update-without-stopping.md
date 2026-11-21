@@ -1,6 +1,6 @@
 # A11: `ade update` without stopping anything
 
-Status: Ready for development (2026-11-21). Risk: high (replaces running code). Depends on A1–A6.
+Status: In review (2026-11-22); the daily check (AC7, second half) comes with A12. Risk: high (replaces running code). Depends on A1–A6.
 Owner's intent (2026-11-21): updates must not need to terminate the session. Verification command: `bash tests/run.sh`.
 
 ## Goal

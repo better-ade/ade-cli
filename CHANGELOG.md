@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- `ade update [--check]` (A11): replaces ade by one rename after the new file passes `ade version` (a running ade keeps
+  its code; `ade dash` re-execs on a new version), pulls the hub with `--ff-only` (local changes or a merge refuse),
+  runs `bin/method sync`, `claude plugin update` for ade-skills plugins and `claude update`, reloads `ade ui` with
+  `tmux source-file`, restarts an orchestrator on new chat code only when it is idle (else later), and sends one
+  `bin/notify all` line. Nothing is killed. `--check` changes nothing.
 - `.ade/connections.json` and `ade restore [--check] [--label <name>]` (A10): `ade setup`, `skills add`, `agent add`,
   `init`, `orchestrator new --channel` and `chat setup` record what the work depends on, by name only (the Claude
   account as a label and a one-way fingerprint). `ade restore` walks each gap with a yes; `--check` prints one line per
