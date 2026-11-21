@@ -123,8 +123,8 @@ real_tmux() {   # AC1 on a real tmux, when installed
   unset TMUX
   bash "$ADE" ui --detach > "$T/out" 2>&1 || { cat "$T/out"; fail "real ui"; }
   bash "$ADE" ui --detach > "$T/out" 2>&1 || { cat "$T/out"; fail "real ui again"; }
-  n=$(tmux -L "$ADE_TMUX_SOCKET" list-sessions -F '#{session_name}' | grep -c '^ade-real$')
-  w=$(tmux -L "$ADE_TMUX_SOCKET" list-windows -t =ade-real -F '#{window_index} #{window_name}' | head -1)
+  RS="$(bash "$ADE" ui --session)"; n=$(tmux -L "$ADE_TMUX_SOCKET" list-sessions -F "#{session_name}" | grep -cx "$RS")
+  w=$(tmux -L "$ADE_TMUX_SOCKET" list-windows -t "=$RS" -F '#{window_index} #{window_name}' | head -1)
   tmux -L "$ADE_TMUX_SOCKET" kill-server 2>/dev/null
   assert_eq "$n" 1 "one session"; assert_eq "$w" "0 orchestrator" "tab 0 is the orchestrator"
 }
