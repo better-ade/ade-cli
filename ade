@@ -208,7 +208,7 @@ cmd_orchestrator() {
         --channel) [ $# -ge 2 ] || die 2 "--channel needs a name"; channels="$channels $2"; shift 2 ;;
         *) die 2 "$ORCH_USAGE" ;;
       esac; done
-      printf '%s' "$name" | grep -Eq '^[a-z0-9-]+$' || die 2 "orchestrator names are lower-case letters, digits and -"
+      [[ $name =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || die 2 "orchestrator names are lower-case letters, digits and - (a letter or digit first, at most 64)"
       [ -n "$hub" ] || die 2 "$ORCH_USAGE"
       is_hub "$hub" || die 2 "$hub is not a hub (no bin/lib.sh and hub.conf)"
       hub="$(cd "$hub" && pwd -P)"
@@ -370,16 +370,22 @@ if json.dumps(d, sort_keys=True) != before:
 PY
 }
 
+# skips_permissions <args>: any spelling that turns permission checks off (sets SKIP_ARG); case and = forms included
+skips_permissions() {
+  local a l; for a in "$@"; do l="$(printf '%s' "$a" | tr 'A-Z' 'a-z')"
+    case "$l" in *skip-permissions*|*bypasspermissions*) SKIP_ARG="$a"; return 0 ;; esac; done; return 1
+}
+
 cmd_claude() {
   local a hub model name cl cfg
-  for a in "$@"; do [ "$a" = --dangerously-skip-permissions ] && die 2 "ade claude never skips permissions (--dangerously-skip-permissions refused)"; done
+  skips_permissions "$@" && die 2 "ade claude never skips permissions (refused: $SKIP_ARG)"
   if [ $# -gt 0 ] && [ "$1" != -- ]; then run_hub work "$@"; fi
   [ $# -gt 0 ] && shift
   hub="$(find_hub)" || exit $?
-  enable_ade_plugin "$hub/.claude/settings.json" || exit 1
   model="$(conf_get "$hub" HUB_ROOT_MODEL)"; name="$(hub_label "$hub")"
   cl="$(conf_get "$hub" HUB_CLAUDE)"; cl="${cl:-claude}"; cfg="$(conf_get "$hub" HUB_CLAUDE_CONFIG_DIR)"
   command -v "$cl" > /dev/null 2>&1 || die 2 "$cl is not on PATH; install Claude Code first (ade setup does it)"
+  enable_ade_plugin "$hub/.claude/settings.json" || exit 1
   cd "$hub" || die 1 "cannot enter $hub"
   HUB="$hub"; export HUB; [ -z "$cfg" ] || { CLAUDE_CONFIG_DIR="$cfg"; export CLAUDE_CONFIG_DIR; }
   set -- --remote-control "$name" "$@"; [ -z "$model" ] || set -- --model "$model" "$@"   # opus[1m] never globbed
