@@ -625,6 +625,7 @@ cmd_setup() {
       die 1 "install Claude Code yourself, then run ade setup again: $CLAUDE_INSTALL_CMD"
     curl --proto "$proto" --proto-redir "$proto" --tlsv1.2 -fsSL "$ADE_CLAUDE_INSTALLER" | bash || die 1 "the Claude Code installer failed; try: $CLAUDE_INSTALL_CMD"
     PATH="$HOME/.local/bin:$PATH"; command -v claude > /dev/null 2>&1 || die 1 "claude is still not on PATH; open a new terminal and run ade setup again"
+    claude_update
   fi
   local herr; herr="$(find_hub 2>&1 > /dev/null)"
   if [ -n "$herr" ] && ! printf '%s' "$herr" | grep -q "no hub found"; then echo "$herr" >&2; exit 2; fi
