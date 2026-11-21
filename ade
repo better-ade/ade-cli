@@ -43,7 +43,7 @@ Hubs:
 Project commands (no hub needed):
   init        copy ade-method at its pinned tag into this project (git top level, or --here); never overwrites
   agent       ade agent list | ade agent add <name>: specialists from ade-agent-registry
-  skills      ade skills add <plugin>: install an ade-skills plugin for this project
+  skills      ade skills list | add <plugin> | enable <skill> | disable <skill> | search <word>: skills and plugins on the fly
   open        open in the ADE app (inside the ADE app only)
   version     print the version
   help        this list
@@ -151,13 +151,126 @@ cmd_agent() {
   rm -rf "$(dirname "$src")"
 }
 
-cmd_skills() {
-  [ "${1:-}" = add ] && [ -n "${2:-}" ] || die 2 "usage: ade skills add <plugin>"
-  command -v claude > /dev/null 2>&1 || die 2 "claude is not on PATH; install Claude Code first"
-  if ! claude plugin marketplace list 2>/dev/null | grep -q 'ade-skills'; then
-    claude plugin marketplace add better-ade/ade-skills || die 1 "could not add the ade-skills marketplace"
+# skills on the fly (story A7): BMAD skills via .claude/settings.json skillOverrides (absent = on, "name-only",
+# "off"), ade-skills plugins via the marketplace file and the project's enabledPlugins
+ADE_SKILLS_REPO="${ADE_SKILLS_REPO:-https://github.com/better-ade/ade-skills}"
+ADE_SKILLS_REF="${ADE_SKILLS_REF:-main}"   # the marketplace Claude Code adds follows main
+SKILLS_USAGE="usage: ade skills list | add <plugin> | enable <skill> | disable <skill> | search <word>"
+
+# skills_py <op> <project> [args]: the one place that reads and writes the settings (atomic; other keys kept)
+skills_py() {
+  PYTHONIOENCODING=utf-8 python3 - "$@" <<'PY'
+import difflib, json, os, sys
+op, proj = sys.argv[1], sys.argv[2]; args = sys.argv[3:]
+sp = os.path.join(proj, ".claude", "settings.json")
+def settings():
+    if not os.path.exists(sp): return {}
+    try: d = json.load(open(sp))
+    except ValueError: sys.exit("ade: %s is not valid JSON; fix it first" % sp)
+    if not isinstance(d, dict): sys.exit("ade: %s is not a JSON object" % sp)
+    return d
+def skills(d):
+    root = os.path.join(proj, ".claude", "skills"); names = set(d.get("skillOverrides", {}) or {})
+    if os.path.isdir(root):
+        names |= {n for n in os.listdir(root) if os.path.isfile(os.path.join(root, n, "SKILL.md"))}
+    return sorted(names)
+def plugins(mkt):
+    return [(p.get("name", ""), p.get("description", "")) for p in json.load(open(mkt)).get("plugins", []) if p.get("name")]
+def closest(word, names):
+    c = difflib.get_close_matches(word, names, n=3, cutoff=0.5)
+    return " (closest: %s)" % ", ".join(c) if c else ""
+def write(d):
+    os.makedirs(os.path.dirname(sp), exist_ok=True)
+    with open(sp + ".ade-tmp", "w") as f: json.dump(d, f, indent=2); f.write("\n")
+    os.replace(sp + ".ade-tmp", sp)
+if op == "list":
+    d = settings(); ov = d.get("skillOverrides", {}) or {}; en = d.get("enabledPlugins", {}) or {}
+    print("BMAD skills (.claude/settings.json skillOverrides):")
+    for s in skills(d): print("  %-32s %s" % (s, ov.get(s, "on")))
+    if not skills(d): print("  (none in .claude/skills)")
+    print("ade-skills plugins:")
+    for n, desc in plugins(args[0]):
+        print("  %-32s %-14s %s" % (n, "installed" if en.get(n + "@ade-skills") else "not installed", desc))
+elif op in ("enable", "disable"):
+    name, never = args[0], args[1].split()
+    d = settings(); known = skills(d)
+    if name not in known: sys.stderr.write("ade: no skill named %s in this project%s\n" % (name, closest(name, known))); sys.exit(2)
+    if op == "enable" and name in never:
+        sys.stderr.write("ade: %s is on ade-method's never list (bmad.never in ade.json): it stays off\n" % name); sys.exit(2)
+    ov = d.get("skillOverrides")
+    if op == "enable":
+        if isinstance(ov, dict) and name in ov: del ov[name]; write(d)
+        print("%s: on" % name)
+    else:
+        if not isinstance(ov, dict): ov = d["skillOverrides"] = {}
+        if ov.get(name) != "name-only": ov[name] = "name-only"; write(d)
+        print("%s: name-only" % name)
+elif op == "plugin":
+    names = [n for n, _ in plugins(args[0])]
+    if args[1] not in names: sys.stderr.write("ade: no ade-skills plugin named %s%s\n" % (args[1], closest(args[1], names))); sys.exit(2)
+elif op == "search":
+    w = args[1].lower(); hits = [(n, desc) for n, desc in plugins(args[0]) if w in n.lower() or w in desc.lower()]
+    for n, desc in hits: print("%-20s %s" % (n, desc))
+    sys.exit(0 if hits else 1)
+elif op == "never":
+    try: print(" ".join(json.load(open(args[0])).get("bmad", {}).get("never", [])))
+    except (OSError, ValueError): sys.exit("ade: could not read ade-method's ade.json")
+PY
+}
+
+# skills_folder <project>: the hub folder (projects/x or ops/x) that holds this project, else nothing
+skills_folder() {
+  local hub top="$1" d f c; hub="$(find_hub 2> /dev/null)" || return 0
+  case "$top/" in "$hub"/projects/*/*|"$hub"/ops/*/*) f="${top#"$hub"/}"; echo "${f%%/*}/$(echo "$f" | cut -d/ -f2)"; return 0 ;; esac
+  for d in "$hub"/projects/*/ "$hub"/ops/*/; do
+    [ -f "$d/ACCESS.md" ] || continue
+    for c in $(awk -F'|' '/^\|/ { c = $3; gsub(/^[ \t]+|[ \t]+$/, "", c); if (c ~ /^[\/~]/) print c }' "$d/ACCESS.md"); do
+      case "$c" in "~/"*) c="$HOME/${c#\~/}" ;; esac
+      [ -d "$c" ] && [ "$(cd "$c" && pwd -P)" = "$top" ] && { f="${d%/}"; echo "${f#"$hub"/}"; return 0; }
+    done
+  done
+}
+# skills_hint <project> <text>: through the hub's bin/notify to that folder's sessions (C6), else printed here
+skills_hint() {
+  local f hub; f="$(skills_folder "$1")"
+  echo "$2"
+  if [ -n "$f" ] && hub="$(find_hub 2> /dev/null)" && [ -x "$hub/bin/notify" ]; then
+    hub_run "$hub" notify "$f" "$2" > /dev/null 2>&1 && echo "told the running sessions of $f (ade notify)"
   fi
-  claude plugin install "$2@ade-skills" --scope project
+  return 0
+}
+
+cmd_skills() {
+  local sub="${1:-}" top src mkt; [ $# -gt 0 ] && shift
+  top="$(git rev-parse --show-toplevel 2> /dev/null)" || top="$(pwd -P)"
+  case "$sub" in
+    list|search|add)
+      case "$sub" in list) [ $# -eq 0 ] || die 2 "$SKILLS_USAGE" ;; *) [ $# -eq 1 ] && [ -n "$1" ] || die 2 "$SKILLS_USAGE" ;; esac
+      src="$(fetch "$ADE_SKILLS_REPO" "$ADE_SKILLS_REF")" || exit $?; mkt="$src/.claude-plugin/marketplace.json"
+      SKILLS_TMP="$(dirname "$src")"; trap 'rm -rf "$SKILLS_TMP"' EXIT
+      [ -f "$mkt" ] || die 1 "ade-skills has no .claude-plugin/marketplace.json at $ADE_SKILLS_REF"
+      case "$sub" in
+        list) skills_py list "$top" "$mkt"; exit $? ;;
+        search) skills_py search "$top" "$mkt" "$1"; exit $? ;;
+      esac
+      skills_py plugin "$top" "$mkt" "$1" || exit $?
+      command -v claude > /dev/null 2>&1 || die 2 "claude is not on PATH; install Claude Code first"
+      if ! claude plugin marketplace list 2>/dev/null | grep -q 'ade-skills'; then
+        claude plugin marketplace add better-ade/ade-skills || die 1 "could not add the ade-skills marketplace"
+      fi
+      claude plugin install "$1@ade-skills" --scope project || exit $?
+      skills_hint "$top" "plugin $1 installed in $(basename "$top"): run /reload-plugins in its open sessions to load it" ;;
+    enable|disable)
+      [ $# -eq 1 ] && [ -n "$1" ] || die 2 "$SKILLS_USAGE"
+      local never=""
+      if [ "$sub" = enable ]; then
+        src="$(fetch "$ADE_METHOD_REPO" "$ADE_METHOD_REF")" || exit $?
+        never="$(skills_py never "$top" "$src/ade.json")"; local rc=$?; rm -rf "$(dirname "$src")"; [ "$rc" = 0 ] || exit 1
+      fi
+      skills_py "$sub" "$top" "$1" "$never" || exit $?
+      skills_hint "$top" "skill $1 changed in $(basename "$top"): it applies on the next prompt (Claude Code reloads its settings)" ;;
+    *) die 2 "$SKILLS_USAGE" ;;
+  esac
 }
 
 cmd_open() {

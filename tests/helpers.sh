@@ -8,7 +8,7 @@ assert_contains() { grep -qF -- "$2" "$1" || fail "$3: [$2] not in $1"; }
 assert_not_contains() { ! grep -qF -- "$2" "$1" || fail "$3: [$2] unexpectedly in $1"; }
 # every test starts clean: no tester's hub, ADE terminal or real home config reaches it
 fresh() {
-  unset ADE_HUB ADE_HOOK_BIN ADE_METHOD_REPO ADE_REGISTRY_REPO ADE_METHOD_REF ADE_REGISTRY_REF
+  unset ADE_HUB ADE_HOOK_BIN ADE_METHOD_REPO ADE_REGISTRY_REPO ADE_METHOD_REF ADE_REGISTRY_REF ADE_SKILLS_REPO ADE_SKILLS_REF
   T="$(mktemp -d)"; T="$(cd "$T" && pwd -P)"; export HOME="$T/home"; mkdir -p "$HOME"
   export GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 }
@@ -59,4 +59,15 @@ if [ "$1 $2 $3" = "plugin marketplace add" ]; then echo "ade-skills" >> "$CLAUDE
 exit 0
 STUB
   chmod +x "$d/claude"; export PATH="$d:$PATH"
+}
+# a local ade-skills fixture: a marketplace with git, browser and notes, tagged v0.1.0
+make_skills_repo() {
+  K="$T/skills"; mkdir -p "$K/.claude-plugin"; git init -q "$K"
+  cat > "$K/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "ade-skills", "plugins": [
+  { "name": "git", "source": "./plugins/git", "description": "Branch, commit and pull-request conventions." },
+  { "name": "browser", "source": "./plugins/browser", "description": "Browser automation with read-only defaults." },
+  { "name": "notes", "source": "./plugins/notes", "description": "Meeting notes into the knowledge folder." } ] }
+JSON
+  commit_tag "$K" k v0.1.0; export ADE_SKILLS_REPO="$K" ADE_SKILLS_REF=v0.1.0
 }

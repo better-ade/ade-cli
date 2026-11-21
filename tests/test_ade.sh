@@ -69,7 +69,7 @@ agent_list_and_add() {   # AC7
 }
 
 skills_add_calls_claude() {   # AC8
-  fresh; stub_claude; P="$T/proj"; mkdir -p "$P"; cd "$P"
+  fresh; stub_claude; make_skills_repo; P="$T/proj"; mkdir -p "$P"; cd "$P"
   bash "$ADE" skills add notes > "$T/out" 2>&1 || { cat "$T/out"; fail "skills add exit"; }
   bash "$ADE" skills add browser > "$T/out" 2>&1 || { cat "$T/out"; fail "second skills add exit"; }
   assert_contains "$CLAUDE_LOG" "plugin marketplace add better-ade/ade-skills" "marketplace added"
