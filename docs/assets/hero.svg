@@ -1,0 +1,52 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="440" viewBox="0 0 960 440" role="img" aria-labelledby="t d">
+  <title id="t">ade ui</title>
+  <desc id="d">A dark terminal window running ade ui: a tab bar with the orchestrator, a busy builder in projects/api on ticket 1.2, and an idle agent in ops/db, above an orchestrator session.</desc>
+  <style>
+    text { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; font-size: 14px; }
+    .dim { fill: #6E7681; }
+    .fg { fill: #D7DCE2; }
+    .acc { fill: #7C8FFF; }
+    .ok { fill: #4CC38A; }
+    .warn { fill: #E3B341; }
+    .vio { fill: #BC8CFF; }
+    .tab { font-size: 13px; }
+  </style>
+
+  <!-- window -->
+  <rect x="0.5" y="0.5" width="959" height="439" rx="12" fill="#0D1117" stroke="#30363D"/>
+  <path d="M12 0.5 H948 A11.5 11.5 0 0 1 959.5 12 V36 H0.5 V12 A11.5 11.5 0 0 1 12 0.5 Z" fill="#161B22"/>
+  <line x1="0.5" y1="36" x2="959.5" y2="36" stroke="#30363D"/>
+  <circle cx="22" cy="18" r="6" fill="#FF5F57"/>
+  <circle cx="42" cy="18" r="6" fill="#FEBC2E"/>
+  <circle cx="62" cy="18" r="6" fill="#28C840"/>
+  <text x="480" y="23" text-anchor="middle" class="dim" style="font-size:13px">ade-my-hub (tmux)</text>
+
+  <!-- tab bar -->
+  <rect x="0.5" y="36.5" width="959" height="34" fill="#0F141A"/>
+  <rect x="12" y="42" width="168" height="24" rx="6" fill="#1F2633" stroke="#7C8FFF"/>
+  <text x="24" y="59" class="tab fg">0 orchestrator <tspan class="acc">●</tspan></text>
+  <rect x="190" y="42" width="318" height="24" rx="6" fill="#161B22" stroke="#30363D"/>
+  <text x="202" y="59" class="tab fg">1 projects/api · builder · 1.2 <tspan class="warn">busy</tspan></text>
+  <rect x="518" y="42" width="150" height="24" rx="6" fill="#161B22" stroke="#30363D"/>
+  <text x="530" y="59" class="tab fg">2 ops/db · <tspan class="dim">idle</tspan></text>
+  <text x="946" y="59" text-anchor="end" class="tab dim">prefix n: new · x: close</text>
+  <line x1="0.5" y1="70.5" x2="959.5" y2="70.5" stroke="#30363D"/>
+
+  <!-- session -->
+  <text x="24" y="102" class="dim">$ <tspan class="fg">ade ui</tspan></text>
+  <text x="24" y="130" class="vio">orchestrator · my-hub</text>
+  <text x="24" y="158" class="acc">&gt; <tspan class="fg">Ticket 1.2 is ready. Give it to a builder in projects/api.</tspan></text>
+  <text x="24" y="190" class="ok">● <tspan class="fg">Dispatching 1.2 to projects/api with the builder role.</tspan></text>
+  <text x="44" y="212" class="dim">└ ade dispatch → bin/dispatch · opened tab 1: projects/api · builder · 1.2</text>
+  <text x="24" y="244" class="ok">● <tspan class="fg">ops/db is idle. Its last story passed the verification command:</tspan></text>
+  <text x="44" y="266" class="dim">└ bash tests/run.sh   <tspan class="ok">ok</tspan></text>
+  <text x="24" y="298" class="ok">● <tspan class="fg">1.2 is Done only when its verification command passes.</tspan></text>
+  <text x="24" y="330" class="acc">&gt; <tspan class="fg">Send me a Telegram note when 1.2 is verified.</tspan><tspan class="acc">▌</tspan></text>
+
+  <!-- status line -->
+  <path d="M0.5 404 H959.5 V428 A11.5 11.5 0 0 1 948 439.5 H12 A11.5 11.5 0 0 1 0.5 428 Z" fill="#161B22"/>
+  <line x1="0.5" y1="404" x2="959.5" y2="404" stroke="#30363D"/>
+  <text x="24" y="426" class="tab acc">[ade-my-hub]</text>
+  <text x="130" y="426" class="tab dim">3 agents · 1 busy · 1 idle · refreshed from bin/sessions every 5 s</text>
+  <text x="946" y="426" text-anchor="end" class="tab dim">detach never stops agents</text>
+</svg>
