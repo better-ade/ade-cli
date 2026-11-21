@@ -92,7 +92,7 @@ install_and_version() {   # AC10
   [ -x "$T/prefix/bin/ade" ] || fail "ade installed into the prefix"
   assert_eq "$(cd "$T" && "$T/prefix/bin/ade" version)" "ade $(cat "$REPO/VERSION")" "installed version"
   assert_eq "$(bash "$ADE" version)" "ade $(cat "$REPO/VERSION")" "repo version"
-  bash "$ADE" help > "$T/out"; for c in work status dispatch notify chat method keys models roles doctor sync context agent-run init agent skills open version help; do
+  bash "$ADE" help > "$T/out"; for c in work status dispatch notify chat method keys models roles doctor sync context agent-run orchestrator init agent skills open version help; do
     grep -qE "^  $c( |$)" "$T/out" || fail "help lists $c"; done
 }
 
@@ -153,6 +153,11 @@ symlinked_version() {   # review: a symlinked dev install finds VERSION beside t
   assert_eq "$("$T/bin/ade" version)" "ade $(cat "$REPO/VERSION")" "version through a symlink"
 }
 
-ALL="finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors symlinked_version"
+tests_clean_up() {   # review: every test's folder is removed when it ends (the disk filled from leaked folders)
+  T=""; t1="$(fresh; echo "$T")"; [ -n "$t1" ] && [ ! -e "$t1" ] || fail "a test's folder is removed on exit"
+  t2="$(fresh; a="$T"; fresh; [ ! -e "$a" ] && echo "$T")"; [ -n "$t2" ] && [ ! -e "$t2" ] || fail "a second fresh removes the first folder"
+}
+
+ALL="tests_clean_up finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors symlinked_version"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

@@ -180,7 +180,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade skills add <plugin>` | Add the ade-skills marketplace once, install the plugin at project scope | **built** (A1) |
 | `ade open …` | Open in the ADE app (inside the app only) | **built** (A1) |
 | `ade version` · `ade help` | The version; every command, one line each | **built** (A1) |
-| `ade orchestrator new\|start\|stop\|list\|logs\|remove` | Named orchestrators, one per hub, with their channels | planned (A2) |
+| `ade orchestrator new\|start\|stop\|list\|logs\|remove` | Named orchestrators, one per hub, with their channels (run by the hub's `bin/chat`) | **built** (A2) |
 | `curl … \| bash` | One-line install of the tagged release | planned (A3) |
 | `ade hub new <name> [--private\|--public] [--dir <d>] [--no-github]` | Create a hub from the ade-brain template, run its `bin/init`, make it the default | planned (A3) |
 | `ade hub list` · `ade hub use <path>` | The hubs `ade` knows; switch the default | planned (A3) |

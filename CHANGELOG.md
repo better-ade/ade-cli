@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+- `ade orchestrator new|start|stop|list|logs|remove` (A2): named orchestrators, one per hub, in
+  `~/.config/ade/orchestrators` (0600); the hub's `bin/chat` does the work (`.ade/context/hub-interface.md`).
+
 ## 0.1.0
 - `ade`: hub commands (work, status, dispatch, notify, chat, method, keys, models, roles, doctor, sync, context,
   agent-run) run the hub's own `bin/` scripts; the hub is found by `$ADE_HUB`, walking up, or `~/.config/ade/hub`.
