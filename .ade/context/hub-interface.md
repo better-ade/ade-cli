@@ -47,6 +47,15 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - Events: the last 8 lines of `${AGENT_STATE:-~/.agent-hub/<HUB_NAME>}/events.jsonl` (C6: `time from to kind text`).
 - Plan preview: `<hub>/<folder>/PLAN.md`, else `STATE.md`.
 
+## `ade skills` (A7)
+- The project's `.claude/settings.json` `skillOverrides`: absent = on, `"name-only"`, `"off"`. `enable` removes the
+  entry, `disable` sets `"name-only"`; nothing else changes. ade-method `ade.json` `bmad.never` (at `ADE_METHOD_REF`)
+  cannot be enabled.
+- Plugins: ade-skills `.claude-plugin/marketplace.json` at `ADE_SKILLS_REF` (default `main`, as the marketplace Claude
+  Code adds); installed = `enabledPlugins["<name>@ade-skills"]` in the project's settings.
+- The folder of a project: the hub folder it sits in, or the folder whose `ACCESS.md` table lists it as a checkout
+  (third column, absolute or `~/` path). The hint goes to `bin/notify <folder> <text>` (C6).
+
 ## The hub's `.claude/settings.json` (A4)
 - `ade claude` adds, only when absent: `extraKnownMarketplaces["ade-skills"] = {"source": {"source": "github", "repo":
   "better-ade/ade-skills"}}` and `enabledPlugins["ade@ade-skills"] = true`. Every other key is kept; invalid JSON is

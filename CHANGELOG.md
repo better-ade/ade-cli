@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- `ade skills list|add|enable|disable|search` (A7): BMAD skills via `skillOverrides` (absent = on; disable = name-only;
+  ade-method's never list cannot be enabled), ade-skills plugins from the marketplace file; after a change the folder's
+  running sessions get the reload hint through the hub's `bin/notify`; unknown names exit 2 with the closest ones.
 - `ade ui [--detach]` and `ade dash [--once]` (A6): tmux session `ade-<hub>` on ade's own tmux server, tab 0 the
   orchestrator, a themed tab bar (● ⟳ ○ ⚠, folder, role, ticket, unread ✉), the fleet sidebar (prefix f) and popups
   (n new agent, a approve, t tickets, p plan preview, ? help); `ade work` opens a tab while it runs.

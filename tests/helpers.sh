@@ -13,7 +13,7 @@ drop_t() {
   case "$T" in */ade-test.?*) cd / && chmod -R u+w "$T" 2> /dev/null; rm -rf -- "$T" ;; esac
 }
 fresh() {
-  unset ADE_HUB ADE_HOOK_BIN ADE_METHOD_REPO ADE_REGISTRY_REPO ADE_METHOD_REF ADE_REGISTRY_REF
+  unset ADE_HUB ADE_HOOK_BIN ADE_METHOD_REPO ADE_REGISTRY_REPO ADE_METHOD_REF ADE_REGISTRY_REF ADE_SKILLS_REPO ADE_SKILLS_REF CLAUDE_CONFIG_DIR
   drop_t; T="$(mktemp -d "${TMPDIR:-/tmp}/ade-test.XXXXXX")"; T="$(cd "$T" && pwd -P)"; trap drop_t EXIT
   export ADE_NO_CLAUDE_UPDATE=1   # the Claude Code update step is tested on its own (test_update.sh)
   export HOME="$T/home"; mkdir -p "$HOME"
@@ -66,4 +66,15 @@ if [ "$1 $2 $3" = "plugin marketplace add" ]; then echo "ade-skills" >> "$CLAUDE
 exit 0
 STUB
   chmod +x "$d/claude"; export PATH="$d:$PATH"
+}
+# a local ade-skills fixture: a marketplace with git, browser and notes, tagged v0.1.0
+make_skills_repo() {
+  K="$T/skills"; mkdir -p "$K/.claude-plugin"; git init -q "$K"
+  cat > "$K/.claude-plugin/marketplace.json" <<'JSON'
+{ "name": "ade-skills", "plugins": [
+  { "name": "git", "source": "./plugins/git", "description": "Branch, commit and pull-request conventions." },
+  { "name": "browser", "source": "./plugins/browser", "description": "Browser automation with read-only defaults." },
+  { "name": "notes", "source": "./plugins/notes", "description": "Meeting notes into the knowledge folder." } ] }
+JSON
+  commit_tag "$K" k v0.1.0; export ADE_SKILLS_REPO="$K" ADE_SKILLS_REF=v0.1.0
 }
