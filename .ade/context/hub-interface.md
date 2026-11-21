@@ -30,6 +30,21 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - `bin/chat setup telegram` (after the token is stored) and `bin/chat test telegram` (`ade setup --test telegram`).
 - Claude Code: `claude auth status` (exit 0 = signed in with an account) and `claude auth login`.
 
+## `ade ui` and `ade dash` and the hub (A6)
+- tmux: ade's own server (`tmux -L ade`, `ADE_TMUX_SOCKET`), session `ade-<HUB_NAME>`, config
+  `~/.config/ade/ui-<session>.tmux.conf`, theme `~/.config/ade/theme` (`bg fg accent orchestrator busy idle blocked
+  unread` = `#rrggbb` or a tmux colour word; anything else falls back to the default).
+- `ade work` while the session runs exports `AGENT_TERMINAL=tmux` and `ADE_UI_SESSION=<session>` (unless the caller set
+  `AGENT_TERMINAL`); bin/work's tmux mode (V1) then opens a window in that session named `<folder>` or
+  `<folder>:<ticket>` (`ade ui --tab-name <folder> [ticket]` prints the name).
+- `bin/sessions` columns as today; a row's ticket is its NAME when that differs from the folder's last part; STATUS
+  `busy`, `idle` or `blocked`.
+- `bin/inbox --count <session name|main>` (C6): the number of unread events, `0` once read.
+- `bin/dispatch --list` (C3 follow-up): `ready|waiting<TAB><ref><TAB><folder>` lines for every folder;
+  `ade dispatch --approve <ref> <folder>` runs in a popup's own terminal.
+- Events: the last 8 lines of `${AGENT_STATE:-~/.agent-hub/<HUB_NAME>}/events.jsonl` (C6: `time from to kind text`).
+- Plan preview: `<hub>/<folder>/PLAN.md`, else `STATE.md`.
+
 ## The hub's `.claude/settings.json` (A4)
 - `ade claude` adds, only when absent: `extraKnownMarketplaces["ade-skills"] = {"source": {"source": "github", "repo":
   "better-ade/ade-skills"}}` and `enabledPlugins["ade@ade-skills"] = true`. Every other key is kept; invalid JSON is

@@ -1,6 +1,9 @@
 # Changelog
 
 ## Unreleased
+- `ade ui [--detach]` and `ade dash [--once]` (A6): tmux session `ade-<hub>` on ade's own tmux server, tab 0 the
+  orchestrator, a themed tab bar (● ⟳ ○ ⚠, folder, role, ticket, unread ✉), the fleet sidebar (prefix f) and popups
+  (n new agent, a approve, t tickets, p plan preview, ? help); `ade work` opens a tab while it runs.
 - `ade setup [--check | --test [provider|telegram] | --top | --telegram]` (A5): installs Claude Code (asks first), makes
   a hub when there is none, picks one everything agent and any focus providers (each signed in and live-tested; only
   ready ones enter `HUB_PROVIDERS_ALLOWED`), offers Telegram, then a guided `ade claude` session. Keys and the bot
