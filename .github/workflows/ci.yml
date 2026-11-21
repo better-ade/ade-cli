@@ -61,7 +61,7 @@ jobs:
       - name: kcov over tests/run.sh
         run: |
           docker run --rm --security-opt seccomp=unconfined --cap-add SYS_PTRACE -v "$PWD:/src" -w /src --entrypoint bash kcov/kcov -c \
-            'apt-get update -qq && apt-get install -y -qq git python3 tmux > /dev/null; git config --global --add safe.directory /src; bash tests/coverage.sh coverage'
+            'apt-get update -qq && apt-get install -y -qq git python3 tmux curl > /dev/null; git config --global --add safe.directory /src; bash tests/coverage.sh /src/coverage'
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: { name: coverage, path: coverage, if-no-files-found: ignore }

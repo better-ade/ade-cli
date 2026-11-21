@@ -818,12 +818,16 @@ else:
     def c(s, code): return "\033[%sm%s\033[0m" % (code, s) if color else s
     print(c("ADE fleet · %s" % name, "1"))
     print(""); print(c("AGENTS", "1"))
-    if rows: print("    %-24s %-10s %-8s %-7s %s" % ("FOLDER", "ROLE", "TICKET", "RUN", "TOKENS"))
-    else: print("  (no focus agents running)")
+    try: width = int(os.environ.get("COLUMNS") or 0) or os.get_terminal_size().columns
+    except OSError: width = 80
+    narrow = width < 70   # the sidebar: one compact line per agent, ticket and event
+    if rows and not narrow: print("    %-24s %-10s %-8s %-7s %s" % ("FOLDER", "ROLE", "TICKET", "RUN", "TOKENS"))
+    if not rows: print("  (no focus agents running)")
     for r in rows:
         st = state(r["status"])
         mark = "  ✉%d" % unread[r["name"]] if unread.get(r["name"], 0) > 0 else ""
-        print("  %s %-24s %-10s %-8s %-7s %s%s" % (ICON[st], r["folder"], r["role"] or "-", r["ticket"] or "-", age(r["started"]), "-", mark))
+        if narrow: print("  %s %s" % (ICON[st], " · ".join(x for x in (r["folder"], r["role"], r["ticket"], age(r["started"])) if x)) + mark)
+        else: print("  %s %-24s %-10s %-8s %-7s %s%s" % (ICON[st], r["folder"], r["role"] or "-", r["ticket"] or "-", age(r["started"]), "-", mark))
     print(""); print(c("TICKETS", "1"))
     t = read("tickets")
     if t == ["unavailable"]: print("  (this hub's bin/dispatch has no --list yet)")
@@ -831,7 +835,8 @@ else:
     for l in t:
         p = l.split("\t")
         if len(p) == 3 and p != ["unavailable"]:
-            print("  %-8s %-8s %s%s" % (p[0], p[1], p[2], "   approve: prefix a" if p[0] == "waiting" else ""))
+            if narrow: print("  %s %s %s" % (p[0], p[1], p[2]))
+            else: print("  %-8s %-8s %s%s" % (p[0], p[1], p[2], "   approve: prefix a" if p[0] == "waiting" else ""))
     print(""); print(c("EVENTS (last 8)", "1"))
     ev = []
     path = (read("events_path") or [""])[0]
@@ -841,7 +846,9 @@ else:
             except ValueError: continue
             tm = ts(str(e.get("time", "")))
             text = " ".join(str(e.get("text", "")).split())[:80]
-            ev.append("  %s %s → %s  %s  %s" % (tm.strftime("%H:%M") if tm else "--:--", e.get("from", "?"), e.get("to", "?"), e.get("kind", "?"), text))
+            hm = tm.strftime("%H:%M") if tm else "--:--"
+            if narrow: ev.append(("  %s %s %s" % (hm, e.get("kind", "?"), text))[:width - 1])
+            else: ev.append("  %s %s → %s  %s  %s" % (hm, e.get("from", "?"), e.get("to", "?"), e.get("kind", "?"), text))
     except OSError:
         pass
     print("\n".join(ev) if ev else "  (no events)")
@@ -854,7 +861,8 @@ UI_KEYS="  prefix n   new agent: pick a folder, then a role
   prefix p   preview the current agent's plan
   prefix f   show or hide the fleet sidebar (ade dash)
   prefix ?   this help
-  prefix 0-9, prefix Left/Right   switch tabs; prefix d detaches (agents keep running)"
+  prefix 0-9, Left, Right   switch tabs
+  prefix d   detach (agents keep running)"
 
 ui_conf() {   # ui_conf <hub> <session>: the tmux config ade ui loads
   local hub="$1" s="$2" run

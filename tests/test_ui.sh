@@ -67,7 +67,7 @@ tab_bar() {   # AC3
 
 dash_golden() {   # AC4
   fresh; ui_fixture
-  bash "$ADE" dash --once > "$T/out" 2>&1 || { cat "$T/out"; fail "dash exit"; }
+  COLUMNS=100 bash "$ADE" dash --once > "$T/out" 2>&1 || { cat "$T/out"; fail "dash exit"; }
   diff -u "$REPO/tests/golden/dash.txt" "$T/out" || fail "dash matches the golden file"
 }
 
