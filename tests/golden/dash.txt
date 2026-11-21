@@ -1,0 +1,21 @@
+ADE fleet · acme
+
+AGENTS
+    FOLDER                   ROLE       TICKET   RUN     TOKENS
+  ⟳ projects/api             builder    1.2      45m     -
+  ○ ops/db                   -          -        2h45m   -
+  ⚠ projects/web             reviewer   rev      25m     -
+
+TICKETS
+  ready    1.3      projects/api
+  waiting  2.1      projects/api   approve: prefix a
+
+EVENTS (last 8)
+  10:03 projects/api → all  pushed  event 3
+  10:04 projects/api → all  pushed  event 4
+  10:05 projects/api → all  pushed  event 5
+  10:06 projects/api → all  pushed  event 6
+  10:07 projects/api → all  pushed  event 7
+  10:08 projects/api → all  pushed  event 8
+  10:09 projects/api → all  pushed  event 9
+  10:10 projects/api → all  pushed  event 10

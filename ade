@@ -35,6 +35,8 @@ Orchestrators (one per hub, run by the hub's bin/chat):
   orchestrator  new <name> --hub <path> [--channel telegram] | start | stop | list | logs <name> [-n N] | remove
 
 Hubs:
+  ui          ade ui [--detach]: one tmux window, a tab per agent (keys: prefix ? in it)
+  dash        ade dash [--once]: the fleet panel (agents, tickets, last events)
   setup       ade setup [--check | --test [provider|telegram] | --top | --telegram]: sign in, providers, Telegram, hub, guided session
   claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root; with a folder, ade work <folder>
   hub         ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]
@@ -360,12 +362,11 @@ hub_new() {
 
 # ade with no arguments: what to do next (story A3)
 cmd_home() {
-  local hub err; err="$(mktemp)"
-  if ! hub="$(find_hub 2> "$err")"; then
-    grep -q "no hub found" "$err" || cat "$err" >&2; rm -f "$err"
+  local hub err
+  if ! hub="$(find_hub 2> /dev/null)"; then
+    err="$(find_hub 2>&1 > /dev/null)"; printf '%s' "$err" | grep -q "no hub found" || echo "$err" >&2
     echo 'no hub yet: run `ade hub new <name>`'; return 0
   fi
-  rm -f "$err"
   echo "hub: $(hub_label "$hub") ($hub)"
   [ -x "$hub/bin/sessions" ] && (HUB="$hub"; export HUB; "$hub/bin/sessions")
   echo "next:"
@@ -643,6 +644,299 @@ cmd_setup() {
   cmd_claude -- --permission-mode default "$SETUP_PROMPT"
 }
 
+# ade ui / ade dash: a tmux workspace with a tab per agent, on ade's own tmux server (tmux -L ade), so its key table
+# and theme never touch the user's tmux (story A6; hub calls in .ade/context/hub-interface.md)
+ADE_TMUX_SOCKET="${ADE_TMUX_SOCKET:-ade}"
+ui_tmux() { tmux -L "$ADE_TMUX_SOCKET" "$@"; }
+# ui_session <hub>: ade-<name>-<6 hex of the hub path's checksum>, so two hubs with one name never share a session
+ui_session() { echo "ade-$(hub_label "$1" | tr -c 'A-Za-z0-9-\n' '-')-$(printf '%s' "$1" | cksum | awk '{ printf "%06x", $1 % 16777216 }')"; }
+ade_self() {   # the absolute path of this script, for the commands tmux runs
+  local p="$0" l; while [ -L "$p" ]; do l="$(readlink "$p")"; case "$l" in /*) p="$l" ;; *) p="$(dirname "$p")/$l" ;; esac; done
+  echo "$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")"
+}
+need_tmux() {
+  command -v tmux > /dev/null 2>&1 && return 0
+  local how="install tmux with your package manager"
+  if [ "$(uname)" = Darwin ]; then how="brew install tmux"
+  elif command -v apt-get > /dev/null 2>&1; then how="sudo apt-get install tmux"
+  elif command -v dnf > /dev/null 2>&1; then how="sudo dnf install tmux"
+  elif command -v pacman > /dev/null 2>&1; then how="sudo pacman -S tmux"; fi
+  die 2 "ade ui needs tmux: $how"
+}
+# ui_live <hub>: the session name when ade's tmux server runs that hub's session (quietly nothing otherwise)
+ui_live() { command -v tmux > /dev/null 2>&1 || return 1; local s; s="$(ui_session "$1")"; ui_tmux has-session -t "=$s" 2> /dev/null && echo "$s"; }
+# ade work while ade ui runs: bin/work opens the agent as a tab (AGENT_TERMINAL=tmux); an explicit AGENT_TERMINAL wins
+work_in_ui() {
+  local hub s; [ -z "${AGENT_TERMINAL:-}" ] || return 0
+  hub="$(find_hub 2> /dev/null)" || return 0; s="$(ui_live "$hub")" || return 0
+  AGENT_TERMINAL=tmux; ADE_UI_SESSION="$s"; export AGENT_TERMINAL ADE_UI_SESSION
+}
+sq() {   # a path quoted for a tmux command; anything tmux or the shell could expand is refused
+  case "$1" in *"'"*|*'"'*|*'$'*|*'\'*|*'#'*|*'`'*) die 2 "ade ui does not support this path (quotes, \$, \\, # or backticks): $1" ;; esac
+  printf "'%s'" "$1"
+}
+
+# theme: ~/.config/ade/theme (key=colour lines); a colour must be a tmux colour word or #rrggbb, else the default stays
+THEME_KEYS="bg fg accent orchestrator busy idle blocked unread"
+theme_get() {
+  local v="" d; case "$1" in bg) d="#1e1e2e" ;; fg) d="#cdd6f4" ;; accent) d="#89b4fa" ;; orchestrator) d="#cba6f7" ;;
+    busy) d="#f9e2af" ;; idle) d="#a6e3a1" ;; blocked) d="#f38ba8" ;; unread) d="#fab387" ;; *) return 1 ;; esac
+  [ -f "$CONF_DIR/theme" ] && v="$(sed -n "s/^$1=//p" "$CONF_DIR/theme" | tail -1)"
+  printf '%s' "$v" | grep -Eq '^(#[0-9a-fA-F]{6}|[a-z]+[0-9]*)$' || v="$d"; printf '%s' "$v"
+}
+theme_env() { local k; for k in $THEME_KEYS; do printf 'ADE_THEME_%s=%s\n' "$k" "$(theme_get "$k")"; done; }
+
+# ui_data <hub> <dir> [session]: what the bar and the dash render, as files in <dir>
+ui_data() {
+  local hub="$1" d="$2" s="${3:-}" n
+  hub_run "$hub" sessions > "$d/sessions" 2> /dev/null || : > "$d/sessions"
+  : > "$d/unread"
+  if [ -x "$hub/bin/inbox" ]; then
+    for n in main $(awk 'NR > 1 { print $1 }' "$d/sessions"); do printf '%s\t%s\n' "$n" "$(hub_run "$hub" inbox --count "$n" 2> /dev/null | head -1)" >> "$d/unread"; done
+  fi
+  if [ -x "$hub/bin/dispatch" ] && hub_run "$hub" dispatch --list > "$d/tickets" 2> /dev/null; then :; else echo "unavailable" > "$d/tickets"; fi
+  if [ -n "$s" ]; then ui_tmux list-windows -t "=$s" -F "#{window_index}	#{window_name}	#{window_active}" > "$d/windows" 2> /dev/null || : > "$d/windows"; fi
+  theme_env > "$d/theme"
+  printf '%s\n' "${AGENT_STATE:-$HOME/.agent-hub/$(hub_label "$hub")}/events.jsonl" > "$d/events_path"
+  hub_label "$hub" > "$d/name"
+}
+
+# ui_bar <hub> <session>: the tab bar, from data cached for 2 s in ~/.config/ade/ui-cache/<session> (every attached
+# client redraws every 2 s; the hub's scripts run once per period, not once per client)
+ui_bar() {
+  local c="$CONF_DIR/ui-cache/$2" now t=0; now="$(date +%s)"
+  [ -f "$c/at" ] && t="$(cat "$c/at" 2> /dev/null)"; [[ $t =~ ^[0-9]+$ ]] || t=0
+  local keep="${ADE_UI_CACHE_SECONDS:-2}"; [[ $keep =~ ^[0-9]+$ ]] || keep=2
+  if [ $((now - t)) -ge "$keep" ] || [ ! -f "$c/sessions" ]; then
+    ( umask 077; mkdir -p "$c" ) || return 1; ui_data "$1" "$c" "$2"; echo "$now" > "$c/at"
+  else ui_tmux list-windows -t "=$2" -F "#{window_index}	#{window_name}	#{window_active}" > "$c/windows" 2> /dev/null; fi
+  ui_render bar "$c"
+}
+
+ui_render() {   # ui_render bar|dash <dir>
+  PYTHONIOENCODING=utf-8 python3 - "$1" "$2" "${ADE_NOW:-}" <<'PY'
+import datetime, json, os, sys
+mode, d, now = sys.argv[1], sys.argv[2], sys.argv[3]
+def read(n):
+    try: return open(os.path.join(d, n), encoding="utf-8").read().splitlines()
+    except OSError: return []
+theme = {l.split("=", 1)[0][len("ADE_THEME_"):]: l.split("=", 1)[1] for l in read("theme") if "=" in l}
+rows = []
+for l in read("sessions")[1:]:
+    f = l.split()
+    if len(f) >= 7:
+        name, folder, started, role, status = f[0], f[1], f[4], f[5], f[6]
+        ticket = "" if name == folder.rsplit("/", 1)[-1] else name
+        rows.append(dict(name=name, folder=folder, started=started, role="" if role == "-" else role, status=status, ticket=ticket))
+unread = {}
+for l in read("unread"):
+    k, _, v = l.partition("\t")
+    unread[k] = int(v) if v.strip().isdigit() else 0
+ICON = {"busy": "⟳", "idle": "○", "blocked": "⚠"}
+def state(s): return s if s in ICON else "idle"
+def ts(s):
+    try: return datetime.datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError: return None
+t_now = ts(now) if now else datetime.datetime.now(datetime.timezone.utc).replace(tzinfo=None)
+def age(s):
+    t = ts(s)
+    if not t or not t_now: return "-"
+    m = max(0, int((t_now - t).total_seconds() // 60))
+    return "%dm" % m if m < 60 else "%dh%02dm" % (m // 60, m % 60)
+def find(win):
+    folder, _, ticket = win.partition(":")
+    for r in rows:
+        if r["folder"] == folder and (r["ticket"] == ticket or not ticket):
+            return r
+    return None
+if mode == "bar":
+    out = []
+    for l in read("windows"):
+        p = l.split("\t")
+        if len(p) < 3: continue
+        idx, win, active = p
+        bg = theme["accent"] if active == "1" else theme["bg"]
+        fg_txt = theme["bg"] if active == "1" else None
+        if idx == "0":
+            label, col, n = "● 0 orchestrator", theme["orchestrator"], unread.get("main", 0)
+        else:
+            r = find(win)
+            st = state(r["status"]) if r else "idle"
+            folder, _, ticket = win.partition(":")
+            parts = [folder] + ([r["role"]] if r and r["role"] else []) + ([ticket] if ticket else [])
+            label, col, n = "%s %s %s" % (ICON[st], idx, " · ".join(parts)), theme[st], unread.get(r["name"], 0) if r else 0
+        tab = "#[bg=%s]#[fg=%s]%s" % (bg, col, label)
+        if n > 0: tab += " #[fg=%s]✉%d" % (theme["unread"], n)
+        out.append(tab + " ")
+    out.append("#[bg=%s]#[fg=%s][+ new]" % (theme["bg"], theme["accent"]))
+    print(" ".join(out))
+else:
+    name = (read("name") or ["hub"])[0]
+    color = sys.stdout.isatty() and not os.environ.get("NO_COLOR")
+    def c(s, code): return "\033[%sm%s\033[0m" % (code, s) if color else s
+    print(c("ADE fleet · %s" % name, "1"))
+    print(""); print(c("AGENTS", "1"))
+    if rows: print("    %-24s %-10s %-8s %-7s %s" % ("FOLDER", "ROLE", "TICKET", "RUN", "TOKENS"))
+    else: print("  (no focus agents running)")
+    for r in rows:
+        st = state(r["status"])
+        mark = "  ✉%d" % unread[r["name"]] if unread.get(r["name"], 0) > 0 else ""
+        print("  %s %-24s %-10s %-8s %-7s %s%s" % (ICON[st], r["folder"], r["role"] or "-", r["ticket"] or "-", age(r["started"]), "-", mark))
+    print(""); print(c("TICKETS", "1"))
+    t = read("tickets")
+    if t == ["unavailable"]: print("  (this hub's bin/dispatch has no --list yet)")
+    elif not t: print("  (none ready or waiting)")
+    for l in t:
+        p = l.split("\t")
+        if len(p) == 3 and p != ["unavailable"]:
+            print("  %-8s %-8s %s%s" % (p[0], p[1], p[2], "   approve: prefix a" if p[0] == "waiting" else ""))
+    print(""); print(c("EVENTS (last 8)", "1"))
+    ev = []
+    path = (read("events_path") or [""])[0]
+    try:
+        for l in open(path, encoding="utf-8").read().splitlines()[-8:]:
+            try: e = json.loads(l)
+            except ValueError: continue
+            tm = ts(str(e.get("time", "")))
+            text = " ".join(str(e.get("text", "")).split())[:80]
+            ev.append("  %s %s → %s  %s  %s" % (tm.strftime("%H:%M") if tm else "--:--", e.get("from", "?"), e.get("to", "?"), e.get("kind", "?"), text))
+    except OSError:
+        pass
+    print("\n".join(ev) if ev else "  (no events)")
+PY
+}
+
+UI_KEYS="  prefix n   new agent: pick a folder, then a role
+  prefix a   approve a ticket waiting for you (you type its ref back in the popup)
+  prefix t   tickets ready and waiting
+  prefix p   preview the current agent's plan
+  prefix f   show or hide the fleet sidebar (ade dash)
+  prefix ?   this help
+  prefix 0-9, prefix Left/Right   switch tabs; prefix d detaches (agents keep running)"
+
+ui_conf() {   # ui_conf <hub> <session>: the tmux config ade ui loads
+  local hub="$1" s="$2" run
+  run="ADE_HUB=$(sq "$hub") $(sq "$(ade_self)")"
+  cat <<CONF
+# written by ade ui for $s; ade's own tmux server (tmux -L $ADE_TMUX_SOCKET)
+set -g status on
+set -g status-interval 2
+set -g status-style "bg=$(theme_get bg),fg=$(theme_get fg)"
+set -g status-left-length 600
+set -g status-right ""
+set -g window-status-format ""
+set -g window-status-current-format ""
+set -g status-left "#($run ui --bar $s)"
+set -g destroy-unattached off
+set -g mouse on
+set -g set-titles on
+bind-key -T prefix n run-shell "$run ui --menu new"
+bind-key -T prefix a run-shell "$run ui --menu approve"
+bind-key -T prefix t display-popup -E -w 80% -h 60% "$run ui --tickets"
+bind-key -T prefix p run-shell "$run ui --menu preview #{window_index}"
+bind-key -T prefix f run-shell "$run ui --sidebar"
+bind-key -T prefix ? display-popup -E -w 70% -h 50% "$run ui --keys"
+bind-key -T prefix Left previous-window
+bind-key -T prefix Right next-window
+CONF
+}
+
+ui_menu() {   # ui_menu new|role <folder>|approve|preview <index>
+  local hub run d f r items; hub="$(find_hub)" || exit $?; run="ADE_HUB=$(sq "$hub") $(sq "$(ade_self)")"
+  set -- "$@"; local what="${1:-}"; [ $# -gt 0 ] && shift
+  case "$what" in
+    new)
+      set --; for d in "$hub"/projects/*/ "$hub"/ops/*/; do [ -d "$d" ] || continue; f="${d%/}"; f="${f#"$hub"/}"
+        [[ $f =~ ^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] || continue   # never a name tmux or the shell could run
+        set -- "$@" "$f" "" "run-shell \"$run ui --menu role $f\""; done
+      [ $# -gt 0 ] || { ui_tmux display-message "no folders in this hub (projects/ or ops/)"; return 0; }
+      ui_tmux display-menu -T "New agent: folder" "$@" ;;
+    role)
+      f="${1:-}"; printf '%s' "$f" | grep -Eq '^(projects|ops)/[A-Za-z0-9._-]+$' || die 2 "not a folder: $f"
+      items="$(hub_run "$hub" roles 2> /dev/null | awk '/^[a-z][a-z0-9-]* / { print $1 }')"
+      [ -n "$items" ] || items="builder routine reviewer architect triage"
+      set --; for r in $items; do set -- "$@" "$r" "" "run-shell -b \"$run work --role $r $f\""; done
+      set -- "$@" "(no role)" "" "run-shell -b \"$run work $f\""
+      ui_tmux display-menu -T "New agent: role for $f" "$@" ;;
+    approve)
+      d="$(mk_tmp)" || die 1 "could not make a temp folder"; ui_data "$hub" "$d"; set --
+      while IFS="$(printf '\t')" read -r st r f; do
+        [ "$st" = waiting ] || continue
+        printf '%s' "$r" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]*$' && printf '%s' "$f" | grep -Eq '^(projects|ops)/[A-Za-z0-9._-]+$' || continue
+        set -- "$@" "$r  $f" "" "display-popup -E -w 80% -h 50% \"$run dispatch --approve $r $f\""
+      done < "$d/tickets"; rm_tmp "$d"
+      [ $# -gt 0 ] || { ui_tmux display-message "no ticket is waiting for you"; return 0; }
+      ui_tmux display-menu -T "Approve a ticket" "$@" ;;
+    preview)
+      f="$(ui_tmux display-message -p -t ":${1:-0}" '#{window_name}' 2> /dev/null)"; f="${f%%:*}"
+      [ "${1:-0}" != 0 ] && [ -n "$f" ] || f=.
+      ui_tmux display-popup -E -w 90% -h 90% "$run ui --preview $f" ;;
+    *) die 2 "usage: ade ui --menu new|role <folder>|approve|preview <index>" ;;
+  esac
+}
+
+ui_preview() {   # the agent's plan: <folder>/PLAN.md, else its STATE.md; glow when installed, else plain text
+  local hub p f; hub="$(find_hub)" || exit $?; f="${1:-.}"
+  case "$f" in */..*|..*|/*) die 2 "not a folder: $f" ;; esac
+  for p in "$hub/$f/PLAN.md" "$hub/$f/STATE.md"; do [ -f "$p" ] && break; done
+  [ -f "$p" ] || { echo "no plan for $f yet (no PLAN.md or STATE.md)"; [ -t 0 ] && read -r _; return 0; }
+  p="$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")"
+  if command -v glow > /dev/null 2>&1; then glow -p "$p"; else cat "$p"; [ -t 0 ] && { printf '\n(Enter closes) '; read -r _; }; fi
+  return 0
+}
+
+ui_sidebar() {
+  local id; need_tmux
+  id="$(ui_tmux list-panes -F '#{pane_id} #{pane_title}' 2> /dev/null | awk '$2 == "ade-dash" { print $1; exit }')"
+  if [ -n "$id" ]; then ui_tmux kill-pane -t "$id"; return; fi
+  id="$(ui_tmux split-window -h -d -l 44 -P -F '#{pane_id}' "$(sq "$(ade_self)") dash")" || die 1 "could not open the sidebar"
+  ui_tmux select-pane -t "$id" -T ade-dash
+}
+
+cmd_ui() {
+  local hub s d conf detach=0
+  case "${1:-}" in
+    --bar) [ -n "${2:-}" ] || die 2 "usage: ade ui --bar <session>"; hub="$(find_hub)" || exit $?
+      ui_bar "$hub" "$2"; return 0 ;;
+    --tab-name) printf '%s' "${2:-}" | grep -Eq '^(projects|ops)/[A-Za-z0-9._-]+$' || die 2 "usage: ade ui --tab-name <folder> [ticket]"
+      echo "$2${3:+:$3}"; return 0 ;;
+    --menu) shift; ui_menu "$@"; return ;;
+    --preview) ui_preview "${2:-}"; return ;;
+    --sidebar) ui_sidebar; return ;;
+    --keys) echo "ade ui keys:"; echo "$UI_KEYS"; [ -t 0 ] && read -r _; return 0 ;;
+    --tickets) hub="$(find_hub)" || exit $?; d="$(mk_tmp)" || die 1 "could not make a temp folder"; ui_data "$hub" "$d"
+      ui_render dash "$d" | awk '/^TICKETS/ { on = 1 } /^EVENTS/ { on = 0 } on'; rm_tmp "$d"; [ -t 0 ] && read -r _; return 0 ;;
+    --session) hub="$(find_hub)" || exit $?; ui_session "$hub"; return 0 ;;
+    --detach) detach=1 ;;
+    "") ;;
+    *) die 2 "usage: ade ui [--detach]" ;;
+  esac
+  need_tmux; hub="$(find_hub)" || exit $?; s="$(ui_session "$hub")"
+  sq "$hub" > /dev/null; sq "$(ade_self)" > /dev/null   # checked here: inside $(...) a refusal would only end a subshell
+  if ! ui_tmux has-session -t "=$s" 2> /dev/null; then
+    claude_update "$hub"
+    conf="$CONF_DIR/ui-$s.tmux.conf"; ui_conf "$hub" "$s" | write_conf_file "ui-$s.tmux.conf"
+    ui_tmux new-session -d -s "$s" -n orchestrator -c "$hub" \
+      "exec env AGENT_TERMINAL=tmux ADE_UI_SESSION=$s ADE_HUB=$(sq "$hub") $(sq "$(ade_self)") claude" || die 1 "tmux could not start $s"
+    ui_tmux source-file "$conf" || die 1 "tmux could not load $conf"
+    ui_tmux set-environment -t "=$s" AGENT_TERMINAL tmux; ui_tmux set-environment -t "=$s" ADE_UI_SESSION "$s"
+    ui_tmux set-environment -t "=$s" ADE_HUB "$hub"
+  fi
+  [ "$detach" = 1 ] && { echo "ade ui: session $s (attach with: ade ui)"; return 0; }
+  TMUX=""; export TMUX; exec tmux -L "$ADE_TMUX_SOCKET" attach-session -t "=$s"
+}
+
+cmd_dash() {
+  local hub d once=0; [ "${1:-}" = --once ] && once=1
+  [ $# -eq 0 ] || [ "$once" = 1 ] || die 2 "usage: ade dash [--once]"
+  hub="$(find_hub)" || exit $?; DASH_DIR="$(mk_tmp)" || die 1 "could not make a temp folder"; d="$DASH_DIR"; trap 'rm_tmp "$DASH_DIR"' EXIT
+  while :; do
+    ui_data "$hub" "$d"
+    if [ "$once" = 1 ]; then ui_render dash "$d"; return 0; fi
+    printf '\033[H\033[2J'; ui_render dash "$d"; sleep 2
+  done
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -653,7 +947,10 @@ cmd_version() {
 
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
-  work|dispatch|notify|chat|method|keys|models|roles|doctor|sync|context) run_hub "$cmd" "$@" ;;
+  work) work_in_ui; run_hub work "$@" ;;
+  dispatch|notify|chat|method|keys|models|roles|doctor|sync|context) run_hub "$cmd" "$@" ;;
+  ui) cmd_ui "$@" ;;
+  dash) cmd_dash "$@" ;;
   status) run_hub sessions "$@" ;;
   agent-run) run_hub agent "$@" ;;
   init) cmd_init "$@" ;;

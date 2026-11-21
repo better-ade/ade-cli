@@ -45,6 +45,12 @@ other_launchers() {   # ade work and ade orchestrator start update too
   assert_eq "$(head -1 "$LOG")" update "ade orchestrator start"
 }
 
-ALL="updates_before_launch once_per_day env_skips failure_never_blocks other_launchers"
+ui_updates() {   # ade ui updates before it opens the orchestrator tab
+  fresh; update_fixture; printf '#!/bin/bash\n[ "$1" = -L ] && shift 2\necho "tmux $*" >> "$LOG"\n[ "$1" = has-session ] && exit 1\nexit 0\n' > "$T/fakebin/tmux"
+  chmod +x "$T/fakebin/tmux"; bash "$ADE" ui --detach > /dev/null 2>&1
+  grep -n -e '^update' -e 'new-session' "$LOG" | head -1 | grep -q ':update' || { cat "$LOG"; fail "update before the session starts"; }
+}
+
+ALL="updates_before_launch once_per_day env_skips failure_never_blocks other_launchers ui_updates"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
