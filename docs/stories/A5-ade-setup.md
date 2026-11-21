@@ -1,0 +1,35 @@
+# A5: `ade setup`: sign in, then a guided session that sets everything up
+
+Status: Ready for development (2026-11-21). Risk: high (credentials). Depends on A1, A3, A4.
+Owner's decisions (2026-11-21): ask the user for their Claude account or key and run a session that sets up the project;
+provider-agnostic in principle, but **Claude Code only to start**: providers are Claude (account or Anthropic API key),
+DeepSeek, and GLM and Muse once their live check passes; Codex and Gemini stay paused.
+Verification command: `bash tests/run.sh`.
+
+## Goal
+`ade setup` takes a new user from nothing to a working hub and project:
+1. **Claude Code:** installs it with the official installer when `claude` is missing (asks first).
+2. **Provider and sign-in** (one question each, plain words):
+   - Claude account (Pro, Max, Team, Enterprise): runs Claude Code's own login; `ade` stores nothing.
+   - Anthropic API key, DeepSeek key, GLM key, Muse key: read with a hidden prompt (never argv, never echoed), stored
+     with the hub's `bin/keys set <tool>` (Keychain on macOS, the V1 store on Linux), and used through Claude Code's key
+     helper as ADR 0002 already does; never in the environment. GLM and Muse are shown as "needs the live check" and
+     stay off until it passes.
+3. **Hub:** `ade hub new` when there is none (A3).
+4. **Guided session:** `ade claude` (A4) opens Claude Code at the hub with a first prompt that runs the ADE setup
+   guide: asks in plain words about the user's projects and work, then proposes and, one step at a time with the
+   user's yes, runs `ade init` per project, `ade agent add` for specialists, `ade skills add` for plugins, sets role
+   models (`bin/models`), and offers the Telegram channel (`bin/chat setup telegram`).
+- `ade setup --check` reports each step's state (installed, signed in, hub, projects, channel) and changes nothing.
+
+## Acceptance criteria (`tests/test_setup.sh`; fakes for claude, the installer, bin/keys, gh; no network)
+| AC | Criterion |
+|---|---|
+| 1 | With `claude` missing, setup asks before running the installer; "no" stops with the manual command |
+| 2 | Account sign-in runs Claude Code's login and stores nothing; `--check` then shows "signed in (account)" |
+| 3 | A key is read without echo and passed only to `bin/keys set <tool>` on stdin; it is in no argv, file, log or environment of any child (a fake child prints its env) |
+| 4 | GLM and Muse are listed as "needs the live check" and cannot be made the default until then |
+| 5 | No hub: runs `ade hub new`; a hub: skips it |
+| 6 | The guided session starts with `ade claude` and a setup prompt that names each step and says it asks before each change |
+| 7 | `--check` makes no change (all fakes record zero writes) and prints one line per step |
+| 8 | Codex and Gemini are not offered |
