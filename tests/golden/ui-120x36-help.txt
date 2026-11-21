@@ -1,0 +1,36 @@
+orchestrator ready
+
+
+
+
+
+
+
+
+                          ┌────────────────────────────────────────────────────────────────┐
+                          │ade ui keys:                                                    │
+                          │  prefix n   new agent: pick a folder, then a role              │
+                          │  prefix a   approve a waiting ticket (type its ref back)       │
+                          │  prefix t   tickets ready and waiting                          │
+                          │  prefix p   preview the current agent's plan                   │
+                          │  prefix f   show or hide the fleet sidebar (ade dash)          │
+                          │  prefix ?   this help                                          │
+                          │  prefix 0-9, Left, Right   switch tabs                         │
+                          │  prefix d   detach (agents keep running)                       │
+                          │                                                                │
+                          │                                                                │
+                          │                                                                │
+                          │                                                                │
+                          │                                                                │
+                          └────────────────────────────────────────────────────────────────┘
+
+
+
+
+
+
+
+
+
+
+● 0 orchestrator  [+ new]

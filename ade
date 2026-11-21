@@ -521,9 +521,14 @@ ask() {   # ask <prompt>: one answer line into ANSWER; no answer (end of input) 
   [ -t 0 ] || echo
 }
 ask_secret() {   # ask_secret <prompt>: a hidden answer into SECRET (not echoed, not exported)
-  printf '%s ' "$1"
-  if [ -t 0 ]; then IFS= read -rs SECRET || die 1 "setup stopped: no answer"; else IFS= read -r SECRET || die 1 "setup stopped: no answer"; fi
-  echo
+  local rc=0
+  if [ -t 0 ]; then
+    # echo goes off before the prompt shows, so keys typed (or pasted) the moment it appears are never echoed
+    stty -echo 2> /dev/null; trap 'stty echo 2> /dev/null' EXIT INT TERM
+    printf '%s ' "$1"; IFS= read -rs SECRET || rc=1
+    stty echo 2> /dev/null; trap - EXIT INT TERM
+  else printf '%s ' "$1"; IFS= read -r SECRET || rc=1; fi
+  echo; [ "$rc" = 0 ] || die 1 "setup stopped: no answer"
 }
 yes_no() { ask "$1 [y/N]"; case "$ANSWER" in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac; }
 hub_run() { local hub="$1" s="$2"; shift 2; [ -x "$hub/bin/$s" ] || die 2 "this hub has no bin/$s; update it"; ( HUB="$hub"; export HUB; "$hub/bin/$s" "$@" ); }
