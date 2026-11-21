@@ -32,7 +32,7 @@ key() { o send-keys -t o C-b "$@"; }
 for SIZE in 120x36 80x24; do
   step "ade ui at $SIZE"
   ade ui --detach > /dev/null || fail "ade ui --detach"
-  o -f /dev/null new-session -d -s o -x "${SIZE%x*}" -y "${SIZE#*x}" "env TMUX= tmux -L snap attach-session -t =ade-snap"
+  o -f /dev/null new-session -d -s o -x "${SIZE%x*}" -y "${SIZE#*x}" "env TMUX= tmux -L snap attach-session -t =$(ade ui --session)"
   o set -g prefix C-q; o unbind-key C-b; o set -g status off
   shot bar "[+ new]"
   key f; shot sidebar "EVENTS"; key f; sleep 0.5
