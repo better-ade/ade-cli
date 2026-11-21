@@ -113,7 +113,7 @@ assert {"type": "slack", "bot": ""} in d["channels"] or any(c["type"] == "slack"
 assert any(p["name"] == "git" and p["ref"] == "v0.1.0" for p in d["plugins"]), d
 assert {"name": "ade-skills", "repo": "local"} in d["marketplaces"], d   # a machine path is never recorded
 assert d["specialists"] == ["frontend"], d
-assert d["pins"]["ade-method"] == "v2.0.0" and d["pins"]["ade-agent-registry"] == "v1.1.0" and d["pins"]["ade-skills"] == "v0.1.0", d
+assert d["pins"]["ade-method"] == "v2.1.0" and d["pins"]["ade-agent-registry"] == "v1.1.0" and d["pins"]["ade-skills"] == "v0.1.0", d
 PY
   secret_free "$R" "after setup"
   bash "$ADE" restore --check < /dev/null > "$T/out" 2>&1; assert_not_contains "$T/out" "not a valid connections record" "what ade writes, ade reads"
