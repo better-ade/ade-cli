@@ -9,9 +9,9 @@ orchestrator ready                 │ADE fleet · snap
                                    │  waiting 2.1 projects/api
                                    │
                                    │EVENTS (last 8)
-                                   │  10:01 pushed event 1
-                                   │  10:02 pushed event 2
-                                   │  10:03 pushed event 3
+                                   │  10:01 api pushed event 1
+                                   │  10:02 api pushed event 2
+                                   │  10:03 api pushed event 3
                                    │
                                    │
                                    │
@@ -21,4 +21,4 @@ orchestrator ready                 │ADE fleet · snap
                                    │
                                    │
                                    │
-● 0 orchestrator  [+ new]
+● 0 orchestrator  ⟳ 1 projects/api · builder · 1.2 ✉2  ○ 2 ops/db  [+ new]
