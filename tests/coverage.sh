@@ -1,23 +1,31 @@
 #!/bin/bash
-# story A8 layer 8: line coverage of ade with kcov over tests/run.sh (Linux). Writes the report to $1 (default
-# coverage/) and fails when the percentage drops below tests/coverage-floor.
-set -u; cd "$(dirname "$0")/.." || exit 1; out="${1:-coverage}"; rm -rf "$out"
+# story A8 layer 8: line coverage of ade with kcov over the suite (Linux). Every `bash <ade>` the tests run goes through
+# a bash wrapper that runs that one ade call under kcov (its own clean trace); the runs are merged into $1 (default
+# coverage/). Fails when the suite fails or ade's line coverage drops below tests/coverage-floor.
+set -u; cd "$(dirname "$0")/.." || exit 1; out="${1:-$PWD/coverage}"; rm -rf "$out"; mkdir -p "$out/runs"
 command -v kcov > /dev/null || { echo "coverage: kcov is not installed" >&2; exit 2; }
-# kcov must get the script itself (its bash engine), not `bash script` (that traces the bash binary)
-kcov --include-pattern=/ade --bash-handle-sh-invocation --bash-method=DEBUG "$out" tests/run.sh; rc=$?
+real="$(command -v bash)"; wrap="$(mktemp -d)"
+cat > "$wrap/bash" <<W
+#!$real
+# coverage wrapper: bash <this repo's ade> ... runs under kcov; anything else is plain bash
+if [ -z "\${ADE_KCOV_INSIDE:-}" ] && [ "\${1:-}" = "$PWD/ade" ]; then
+  shift; ADE_KCOV_INSIDE=1; export ADE_KCOV_INSIDE
+  exec kcov --include-pattern=/ade "$out/runs/\$\$-\$RANDOM" "$PWD/ade" "\$@"
+fi
+exec "$real" "\$@"
+W
+chmod +x "$wrap/bash"
+PATH="$wrap:$PATH" "$real" tests/run.sh; rc=$?
 [ "$rc" = 0 ] || { echo "coverage: the suite failed under kcov (exit $rc)" >&2; exit 1; }
-pct="$(python3 - "$out" <<'PY'
-import glob, json, os, sys
-best = None
-for f in glob.glob(os.path.join(sys.argv[1], "**", "coverage.json"), recursive=True):
-    for e in json.load(open(f)).get("files", []):
-        if os.path.basename(e.get("file", "")) == "ade":
-            v = float(e.get("percent_covered", 0)); best = v if best is None else max(best, v)
-print("" if best is None else "%.2f" % best)
+kcov --merge "$out" "$out"/runs/* > /dev/null || { echo "coverage: kcov could not merge the runs" >&2; exit 1; }
+pct="$(python3 - "$out/kcov-merged/coverage.json" <<'PY'
+import json, os, sys
+for e in json.load(open(sys.argv[1])).get("files", []):
+    if os.path.basename(e.get("file", "")) == "ade":
+        print(e.get("percent_covered", "")); break
 PY
 )"
-[ -n "$pct" ] || { echo "coverage: no figure for ade in $out; files kcov saw:" >&2
-  python3 -c 'import glob,json,sys; [print("  ", e.get("file"), e.get("percent_covered")) for f in glob.glob(sys.argv[1] + "/**/coverage.json", recursive=True) for e in json.load(open(f)).get("files", [])]' "$out" >&2; exit 1; }
+[ -n "$pct" ] || { echo "coverage: no figure for ade in $out/kcov-merged" >&2; exit 1; }
 floor="$(tr -d ' \n' < tests/coverage-floor)"
-echo "coverage of ade: $pct% (floor $floor%)"
+echo "coverage of ade: $pct% (floor $floor%, $(ls "$out/runs" | wc -l | tr -d ' ') ade runs merged)"
 python3 -c 'import sys; sys.exit(0 if float(sys.argv[1]) >= float(sys.argv[2]) else 1)' "$pct" "$floor" || { echo "coverage: below the floor" >&2; exit 1; }
