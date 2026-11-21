@@ -24,7 +24,7 @@
 <p align="center">
   <img src="docs/assets/hero.svg" alt="ade ui: a dark terminal with a tab bar (0 orchestrator, 1 projects/api · builder · 1.2 busy, 2 ops/db · idle) above an orchestrator session that dispatches a ticket to a builder" width="100%">
 </p>
-<p align="center"><sub>A sketch of <code>ade ui</code>, which is planned (<a href="docs/stories/A6-ade-ui-tabs.md">A6</a>). Today's commands are in the <a href="#command-reference">command reference</a>.</sub></p>
+<p align="center"><sub>A sketch of <code>ade ui</code> (<a href="docs/stories/A6-ade-ui-tabs.md">A6</a>). Today's commands are in the <a href="#command-reference">command reference</a>.</sub></p>
 
 ## What it is
 
@@ -186,9 +186,9 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade hub list` · `ade hub use <path>` | The hubs `ade` knows; switch the default | **built** (A3) |
 | `ade` (no arguments) | Say what to do next: the hub, its status and the next commands | **built** (A3) |
 | `ade claude [<folder>] [-- args]` | Claude Code at the hub root as the orchestrator; with a folder, `ade work <folder>` | **built** (A4) |
-| `ade setup [--check\|--test\|--top\|--telegram]` | Sign-in, providers and live tests, Telegram, hub, guided session | planned (A5) |
-| `ade ui` | One tmux window, a tab per agent, live busy/idle | planned (A6) |
-| `ade skills list\|enable\|disable\|search` | Skills and plugins on the fly, with a reload hint to running sessions | planned (A7) |
+| `ade setup [--check\|--test\|--top\|--telegram]` | Sign-in, providers and live tests, Telegram, hub, guided session | **built** (A5; needs the hub pieces in `.ade/context/hub-interface.md`) |
+| `ade ui [--detach]` · `ade dash [--once]` | One tmux window, a tab per agent with state icons; fleet sidebar; popups for new agent, approve, tickets, plan preview, help | **built** (A6; needs the hub pieces in `.ade/context/hub-interface.md`) |
+| `ade skills list\|enable\|disable\|search` | Skills and plugins on the fly, with a reload hint to running sessions | **built** (A7) |
 
 Exit codes: `0` success, `1` a failure while working (a fetch or a copy), `2` a usage problem or a missing hub, script
 or tool. A hub command exits with whatever the hub's script returns.

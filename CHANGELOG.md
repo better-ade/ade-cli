@@ -4,6 +4,16 @@
 - `ade init` installs ade-method's `install_templates` (`.github/pull_request_template.md`, `.ade/commit-template.txt`,
   never overwriting) and sets `git config commit.template .ade/commit-template.txt` in that repo unless one is set;
   the default `ADE_METHOD_REF` is now `v2.1.0`; the temp checkout is removed again (the exit trap no longer fails).
+- `ade skills list|add|enable|disable|search` (A7): BMAD skills via `skillOverrides` (absent = on; disable = name-only;
+  ade-method's never list cannot be enabled), ade-skills plugins from the marketplace file; after a change the folder's
+  running sessions get the reload hint through the hub's `bin/notify`; unknown names exit 2 with the closest ones.
+- `ade ui [--detach]` and `ade dash [--once]` (A6): tmux session `ade-<hub>` on ade's own tmux server, tab 0 the
+  orchestrator, a themed tab bar (● ⟳ ○ ⚠, folder, role, ticket, unread ✉), the fleet sidebar (prefix f) and popups
+  (n new agent, a approve, t tickets, p plan preview, ? help); `ade work` opens a tab while it runs.
+- `ade setup [--check | --test [provider|telegram] | --top | --telegram]` (A5): installs Claude Code (asks first), makes
+  a hub when there is none, picks one everything agent and any focus providers (each signed in and live-tested; only
+  ready ones enter `HUB_PROVIDERS_ALLOWED`), offers Telegram, then a guided `ade claude` session. Keys and the bot
+  token go only to the hub's `bin/keys set <tool>` on stdin.
 - `ade claude [<folder>] [-- args]` (A4): Claude Code at the hub root with the hub's `HUB_ROOT_MODEL` and Remote
   Control named after the hub, the `ade@ade-skills` plugin enabled in the hub's settings; `--dangerously-skip-permissions`
   is refused.
