@@ -156,6 +156,19 @@ bar_cached() {   # review: the bar's data is cached for 2 seconds (each client r
   assert_eq "$(wc -l < "$AGENT_STATE/sessions.calls" | tr -d ' ')" 2 "and again after it"
 }
 
-ALL="session_names menu_skips_bad_folders sq_refuses bar_cached creates_then_attaches work_opens_tab tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
+dash_tokens_and_events() {   # UX review: TOKENS only when bin/sessions reports it; events read as plain sentences
+  fresh; ui_fixture
+  printf '{"time": "2026-11-21T10:11:00Z", "from": "ops/db", "to": "all", "kind": "idle", "text": "tests green"}\n{"time": "2026-11-21T10:12:00Z", "from": "projects/web", "to": "main", "kind": "blocked", "text": "needs the API key"}\n' >> "$AGENT_STATE/events.jsonl"
+  COLUMNS=100 bash "$ADE" dash --once > "$T/out" 2>&1
+  assert_not_contains "$T/out" "TOKENS" "no TOKENS column when no session reports usage"
+  assert_contains "$T/out" "10:10 api pushed event 10" "pushed: folder name, kind, text"
+  assert_contains "$T/out" "10:11 db idle" "idle reads short"; assert_not_contains "$T/out" "tests green" "without the STATE text"
+  assert_contains "$T/out" "10:12 web blocked: needs the API key" "blocked with its reason"
+  sed -i.bak 's/STATUS LAST"/STATUS LAST TOKENS"/; s/2026-11-21T10:30:00Z"/2026-11-21T10:30:00Z 12.3k"/; s/idle   -"/idle   - -"/' "$T/hub/bin/sessions"
+  COLUMNS=100 bash "$ADE" dash --once > "$T/out" 2>&1
+  assert_contains "$T/out" "TOKENS" "the column shows when reported"; assert_contains "$T/out" "12.3k" "with the session's usage"
+}
+
+ALL="dash_tokens_and_events session_names menu_skips_bad_folders sq_refuses bar_cached creates_then_attaches work_opens_tab tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

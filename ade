@@ -857,12 +857,16 @@ def read(n):
     except OSError: return []
 theme = {l.split("=", 1)[0][len("ADE_THEME_"):]: l.split("=", 1)[1] for l in read("theme") if "=" in l}
 rows = []
+head = (read("sessions") or [""])[0].split()
+tok_i = head.index("TOKENS") if "TOKENS" in head else None   # usage, when the hub's bin/sessions reports it
 for l in read("sessions")[1:]:
     f = l.split()
     if len(f) >= 7:
         name, folder, started, role, status = f[0], f[1], f[4], f[5], f[6]
         ticket = "" if name == folder.rsplit("/", 1)[-1] else name
-        rows.append(dict(name=name, folder=folder, started=started, role="" if role == "-" else role, status=status, ticket=ticket))
+        tok = f[tok_i] if tok_i is not None and len(f) > tok_i and f[tok_i] != "-" else ""
+        rows.append(dict(name=name, folder=folder, started=started, role="" if role == "-" else role, status=status, ticket=ticket, tokens=tok))
+show_tok = any(r["tokens"] for r in rows)
 unread = {}
 for l in read("unread"):
     k, _, v = l.partition("\t")
@@ -914,13 +918,14 @@ else:
     try: width = int(os.environ.get("COLUMNS") or 0) or os.get_terminal_size().columns
     except OSError: width = 80
     narrow = width < 70   # the sidebar: one compact line per agent, ticket and event
-    if rows and not narrow: print("    %-24s %-10s %-8s %-7s %s" % ("FOLDER", "ROLE", "TICKET", "RUN", "TOKENS"))
+    if rows and not narrow: print(("    %-24s %-10s %-8s %-7s" % ("FOLDER", "ROLE", "TICKET", "RUN") + ("  TOKENS" if show_tok else "")).rstrip())
     if not rows: print("  (no focus agents running)")
     for r in rows:
         st = state(r["status"])
         mark = "  ✉%d" % unread[r["name"]] if unread.get(r["name"], 0) > 0 else ""
-        if narrow: print("  %s %s" % (ICON[st], " · ".join(x for x in (r["folder"], r["role"], r["ticket"], age(r["started"])) if x)) + mark)
-        else: print("  %s %-24s %-10s %-8s %-7s %s%s" % (ICON[st], r["folder"], r["role"] or "-", r["ticket"] or "-", age(r["started"]), "-", mark))
+        if narrow: print("  %s %s" % (ICON[st], " · ".join(x for x in (r["folder"], r["role"], r["ticket"], age(r["started"]), r["tokens"]) if x)) + mark)
+        else: print(("  %s %-24s %-10s %-8s %-7s" % (ICON[st], r["folder"], r["role"] or "-", r["ticket"] or "-", age(r["started"]))
+                     + ("  %-6s" % (r["tokens"] or "-") if show_tok else "")).rstrip() + mark)
     print(""); print(c("TICKETS", "1"))
     t = read("tickets")
     if t == ["unavailable"]: print("  (this hub's bin/dispatch has no --list yet)")
@@ -940,8 +945,12 @@ else:
             tm = ts(str(e.get("time", "")))
             text = " ".join(str(e.get("text", "")).split())[:80]
             hm = tm.strftime("%H:%M") if tm else "--:--"
-            if narrow: ev.append(("  %s %s %s" % (hm, e.get("kind", "?"), text))[:width - 1])
-            else: ev.append("  %s %s → %s  %s  %s" % (hm, e.get("from", "?"), e.get("to", "?"), e.get("kind", "?"), text))
+            who = str(e.get("from", "?")).rstrip("/").rsplit("/", 1)[-1] or "?"; kind = str(e.get("kind", "?"))
+            # a plain sentence: "api pushed feat/1.2", "db idle", "web blocked: <reason>"
+            if kind in ("idle", "ended"): line = "%s %s" % (who, kind)
+            elif kind == "blocked": line = "%s blocked: %s" % (who, text) if text else "%s blocked" % who
+            else: line = ("%s %s %s" % (who, kind, text)).rstrip()
+            ev.append(("  %s %s" % (hm, line))[:width - 1])
     except OSError:
         pass
     print("\n".join(ev) if ev else "  (no events)")

@@ -32,9 +32,11 @@ key() { o send-keys -t o C-b "$@"; }
 for SIZE in 120x36 80x24; do
   step "ade ui at $SIZE"
   ade ui --detach > /dev/null || fail "ade ui --detach"
+  S="$(ade ui --session)"   # two agent tabs as bin/work's tmux mode opens them, so the bar shows their state icons
+  tmux -L snap new-window -d -t "=$S:" -n "projects/api:1.2" "sleep 600"; tmux -L snap new-window -d -t "=$S:" -n "ops/db" "sleep 600"
   o -f /dev/null new-session -d -s o -x "${SIZE%x*}" -y "${SIZE#*x}" "env TMUX= tmux -L snap attach-session -t =$(ade ui --session)"
   o set -g prefix C-q; o unbind-key C-b; o set -g status off
-  shot bar "[+ new]"
+  shot bar "ops/db"
   key f; shot sidebar "EVENTS"; key f; sleep 0.5
   key "?"; shot help "prefix ?"; o send-keys -t o Enter; sleep 0.5
   key t; shot tickets "waiting"; o send-keys -t o Enter; sleep 0.5
