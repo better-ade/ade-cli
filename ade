@@ -340,12 +340,11 @@ hub_new() {
 
 # ade with no arguments: what to do next (story A3)
 cmd_home() {
-  local hub err; err="$(mktemp)"
-  if ! hub="$(find_hub 2> "$err")"; then
-    grep -q "no hub found" "$err" || cat "$err" >&2; rm -f "$err"
+  local hub err
+  if ! hub="$(find_hub 2> /dev/null)"; then
+    err="$(find_hub 2>&1 > /dev/null)"; printf '%s' "$err" | grep -q "no hub found" || echo "$err" >&2
     echo 'no hub yet: run `ade hub new <name>`'; return 0
   fi
-  rm -f "$err"
   echo "hub: $(hub_label "$hub") ($hub)"
   [ -x "$hub/bin/sessions" ] && (HUB="$hub"; export HUB; "$hub/bin/sessions")
   echo "next:"
@@ -625,7 +624,8 @@ cmd_setup() {
 # and theme never touch the user's tmux (story A6; hub calls in .ade/context/hub-interface.md)
 ADE_TMUX_SOCKET="${ADE_TMUX_SOCKET:-ade}"
 ui_tmux() { tmux -L "$ADE_TMUX_SOCKET" "$@"; }
-ui_session() { echo "ade-$(hub_label "$1" | tr -c 'A-Za-z0-9-\n' '-')"; }
+# ui_session <hub>: ade-<name>-<6 hex of the hub path's checksum>, so two hubs with one name never share a session
+ui_session() { echo "ade-$(hub_label "$1" | tr -c 'A-Za-z0-9-\n' '-')-$(printf '%s' "$1" | cksum | awk '{ printf "%06x", $1 % 16777216 }')"; }
 ade_self() {   # the absolute path of this script, for the commands tmux runs
   local p="$0" l; while [ -L "$p" ]; do l="$(readlink "$p")"; case "$l" in /*) p="$l" ;; *) p="$(dirname "$p")/$l" ;; esac; done
   echo "$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")"
@@ -647,7 +647,10 @@ work_in_ui() {
   hub="$(find_hub 2> /dev/null)" || return 0; s="$(ui_live "$hub")" || return 0
   AGENT_TERMINAL=tmux; ADE_UI_SESSION="$s"; export AGENT_TERMINAL ADE_UI_SESSION
 }
-sq() { case "$1" in *"'"*|*'"'*) die 2 "paths with quotes are not supported by ade ui: $1" ;; esac; printf "'%s'" "$1"; }
+sq() {   # a path quoted for a tmux command; anything tmux or the shell could expand is refused
+  case "$1" in *"'"*|*'"'*|*'$'*|*'\'*|*'#'*|*'`'*) die 2 "ade ui does not support this path (quotes, \$, \\, # or backticks): $1" ;; esac
+  printf "'%s'" "$1"
+}
 
 # theme: ~/.config/ade/theme (key=colour lines); a colour must be a tmux colour word or #rrggbb, else the default stays
 THEME_KEYS="bg fg accent orchestrator busy idle blocked unread"
@@ -672,6 +675,18 @@ ui_data() {
   theme_env > "$d/theme"
   printf '%s\n' "${AGENT_STATE:-$HOME/.agent-hub/$(hub_label "$hub")}/events.jsonl" > "$d/events_path"
   hub_label "$hub" > "$d/name"
+}
+
+# ui_bar <hub> <session>: the tab bar, from data cached for 2 s in ~/.config/ade/ui-cache/<session> (every attached
+# client redraws every 2 s; the hub's scripts run once per period, not once per client)
+ui_bar() {
+  local c="$CONF_DIR/ui-cache/$2" now t=0; now="$(date +%s)"
+  [ -f "$c/at" ] && t="$(cat "$c/at" 2> /dev/null)"; [[ $t =~ ^[0-9]+$ ]] || t=0
+  local keep="${ADE_UI_CACHE_SECONDS:-2}"; [[ $keep =~ ^[0-9]+$ ]] || keep=2
+  if [ $((now - t)) -ge "$keep" ] || [ ! -f "$c/sessions" ]; then
+    ( umask 077; mkdir -p "$c" ) || return 1; ui_data "$1" "$c" "$2"; echo "$now" > "$c/at"
+  else ui_tmux list-windows -t "=$2" -F "#{window_index}	#{window_name}	#{window_active}" > "$c/windows" 2> /dev/null; fi
+  ui_render bar "$c"
 }
 
 ui_render() {   # ui_render bar|dash <dir>
@@ -808,6 +823,7 @@ ui_menu() {   # ui_menu new|role <folder>|approve|preview <index>
   case "$what" in
     new)
       set --; for d in "$hub"/projects/*/ "$hub"/ops/*/; do [ -d "$d" ] || continue; f="${d%/}"; f="${f#"$hub"/}"
+        [[ $f =~ ^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]] || continue   # never a name tmux or the shell could run
         set -- "$@" "$f" "" "run-shell \"$run ui --menu role $f\""; done
       [ $# -gt 0 ] || { ui_tmux display-message "no folders in this hub (projects/ or ops/)"; return 0; }
       ui_tmux display-menu -T "New agent: folder" "$@" ;;
@@ -819,12 +835,12 @@ ui_menu() {   # ui_menu new|role <folder>|approve|preview <index>
       set -- "$@" "(no role)" "" "run-shell -b \"$run work $f\""
       ui_tmux display-menu -T "New agent: role for $f" "$@" ;;
     approve)
-      d="$(mktemp -d)"; ui_data "$hub" "$d"; set --
+      d="$(mk_tmp)" || die 1 "could not make a temp folder"; ui_data "$hub" "$d"; set --
       while IFS="$(printf '\t')" read -r st r f; do
         [ "$st" = waiting ] || continue
         printf '%s' "$r" | grep -Eq '^[A-Za-z0-9][A-Za-z0-9._/-]*$' && printf '%s' "$f" | grep -Eq '^(projects|ops)/[A-Za-z0-9._-]+$' || continue
         set -- "$@" "$r  $f" "" "display-popup -E -w 80% -h 50% \"$run dispatch --approve $r $f\""
-      done < "$d/tickets"; rm -rf "$d"
+      done < "$d/tickets"; rm_tmp "$d"
       [ $# -gt 0 ] || { ui_tmux display-message "no ticket is waiting for you"; return 0; }
       ui_tmux display-menu -T "Approve a ticket" "$@" ;;
     preview)
@@ -857,20 +873,22 @@ cmd_ui() {
   local hub s d conf detach=0
   case "${1:-}" in
     --bar) [ -n "${2:-}" ] || die 2 "usage: ade ui --bar <session>"; hub="$(find_hub)" || exit $?
-      d="$(mktemp -d)"; ui_data "$hub" "$d" "$2"; ui_render bar "$d"; rm -rf "$d"; return 0 ;;
+      ui_bar "$hub" "$2"; return 0 ;;
     --tab-name) printf '%s' "${2:-}" | grep -Eq '^(projects|ops)/[A-Za-z0-9._-]+$' || die 2 "usage: ade ui --tab-name <folder> [ticket]"
       echo "$2${3:+:$3}"; return 0 ;;
     --menu) shift; ui_menu "$@"; return ;;
     --preview) ui_preview "${2:-}"; return ;;
     --sidebar) ui_sidebar; return ;;
     --keys) echo "ade ui keys:"; echo "$UI_KEYS"; [ -t 0 ] && read -r _; return 0 ;;
-    --tickets) hub="$(find_hub)" || exit $?; d="$(mktemp -d)"; ui_data "$hub" "$d"
-      ui_render dash "$d" | awk '/^TICKETS/ { on = 1 } /^EVENTS/ { on = 0 } on'; rm -rf "$d"; [ -t 0 ] && read -r _; return 0 ;;
+    --tickets) hub="$(find_hub)" || exit $?; d="$(mk_tmp)" || die 1 "could not make a temp folder"; ui_data "$hub" "$d"
+      ui_render dash "$d" | awk '/^TICKETS/ { on = 1 } /^EVENTS/ { on = 0 } on'; rm_tmp "$d"; [ -t 0 ] && read -r _; return 0 ;;
+    --session) hub="$(find_hub)" || exit $?; ui_session "$hub"; return 0 ;;
     --detach) detach=1 ;;
     "") ;;
     *) die 2 "usage: ade ui [--detach]" ;;
   esac
   need_tmux; hub="$(find_hub)" || exit $?; s="$(ui_session "$hub")"
+  sq "$hub" > /dev/null; sq "$(ade_self)" > /dev/null   # checked here: inside $(...) a refusal would only end a subshell
   if ! ui_tmux has-session -t "=$s" 2> /dev/null; then
     conf="$CONF_DIR/ui-$s.tmux.conf"; ui_conf "$hub" "$s" | write_conf_file "ui-$s.tmux.conf"
     ui_tmux new-session -d -s "$s" -n orchestrator -c "$hub" \
@@ -886,7 +904,7 @@ cmd_ui() {
 cmd_dash() {
   local hub d once=0; [ "${1:-}" = --once ] && once=1
   [ $# -eq 0 ] || [ "$once" = 1 ] || die 2 "usage: ade dash [--once]"
-  hub="$(find_hub)" || exit $?; DASH_DIR="$(mktemp -d)"; d="$DASH_DIR"; trap 'rm -rf "$DASH_DIR"' EXIT
+  hub="$(find_hub)" || exit $?; DASH_DIR="$(mk_tmp)" || die 1 "could not make a temp folder"; d="$DASH_DIR"; trap 'rm_tmp "$DASH_DIR"' EXIT
   while :; do
     ui_data "$hub" "$d"
     if [ "$once" = 1 ]; then ui_render dash "$d"; return 0; fi
