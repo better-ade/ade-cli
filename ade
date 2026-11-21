@@ -30,7 +30,7 @@ Hub commands (run the hub's bin/ scripts):
   agent-run   run an agent (bin/agent)
 
 Project commands (no hub needed):
-  init        copy ade-method at its pinned tag into this project; never overwrites
+  init        copy ade-method at its pinned tag into this project (git top level, or --here); never overwrites
   agent       ade agent list | ade agent add <name>: specialists from ade-agent-registry
   skills      ade skills add <plugin>: install an ade-skills plugin for this project
   open        open in the ADE app (inside the ADE app only)
@@ -49,45 +49,67 @@ find_hub() {
   local d="$PWD"
   while [ -n "$d" ]; do is_hub "$d" && { echo "$d"; return; }; [ "$d" = / ] && break; d="$(dirname "$d")"; done
   local cfg="$HOME/.config/ade/hub" h=""
-  [ -f "$cfg" ] && IFS= read -r h < "$cfg"
-  [ -n "$h" ] && is_hub "$h" && { echo "$h"; return; }
+  if [ -f "$cfg" ]; then
+    IFS= read -r h < "$cfg"; h="$(printf '%s' "$h" | tr -d '\r' | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')"
+    case "$h" in "~") h="$HOME" ;; "~/"*) h="$HOME/${h#\~/}" ;; esac
+    if [ -n "$h" ]; then is_hub "$h" && { echo "$h"; return; }
+      die 2 "~/.config/ade/hub points to $h, which is not a hub"; fi
+  fi
   die 2 "no hub found: set ADE_HUB, run ade inside a hub, or put the hub's path in ~/.config/ade/hub"
 }
 
 run_hub() {   # $1 = script name under bin/
   local script="$1" hub; shift; hub="$(find_hub)" || exit $?
-  [ -x "$hub/bin/$script" ] || die 2 "this hub has no bin/$script; update it"
+  [ -e "$hub/bin/$script" ] || die 2 "this hub has no bin/$script; update it"
+  [ -x "$hub/bin/$script" ] || die 2 "bin/$script is not executable"
+  HUB="$hub"; export HUB   # a stale HUB in the caller's environment would win in the hub's lib.sh
   exec "$hub/bin/$script" "$@"
 }
 
 # fetch <repo> <ref>: a temp checkout of repo at ref; prints its path
 fetch() {
-  local dir; dir="$(mktemp -d)/src"
-  if [ -d "$1" ]; then git clone -q --branch "$2" "$1" "$dir" 2>/dev/null
-  else git -c advice.detachedHead=false clone -q --depth 1 --branch "$2" "$1" "$dir" 2>/dev/null; fi \
-    || die 1 "could not fetch $1 at $2"
-  echo "$dir"
+  local tmp err; tmp="$(mktemp -d)"
+  if [ -d "$1" ]; then err="$(git clone -q --branch "$2" "$1" "$tmp/src" 2>&1)"
+  else err="$(git -c advice.detachedHead=false clone -q --depth 1 --branch "$2" "$1" "$tmp/src" 2>&1)"; fi \
+    || { rm -rf "$tmp"; die 1 "could not fetch $1 at $2: $(printf '%s\n' "$err" | tail -1)"; }
+  echo "$tmp/src"
 }
 
-# put <src> <dest>: copy unless dest exists
+# put <src> <dest>: copy unless dest exists; counts KEPT, exits 1 on a failed copy
+KEPT=0
 put() {
-  if [ -e "$2" ]; then echo "kept $2 (already there)"
-  else mkdir -p "$(dirname "$2")" && cp "$1" "$2" && echo "copied $2"; fi
+  if [ -e "$2" ]; then echo "kept $2 (already there)"; KEPT=$((KEPT + 1))
+  else { mkdir -p "$(dirname "$2")" && cp "$1" "$2"; } 2>/dev/null || die 1 "could not copy $2"; echo "copied $2"; fi
+}
+
+# project_root [args]: cd to the git top level, or stay here with --here; outside git without --here, exit 2
+project_root() {
+  local a top; for a in "$@"; do [ "$a" = --here ] && return 0; done
+  top="$(git rev-parse --show-toplevel 2>/dev/null)" || die 2 "not inside a git repository: run ade in a project, or pass --here"
+  cd "$top" || die 1 "cannot enter $top"
 }
 
 cmd_init() {
-  local src f; src="$(fetch "$ADE_METHOD_REPO" "$ADE_METHOD_REF")" || exit $?
-  [ -f "$src/rules.md" ] && put "$src/rules.md" .ade/rules.md
-  for f in "$src"/agents/*.md; do [ -f "$f" ] && put "$f" ".ade/agents/$(basename "$f")"; done
-  for f in "$src"/bmad/custom/*.toml; do [ -f "$f" ] && put "$f" "_bmad/custom/$(basename "$f")"; done
+  project_root "$@"
+  local src f list old=""; src="$(fetch "$ADE_METHOD_REPO" "$ADE_METHOD_REF")" || exit $?
+  trap 'rm -rf "$(dirname "$src")"' EXIT
+  list="$(dirname "$src")/list"; : > "$list"   # src<TAB>dest, read without a subshell so put's counts and exits hold
+  [ -f "$src/rules.md" ] && printf '%s\t%s\n' "$src/rules.md" .ade/rules.md >> "$list"
+  for f in "$src"/agents/*.md; do [ -f "$f" ] && printf '%s\t%s\n' "$f" ".ade/agents/$(basename "$f")" >> "$list"; done
+  for f in "$src"/bmad/custom/*.toml; do [ -f "$f" ] && printf '%s\t%s\n' "$f" "_bmad/custom/$(basename "$f")" >> "$list"; done
   if [ -d "$src/templates/context" ]; then
     (cd "$src/templates/context" && find . -type f | sort) | while IFS= read -r f; do
-      put "$src/templates/context/${f#./}" ".ade/context/${f#./}"; done
+      printf '%s\t%s\n' "$src/templates/context/${f#./}" ".ade/context/${f#./}"; done >> "$list"
   fi
-  [ -f "$src/templates/standards.md" ] && put "$src/templates/standards.md" docs/standards.md
-  mkdir -p .ade && echo "$ADE_METHOD_REF" > .ade/method-version
-  echo "ade-method $ADE_METHOD_REF recorded in .ade/method-version"
-  rm -rf "$(dirname "$src")"
+  [ -f "$src/templates/standards.md" ] && printf '%s\t%s\n' "$src/templates/standards.md" docs/standards.md >> "$list"
+  while IFS="$(printf '\t')" read -r f dest; do put "$f" "$dest"; done < "$list"
+  [ -f .ade/method-version ] && old="$(cat .ade/method-version)"
+  if [ "$KEPT" -gt 0 ] && [ -n "$old" ] && [ "$old" != "$ADE_METHOD_REF" ]; then
+    echo "kept files are from $old: .ade/method-version left at $old"
+  else
+    { mkdir -p .ade && echo "$ADE_METHOD_REF" > .ade/method-version; } || die 1 "could not write .ade/method-version"
+    echo "ade-method $ADE_METHOD_REF recorded in .ade/method-version"
+  fi
 }
 
 # registry rows as name<TAB>file<TAB>description
@@ -104,7 +126,8 @@ cmd_agent() {
     list|add) ;;
     *) die 2 "usage: ade agent list | ade agent add <name>" ;;
   esac
-  [ "$sub" = add ] && [ -z "${2:-}" ] && die 2 "usage: ade agent add <name>"
+  [ "$sub" = add ] && { [ -z "${2:-}" ] || [ "$2" = --here ]; } && die 2 "usage: ade agent add <name> [--here]"
+  [ "$sub" = add ] && project_root "$@"
   src="$(fetch "$ADE_REGISTRY_REPO" "$ADE_REGISTRY_REF")" || exit $?
   rows="$(registry_rows "$src")" || exit $?
   if [ "$sub" = list ]; then
@@ -133,7 +156,9 @@ cmd_open() {
 
 cmd_version() {
   local v="$ADE_VERSION"
-  [ -n "$v" ] || v="$(cat "$(cd "$(dirname "$0")" && pwd)/VERSION" 2>/dev/null)"
+  local p="$0" l
+  while [ -L "$p" ]; do l="$(readlink "$p")"; case "$l" in /*) p="$l" ;; *) p="$(dirname "$p")/$l" ;; esac; done
+  [ -n "$v" ] || v="$(cat "$(cd "$(dirname "$p")" && pwd)/VERSION" 2>/dev/null)"
   echo "ade ${v:-unknown}"
 }
 

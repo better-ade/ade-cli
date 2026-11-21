@@ -14,7 +14,7 @@ bash install.sh /usr/local # or into another prefix
 ```
 ade help                     # every command, one line each
 ade work <task> --role <r>   # hub commands run the hub's bin/ scripts (status runs bin/sessions)
-ade init                     # copy ade-method (pinned tag) into this project; never overwrites
+ade init [--here]            # copy ade-method (pinned tag) into the git top level (or here); never overwrites
 ade agent list               # specialists in ade-agent-registry
 ade agent add frontend       # copy one into .ade/agents/
 ade skills add notes         # install an ade-skills plugin for this project
