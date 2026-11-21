@@ -37,6 +37,7 @@ table() {
     agent) echo "R|agent add X" ;;
     skills) echo "R|skills add X"; echo "R|skills enable X"; echo "R|skills disable X"; echo "S|skills search X" ;;
     clean) echo "R|clean X" ;;
+    restore) echo "R|restore X"; echo "S|restore --label X" ;;
     reset) echo "R|reset X"; echo "R|reset --hub X"; echo "R|reset --keys --hub X" ;;
     uninstall) echo "R|uninstall X"; echo "R|uninstall --hub X" ;;
     init|dash|version|help) echo none ;;

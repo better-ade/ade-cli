@@ -1,6 +1,13 @@
 # Changelog
 
 ## Unreleased
+- `.ade/connections.json` and `ade restore [--check] [--label <name>]` (A10): `ade setup`, `skills add`, `agent add`,
+  `init`, `orchestrator new --channel` and `chat setup` record what the work depends on, by name only (the Claude
+  account as a label and a one-way fingerprint). `ade restore` walks each gap with a yes; `--check` prints one line per
+  connection. Another Claude account stops `work`, `dispatch`, `agent-run`, `claude` and `orchestrator start` until
+  the question is answered (remembered per machine in `~/.config/ade/accounts`). The record is checked value by value
+  and rejected whole when anything in it is off; answers come from a person at the terminal, never a pipe or an agent;
+  plugins are verified at their recorded version, for the hub and its projects.
 - `ade init` installs ade-method's `install_templates` (`.github/pull_request_template.md`, `.ade/commit-template.txt`,
   never overwriting) and sets `git config commit.template .ade/commit-template.txt` in that repo unless one is set;
   the default `ADE_METHOD_REF` is now `v2.1.0`; the temp checkout is removed again (the exit trap no longer fails).

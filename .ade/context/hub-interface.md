@@ -7,6 +7,8 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - `hub`: the default hub's path (A1).
 - `hubs`: every hub `ade hub new` made or `ade hub use` chose, one path per line (A3).
 - `orchestrators`: one `name<TAB>hub` line per orchestrator (A2). Names `[a-z0-9-]+`, unique; one per hub.
+- `accounts`: `hub<TAB>recorded fingerprint<TAB>current fingerprint<TAB>continue` once the owner chose to continue
+  with another Claude account (A10).
 - `keys-set`: one `hub<TAB>tool` line per key `ade setup` stored (A9), names only; `ade reset --keys` offers only these.
 
 ## `hub.conf` keys `ade` reads
@@ -94,3 +96,26 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `~/.local/share/ade/moved-hubs`: `path<TAB>where<TAB>UTC time` per hub moved.
 - `bin/schedule uninstall`: `reset --hub` runs it (all the hub's jobs) before the move. `bin/sessions`: a row (after
   the header) with `busy`, `idle` or `blocked` is a live agent; `reset --hub` refuses then.
+
+## `.ade/connections.json` and `ade restore` (A10)
+- The record (committed, JSON, `format` 1, names only): `account` {`label`, `fingerprint` = first 16 hex of
+  sha256("ade-account-v1:<organizationUuid>:<accountUuid>") from `${HUB_CLAUDE_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-~}}/.claude.json`
+  `oauthAccount`}, `top` {`provider`, `sign_in` account|key, `model`}, `focus` [{`provider`, `sign_in`}], `channels`
+  [{`type`, `bot`}], `marketplaces` [{`name`, `repo`}], `plugins` [{`name`, `marketplace`, `ref`}], `specialists`
+  [names], `pins` {`ade-method`, `ade-agent-registry`, `ade-skills`}, `services` [chat|monitor|sync]. Never a key,
+  token, email, account id or machine path.
+- Checked on every read, rejected whole on any failure (exit 1, the reason; nothing in it is used, the account gate
+  fails closed): only the keys above; names `^[a-z0-9][a-z0-9._-]{0,63}$`; refs `^v[0-9]+\.[0-9]+\.[0-9]+$`; `repo`
+  `https://github.com/<owner>/<repo>`, `<owner>/<repo>` or `local` (this machine's `ADE_SKILLS_REPO`; only for
+  `ade-skills`); `ade-skills` bound to another repo is rejected; `label` `^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$`;
+  `fingerprint` 16 hex; `bot` `@name` or empty; at most 64 entries per list and 64 KiB. Writers record a repo only
+  when it is a public GitHub URL (else `local`) and refuse a write the check would reject.
+- Project records: `.ade/connections.json` in the hub's `projects/*` and `ops/*` folders (and the git checkouts their
+  `ACCESS.md` lists); `ade restore` installs their plugins in their own folder.
+- Needed from the hub (ade-brain builder): `bin/chat info <channel>` prints `bot @<username>` (the public bot name, no
+  token); `bin/chat setup telegram --repair` drops this device's old pairing and pairs again; `bin/schedule install`
+  installs the hub's services for this platform (launchd or systemd). Tests fake all three.
+- Installed plugins: Claude Code's `${HUB_CLAUDE_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-~/.claude}}/plugins/installed_plugins.json`
+  (`plugins` keys `<name>@<marketplace>`, entries with `scope`, `projectPath`, `version`; a project-scoped entry counts
+  only in its folder); marketplaces: a whole word of `claude plugin marketplace list`. A plugin is ready only when the
+  installed `version` is the recorded ref without its `v`.

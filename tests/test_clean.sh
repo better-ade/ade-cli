@@ -4,29 +4,6 @@
 # uninstall answer only a terminal: their answers are typed on a pseudo-terminal (pty_run).
 . "$(dirname "$0")/helpers.sh"
 
-# pty_run <input> <command...>: the command on a fresh pseudo-terminal (its own session), the input typed ahead
-# (\n escapes); prints what the terminal showed and exits with the command's code
-pty_run() {
-  python3 -c '
-import os, pty, sys
-inp = sys.argv[1].encode().decode("unicode_escape").encode() + b"\x04" * 8   # then end-of-input, never a hang
-pid, fd = pty.fork()
-if pid == 0:
-    os.execvp(sys.argv[2], sys.argv[2:])
-os.write(fd, inp)
-out = b""
-while True:
-    try:
-        b = os.read(fd, 4096)
-    except OSError:
-        break
-    if not b:
-        break
-    out += b
-sys.stdout.write(out.decode("utf-8", "replace").replace("\r", ""))
-_, st = os.waitpid(pid, 0)
-sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 1)' "$@"
-}
 dead_pid() { sleep 0 & local p=$!; wait "$p"; echo "$p"; }
 clean_fixture() {
   H="$T/hub"; make_hub "$H" hub; echo "HUB_NAME=acme" > "$H/hub.conf"; git init -q "$H"; commit_tag "$H" hub

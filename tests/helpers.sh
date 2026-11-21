@@ -85,3 +85,31 @@ make_skills_repo() {
 JSON
   commit_tag "$K" k v0.1.0; export ADE_SKILLS_REPO="$K" ADE_SKILLS_REF=v0.1.0
 }
+# pty_run <input> <command...>: the command on a fresh pseudo-terminal (its own session), the input typed ahead
+# (\n escapes) with the terminal's echo off, so a typed key never shows in the transcript; prints what the terminal
+# showed and exits with the command's code
+pty_run() {
+  python3 -c '
+import os, pty, sys, termios, time
+inp = sys.argv[1].encode().decode("unicode_escape").encode() + b"\x04" * 8   # then end-of-input, never a hang
+pid, fd = pty.fork()
+if pid == 0:
+    a = termios.tcgetattr(0); a[3] &= ~termios.ECHO; termios.tcsetattr(0, termios.TCSANOW, a)
+    os.execvp(sys.argv[2], sys.argv[2:])
+t = time.time()
+while termios.tcgetattr(fd)[3] & termios.ECHO and time.time() - t < 5:
+    time.sleep(0.01)
+os.write(fd, inp)
+out = b""
+while True:
+    try:
+        b = os.read(fd, 4096)
+    except OSError:
+        break
+    if not b:
+        break
+    out += b
+sys.stdout.write(out.decode("utf-8", "replace").replace("\r", ""))
+_, st = os.waitpid(pid, 0)
+sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 1)' "$@"
+}

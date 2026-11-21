@@ -1,6 +1,6 @@
 # A10: remember connections, restore them anywhere
 
-Status: Ready for development (2026-11-21). Risk: high (credentials, accounts). Depends on A5 (setup), A7 (skills).
+Status: In review (2026-11-21; fix round after the adversarial review, 2026-11-22). Risk: high (credentials, accounts). Depends on A5 (setup), A7 (skills).
 Owner's intent (2026-11-21): if the user switches Claude account, `ade` asks for new connections before proceeding; the
 project's state is saved so that on a new device, after checking out the code, `ade` does its best to reinstate every
 connection. Verification command: `bash tests/run.sh`.
@@ -26,15 +26,25 @@ connection. Verification command: `bash tests/run.sh`.
   - services (chat, monitor, sync): reinstalled for this platform (launchd or systemd).
   Each step ends ready, skipped (the user said no) or failed (with the reason); the summary lists what still needs
   the user. Nothing secret is ever written to the record, a log or the repo.
+- **The record is attacker-controlled data** (it arrives with a clone): every value is checked where it is read
+  (names, refs, GitHub repos, types, lengths) and any failure rejects the whole record, so `restore`, `--check` and the
+  account gate exit 1 with the reason and nothing in it runs. Every record value given to git or claude follows `--`.
+  The name `ade-skills` means only the built-in marketplace; any other marketplace is shown with its repo and added
+  only when its name is typed back. Only a public `https://github.com/<owner>/<repo>` is recorded as a repo (anything
+  else, such as a path or a URL with a user in it, is recorded as `local`).
+- **A person answers:** `ade restore` and the account question take answers from the terminal (`/dev/tty`), as `ade
+  reset` does; piped answers, no terminal or an agent session (`CLAUDECODE` and friends) exit 2 with nothing changed.
+  The account step comes first; when it is skipped, restore stops (exit 2) before any key, plugin or Telegram step.
 
 ## Acceptance criteria (`tests/test_restore.sh`; fakes for claude, the secrets store, plugin install, launchctl/systemctl)
 | AC | Criterion |
 |---|---|
 | 1 | `ade setup`, `skills add`, `agent add` and `chat setup` keep `.ade/connections.json` current; it never contains a key, token, email or Telegram account id (a test scans it for secret patterns and emails) |
 | 2 | On a fresh machine (empty secrets store, no plugins, no services) `ade restore` lists every gap from the record and fixes each with the user's yes |
-| 3 | A different Claude account (fingerprint mismatch) stops every connection-needing command with the question above until answered; the answer is remembered per machine |
+| 3 | A different Claude account (fingerprint mismatch) stops every connection-needing command with the question above until answered, at a terminal only; the answer is remembered per machine; a skipped account step stops restore before anything else |
 | 4 | Keys are read with a hidden prompt, stored only through `bin/keys`, then live-tested; a failed test leaves the provider out of roles with the reason |
-| 5 | Plugins return at the recorded versions; a version no longer published falls back to the latest with a warning |
+| 5 | Plugins return at the recorded versions (the marketplace added at the recorded tag where Claude Code allows it), for the hub and for its projects' records; the installed version is checked afterwards and a mismatch is "different (recorded vX, installed vY)", never ready; a version no longer published falls back to the latest with a warning |
 | 6 | Telegram restore asks for the token and re-pairs; it never reuses another account's pairing |
 | 7 | `ade restore --check` changes nothing and prints one line per connection: ready, missing or different |
 | 8 | A second `ade restore` after a full restore finds nothing to do |
+| 9 | A hostile or malformed record (option-shaped repo, a name bound to another repo, bad refs, wrong types, escape sequences, unknown keys, oversize) is rejected whole: `restore`, `--check` and the gate exit 1 with the reason and nothing runs (`hostile_records`) |
