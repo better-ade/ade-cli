@@ -83,8 +83,9 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `vX.Y.Z` (the org release workflow).
 
 ## `ade clean`, `ade reset`, `ade uninstall` and the hub (A9)
-- State: `${AGENT_STATE:-~/.agent-hub/<HUB_NAME>}`. Locks `sync.lock`, `dispatch.lock`, `chat.lock`: folders holding
-  `pid` (and `start`); stale when the pid names no process, or no pid and over 2 minutes old. `dispatch/<name>`
+- State: `${AGENT_STATE:-~/.agent-hub/<HUB_NAME>}`. Locks `sync.lock`, `dispatch.lock`, `chat/lock`: folders
+  holding `pid` (and `start`); stale when the pid names no process, or no pid and over 2 minutes old. `ade clean`
+  takes the hub's `<lock>.gc` guard (`mkdir`) around the stale check and the removal. `dispatch/<name>`
   start markers (only the last 120 s count). `events-seen/<id>` cursors (expire after 7 days).
 - Projects: `projects/<name>/ACCESS.md`, a `| Repo | Checkout | Branch |` table; `clean` reads Checkout and Branch.
 - `bin/journal <folder> <text>`: `ade` writes one line as folder `ade` (`ade clean: …`, `ade reset: …`).
@@ -92,6 +93,9 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - Services: launchd `ai.agent-hub.<HUB_NAME>.<job>` in `${AGENT_LAUNCHAGENTS:-~/Library/LaunchAgents}`, systemd
   user units `~/.config/systemd/user/ai.agent-hub.<HUB_NAME>.<job>.service`; `reset` removes jobs `chat` and `monitor`.
 - ade's trash on Linux: `~/.local/share/ade/trash/<folder>-<UTC yyyymmddThhmmssZ>/`; on macOS the Finder Trash.
+  `~/.local/share/ade/moved-hubs`: `path<TAB>where<TAB>UTC time` per hub moved.
+- `bin/schedule uninstall`: `reset --hub` runs it (all the hub's jobs) before the move. `bin/sessions`: a row (after
+  the header) with `busy`, `idle` or `blocked` is a live agent; `reset --hub` refuses then.
 
 ## `.ade/connections.json` and `ade restore` (A10)
 - The record (committed, JSON, `format` 1, names only): `account` {`label`, `fingerprint` = first 16 hex of

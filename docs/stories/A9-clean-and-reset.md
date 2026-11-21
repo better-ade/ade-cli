@@ -4,6 +4,10 @@ Status: In review (2026-11-21). Risk: high (removes things). Depends on A1–A7.
 Owner's intent (2026-11-21): "make sure ade-cli has a reset or clean". Verification command: `bash tests/run.sh`.
 Change of design (owner-approved, 2026-11-21): nothing is deleted. `ade reset --hub` moves the hub to the Trash;
 `ade clean` removes only ade's and the hub's own housekeeping files, never a user's file.
+Review round (2026-11-22): `reset` and `uninstall` take answers only from a person at a terminal (`/dev/tty`; a
+pipe or a Claude Code session is refused); `--hub` also refuses ignored files, linked worktrees, nested
+repositories, unpushed tags or detached commits, a hub in use, and (Linux) another filesystem; `clean` skips
+worktrees with ignored files, branches with no commits of their own, and folders a live pane works in.
 
 ## Goal
 Three commands, from gentlest to strongest. Each shows a list of what it would do and does nothing until confirmed

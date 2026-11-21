@@ -1116,12 +1116,22 @@ ADE_TRASH_CLI="${ADE_TRASH_CLI:-trash}"   # macOS: the trash command used when i
 SERVICE_JOBS="chat monitor"
 KEY_TOOLS="anthropic deepseek glm muse gemini telegram"
 REINSTALL="curl -fsSL https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh | bash"
+MOVED_LOG="$HOME/.local/share/ade/moved-hubs"   # path<TAB>where<TAB>UTC time of each hub reset --hub moved
+TAB="$(printf '\t')"
 
 # shq <text>: single-quoted for a shell line the user may copy
 shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-# confirm <question>: y/yes is yes; anything else, or no answer, is no
+# confirm <question>: y/yes is yes; anything else, or no answer, is no (ade clean, at a terminal)
 confirm() { printf '%s [y/N] ' "$1"; IFS= read -r ANSWER || ANSWER=""; [ -t 0 ] || echo
   case "$ANSWER" in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac; }
+# reset and uninstall ask a person at a terminal: answers come from /dev/tty, never a pipe or an agent session
+agent_context() { [ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}${CLAUDE_CODE_SESSION_ID:-}" ]; }
+tty_ready() {
+  agent_context && die 2 "ade $1 asks a person at a terminal; it refuses inside a Claude Code session (an agent cannot answer for you); nothing changed"
+  { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || die 2 "ade $1 asks a person at a terminal; it refuses piped or missing answers; nothing changed"
+}
+tty_ask() { printf '%s ' "$1" > /dev/tty; IFS= read -r ANSWER < /dev/tty || ANSWER=""; }
+tty_confirm() { tty_ask "$1 [y/N]"; case "$ANSWER" in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac; }
 # known_hubs [extra]: every hub ade knows here, once each (physical paths): the current one, the default, the hub
 # list, the orchestrators' hubs and the extra one
 known_hubs() {
@@ -1132,6 +1142,9 @@ known_hubs() {
 }
 # journal_line <hub> <text>: one entry in the hub's journal (bin/journal ade <text>); a hub without one is skipped
 journal_line() { [ -x "$1/bin/journal" ] || return 0; ( HUB="$1"; export HUB; "$1/bin/journal" ade "$2" ) > /dev/null 2>&1 < /dev/null || true; }
+hub_state() { echo "${AGENT_STATE:-$HOME/.agent-hub/$(hub_label "$1")}"; }
+HUB_LOCKS="sync.lock dispatch.lock chat/lock"   # under the hub's state folder; each holds its owner's pid
+lock_pid_live() { local p=""; [ -f "$1/pid" ] && { IFS= read -r p < "$1/pid" || [ -n "$p" ]; }; matches "$p" '^[0-9]+$' && ps -p "$p" > /dev/null 2>&1; }
 
 # --- ade clean ---
 C_KIND=(); C_PATH=(); C_DESC=(); C_EXTRA=()
@@ -1154,13 +1167,23 @@ base_branch() {   # <checkout> [named]: the named branch when it exists, else or
   b="$(git -C "$c" symbolic-ref -q --short refs/remotes/origin/HEAD 2> /dev/null)"; b="${b#origin/}"
   for b in $b main master; do git -C "$c" rev-parse -q --verify "refs/heads/$b" > /dev/null 2>&1 && { echo "$b"; return; }; done
 }
-wt_consider() {   # a worktree block of <checkout>: removable when it has a branch merged into the base and no changes
-  local st
+pane_in() {   # <folder>: 0 when a live tmux pane (ade's server or the default one) has its working folder in it
+  local p; while IFS= read -r p; do case "$p/" in "$1"/*) return 0 ;; esac; done <<EOF
+$PANE_CWDS
+EOF
+  return 1
+}
+wt_consider() {   # a worktree block of <checkout>: removable only when every condition holds (see the design note)
+  local st tip lb rb
   [ -n "$WT" ] && [ "$WT_FIRST" = 0 ] && [ -n "$WT_BR" ] && [ "$WT_LOCK" = 0 ] && [ -d "$WT" ] && [ "$WT_BR" != "$WT_BASE" ] || return 0
-  git -C "$WT_C" merge-base --is-ancestor "refs/heads/$WT_BR" "refs/heads/$WT_BASE" 2> /dev/null ||
-    git -C "$WT_C" merge-base --is-ancestor "refs/heads/$WT_BR" "refs/remotes/origin/$WT_BASE" 2> /dev/null || return 0
-  st="$(git -C "$WT" status --porcelain 2> /dev/null)" && [ -z "$st" ] || return 0
-  clean_add worktree "$WT" "merged worktree $WT (branch $WT_BR is in $WT_BASE; no changes; the branch stays)" "$WT_C"
+  tip="$(git -C "$WT_C" rev-parse -q --verify "refs/heads/$WT_BR" 2> /dev/null)" || return 0
+  lb="$(git -C "$WT_C" rev-parse -q --verify "refs/heads/$WT_BASE" 2> /dev/null)"; rb="$(git -C "$WT_C" rev-parse -q --verify "refs/remotes/origin/$WT_BASE" 2> /dev/null)"
+  [ "$tip" != "$lb" ] && [ "$tip" != "$rb" ] || return 0   # a branch with no commits of its own is not "merged":
+  git -C "$WT_C" rev-list --first-parent "$lb" 2> /dev/null | grep -qxF -- "$tip" && return 0   # nor one the base only passed
+  git -C "$WT_C" merge-base --is-ancestor "$tip" "$lb" 2> /dev/null || { [ -n "$rb" ] && git -C "$WT_C" merge-base --is-ancestor "$tip" "$rb" 2> /dev/null; } || return 0
+  st="$(git -C "$WT" status --porcelain --ignored 2> /dev/null)" && [ -z "$st" ] || return 0   # ignored files (.env) count
+  pane_in "$WT" && return 0
+  clean_add worktree "$WT" "merged worktree $WT (branch $WT_BR is in $WT_BASE; no changes, no ignored files; the branch stays)" "$WT_C"
 }
 clean_worktrees() {   # <checkout> <named base branch>
   local line; WT_C="$1"; WT=""; WT_FIRST=1; WT_BR=""; WT_LOCK=0
@@ -1177,20 +1200,22 @@ $(git -C "$WT_C" worktree list --porcelain 2> /dev/null)
 EOF
   wt_consider
 }
+temp_old() { [ -z "$(find "$1" -mmin -1440 2> /dev/null | head -1)" ]; }   # nothing in it changed for a day
 clean_scan() {
   C_KIND=(); C_PATH=(); C_DESC=(); C_EXTRA=(); CLEAN_HUBS="$(known_hubs)"
   local h s l f c b states="" sess panes
+  PANE_CWDS=""; command -v tmux > /dev/null 2>&1 && PANE_CWDS="$( { tmux list-panes -a -F '#{pane_current_path}'; ui_tmux list-panes -a -F '#{pane_current_path}'; } 2> /dev/null < /dev/null)"
   while IFS= read -r h <&3; do
     [ -n "$h" ] || continue
-    s="${AGENT_STATE:-$HOME/.agent-hub/$(hub_label "$h")}"
+    s="$(hub_state "$h")"
     case "$states" in *"|$s|"*) ;; *) states="$states|$s|"
-      for l in sync dispatch chat; do [ -d "$s/$l.lock" ] && lock_stale "$s/$l.lock" && clean_add lock "$s/$l.lock" "stale lock $s/$l.lock (its owner is gone)"; done
+      for l in $HUB_LOCKS; do [ -d "$s/$l" ] && [ ! -e "$s/$l.gc" ] && lock_stale "$s/$l" && clean_add lock "$s/$l" "stale lock $s/$l (its owner is gone)"; done
       [ -d "$s/dispatch" ] && while IFS= read -r -d '' f; do clean_add file "$f" "dispatch start marker $f (over 2 minutes old)"; done < <(find "$s/dispatch" -mindepth 1 -maxdepth 1 -type f -mmin +2 -print0 2> /dev/null)
       [ -d "$s/events-seen" ] && while IFS= read -r -d '' f; do clean_add file "$f" "event cursor $f (unused for 7 days)"; done < <(find "$s/events-seen" -mindepth 1 -maxdepth 1 -type f -mmin +10080 -print0 2> /dev/null) ;;
     esac
     for f in "$h"/projects/*/ACCESS.md; do
       [ -f "$f" ] || continue
-      while IFS="$(printf '\t')" read -r c b <&4; do
+      while IFS="$TAB" read -r c b <&4; do
         # shellcheck disable=SC2088  # a literal ~ in ACCESS.md is expanded here on purpose
         case "$c" in "~/"*) c="$HOME/${c#\~/}" ;; esac
         [ -d "$c" ] && clean_worktrees "$c" "$b" < /dev/null
@@ -1201,7 +1226,7 @@ EOF
   done 3<<EOF
 $CLEAN_HUBS
 EOF
-  while IFS= read -r -d '' f; do clean_add temp "$f" "temp folder $f (made by ade, over a day old)"
+  while IFS= read -r -d '' f; do temp_old "$f" && clean_add temp "$f" "temp folder $f (made by ade, nothing in it changed for a day)"
   done < <(find "$TMP_ROOT" -mindepth 1 -maxdepth 1 -type d -name 'ade.?*' -user "$(id -u)" -mmin +1440 -print0 2> /dev/null)
   command -v tmux > /dev/null 2>&1 || return 0
   while IFS= read -r sess <&3; do
@@ -1213,11 +1238,13 @@ $(ui_tmux list-sessions -F '#{session_name}' 2> /dev/null < /dev/null)
 EOF
 }
 clean_do() {   # <index>: one planned item; 0 = done
-  local k="${C_KIND[$1]}" p="${C_PATH[$1]}"
+  local k="${C_KIND[$1]}" p="${C_PATH[$1]}" rc
   case "$k" in
-    lock) lock_stale "$p" || return 1; rm -f -- "$p/pid" "$p/start"; rmdir -- "$p" 2> /dev/null ;;
+    lock) mkdir "$p.gc" 2> /dev/null || return 1   # the hub's guard: one checker at a time, around check and removal
+      rc=1; if lock_stale "$p"; then rm -f -- "$p/pid" "$p/start"; rmdir -- "$p" 2> /dev/null && rc=0; fi
+      rmdir -- "$p.gc" 2> /dev/null; return $rc ;;
     file) rm -f -- "$p" ;;
-    temp) rm_tmp "$p"; [ ! -e "$p" ] ;;
+    temp) temp_old "$p" || return 1; rm_tmp "$p"; [ ! -e "$p" ] ;;
     tmux) ui_tmux kill-session -t "=$p" < /dev/null ;;
     worktree) git -C "${C_EXTRA[$1]}" worktree remove "$p" > /dev/null 2>&1 < /dev/null ;;
   esac
@@ -1228,7 +1255,7 @@ cmd_clean() {
   clean_scan; n=${#C_KIND[@]}
   [ "$n" -gt 0 ] || { echo "nothing to clean"; return 0; }
   echo "ade clean:"; i=0; while [ "$i" -lt "$n" ]; do echo "  - ${C_DESC[$i]}"; i=$((i + 1)); done
-  echo "It never touches your files, uncommitted work, unmerged branches or a live agent."
+  echo "It never touches your files, uncommitted or ignored work, unmerged branches or a live agent."
   if [ "$yes" = 0 ]; then
     if [ -t 0 ]; then confirm "Clean these?" || { echo "nothing changed"; return 1; }
     else echo "nothing changed; run ade clean --yes to do it"; return 0; fi
@@ -1275,7 +1302,7 @@ remove_service() {   # <file>: unload it (launchctl bootout / systemctl --user d
 }
 key_records() {   # the keys ade setup stored, "<hub>\t<tool>" lines (names only), for hubs and tools ade knows
   local h t; [ -f "$CONF_DIR/keys-set" ] || return 0
-  while IFS="$(printf '\t')" read -r h t; do
+  while IFS="$TAB" read -r h t; do
     case " $KEY_TOOLS " in *" $t "*) is_hub "$h" && printf '%s\t%s\n' "$h" "$t" ;; esac
   done < "$CONF_DIR/keys-set" | awk 'NF && !seen[$0]++'
 }
@@ -1283,41 +1310,65 @@ record_key() {   # <hub> <tool>: notes (names only, never a value) that ade setu
   local line; line="$(printf '%s\t%s' "$1" "$2")"
   { [ -f "$CONF_DIR/keys-set" ] && grep -vxF -- "$line" "$CONF_DIR/keys-set"; echo "$line"; } | write_conf_file keys-set
 }
+dev_of() {   # <path>: the device of the path, or of its nearest existing parent
+  local p="$1"; while [ ! -e "$p" ] && [ "$p" != / ]; do p="$(dirname "$p")"; done
+  python3 -c 'import os, sys; print(os.stat(sys.argv[1]).st_dev)' "$p"
+}
+TRASH_ROOT="$HOME/.local/share/ade/trash"
+on_macos() { [ "$(uname 2> /dev/null)" = Darwin ]; }
 
-# hub_trash_check <hub>: refuses (exit 2) a hub whose work is not safe elsewhere; nothing has changed by then
+# hub_trash_check <hub>: refuses (exit 2) a hub whose work is not safe elsewhere, or that is in use; nothing has changed
 hub_trash_check() {
-  local h="$1" st
-  case "$h" in /|"$HOME") die 2 "ade never moves $h" ;; esac
+  local h="$1" home st s l x n
+  home="$(cd "$HOME" 2> /dev/null && pwd -P)" || die 2 "cannot resolve the home folder; nothing changed"
+  case "$h" in /|"$home") die 2 "ade never moves $h; nothing changed" ;; esac
+  case "$home/.config/ade/" in "$h"/*) die 2 "$h holds your home or ade's config; ade never moves it; nothing changed" ;; esac
   [ "$(git -C "$h" rev-parse --show-toplevel 2> /dev/null)" = "$h" ] ||
     die 2 "$h is not a git repository of its own, so ade cannot tell whether its work is saved; nothing changed"
-  st="$(git -C "$h" status --porcelain 2> /dev/null)" || die 2 "git status failed in $h; nothing changed"
-  [ -z "$st" ] || die 2 "$h has uncommitted changes (git status); commit and push them first; nothing changed"
+  st="$(git -C "$h" status --porcelain --ignored 2> /dev/null)" || die 2 "git status failed in $h; nothing changed"
+  [ -z "$st" ] || die 2 "$h has uncommitted or ignored files (git status --ignored: $(printf '%s\n' "$st" | head -3 | cut -c4- | tr '\n' ' ')); a moved hub keeps only what git has elsewhere; nothing changed"
   [ -z "$(git -C "$h" stash list 2> /dev/null)" ] || die 2 "$h has stashed changes (git stash list); nothing changed"
+  n="$(git -C "$h" worktree list --porcelain 2> /dev/null | grep -c '^worktree ')"
+  [ "$n" -le 1 ] || die 2 "$h has $((n - 1)) linked worktree(s) (git worktree list); remove them first; nothing changed"
+  x="$(find "$h" -mindepth 2 -path "$h/.git" -prune -o -name .git -print 2> /dev/null | head -1)"
+  [ -z "$x" ] || die 2 "$h holds another repository ($x); ade cannot check it; nothing changed"
   [ -n "$(git -C "$h" remote 2> /dev/null)" ] || die 2 "$h is not pushed anywhere (no remote); push it first; nothing changed"
-  [ -z "$(git -C "$h" log --branches --not --remotes --oneline 2> /dev/null | head -1)" ] ||
-    die 2 "$h has commits not pushed (git log --branches --not --remotes); push them first; nothing changed"
+  [ -z "$(git -C "$h" log HEAD --branches --tags --not --remotes --oneline 2> /dev/null | head -1)" ] ||
+    die 2 "$h has commits not pushed (git log HEAD --branches --tags --not --remotes); push them first; nothing changed"
+  ui_live "$h" > /dev/null && die 2 "$h has a live ade ui session; close it first; nothing changed"
+  [ -z "$(hub_run "$h" sessions 2> /dev/null < /dev/null | awk 'NR > 1 && /(^|[ \t])(busy|idle|blocked)([ \t]|$)/')" ] ||
+    die 2 "$h has a live agent (bin/sessions); stop it first; nothing changed"
+  s="$(hub_state "$h")"; for l in $HUB_LOCKS; do lock_pid_live "$s/$l" && die 2 "$h is in use: $s/$l has a live owner; nothing changed"; done
+  if ! on_macos && [ "$(dev_of "$(dirname "$h")")" != "$(dev_of "$TRASH_ROOT")" ]; then
+    die 2 "$h is on another filesystem than ade's trash ($TRASH_ROOT); ade moves only by rename; move it yourself; nothing changed"; fi
+  return 0
 }
-# to_trash <folder>: moves it to the Trash (never deletes): macOS the trash command or Finder; elsewhere
-# ~/.local/share/ade/trash/<name>-<UTC time>/. Prints where it went and how to restore it.
+# to_trash <folder>: moves it to the Trash (never deletes): macOS the trash command or Finder; elsewhere a rename into
+# ~/.local/share/ade/trash/<name>-<UTC time>/. Prints where it went and how to restore it. 0 moved, 1 still there,
+# 3 partly moved.
+TRASHED=""
 to_trash() {
-  local p="$1" base dest; base="$(basename "$p")"
-  if [ "$(uname 2> /dev/null)" = Darwin ]; then
+  local p="$1" base dest clash=0; base="$(basename "$p")"
+  if on_macos; then
+    dest="$HOME/.Trash/$base"; [ -e "$dest" ] && clash=1
     if command -v "$ADE_TRASH_CLI" > /dev/null 2>&1; then "$ADE_TRASH_CLI" "$p" > /dev/null 2>&1 < /dev/null
     else osascript -e 'on run argv' -e 'tell application "Finder" to delete (POSIX file (item 1 of argv) as alias)' -e 'end run' "$p" > /dev/null 2>&1 < /dev/null; fi
-    [ ! -e "$p" ] || die 1 "could not move $p to the Trash; it is still at $p"
-    dest="$HOME/.Trash/$base"
-    if [ -e "$dest" ]; then echo "moved $p to the Trash: $dest"; else echo "moved $p to the Trash (as $base)"; fi
+    [ ! -e "$p" ] || { echo "could not move $p to the Trash; it is still at $p"; return 1; }
+    TRASHED="the Trash"
+    if [ "$clash" = 1 ]; then echo "moved $p to the Trash (another $base was already there, so the Trash renamed it)"
+    else echo "moved $p to the Trash: $dest"; TRASHED="$dest"; fi
     echo "  to restore: in Finder, open the Trash, select $base and choose File > Put Back"
-    [ -e "$dest" ] && echo "  or: mv $(shq "$dest") $(shq "$p")"
+    [ "$clash" = 0 ] && [ -e "$dest" ] && echo "  or: mv $(shq "$dest") $(shq "$p")"
     return 0
   fi
-  local root="$HOME/.local/share/ade/trash"; dest="$root/$base-$(date -u +%Y%m%dT%H%M%SZ)"
-  ( umask 077; mkdir -p "$root" ) 2> /dev/null || die 1 "cannot make $root; $p is still at $p"
-  [ ! -e "$dest" ] || die 1 "$dest already exists; $p is still at $p (run it again in a second)"
+  dest="$TRASH_ROOT/$base-$(date -u +%Y%m%dT%H%M%SZ)"
+  ( umask 077; mkdir -p "$TRASH_ROOT" ) 2> /dev/null || { echo "cannot make $TRASH_ROOT; $p is still at $p"; return 1; }
+  [ ! -e "$dest" ] || { echo "$dest already exists; $p is still at $p (run it again in a second)"; return 1; }
   mv -- "$p" "$dest" 2> /dev/null
-  [ ! -e "$p" ] && [ -d "$dest" ] || die 1 "could not move $p to $dest; it is still at $p"
-  echo "moved $p to ade's trash: $dest (nothing was deleted)"
-  echo "  to restore: mv $(shq "$dest") $(shq "$p")"
+  if [ ! -e "$p" ] && [ -d "$dest" ]; then
+    TRASHED="$dest"; echo "moved $p to ade's trash: $dest (nothing was deleted)"; echo "  to restore: mv $(shq "$dest") $(shq "$p")"; return 0; fi
+  if [ ! -e "$dest" ]; then echo "could not move $p to $dest; it is still at $p"; return 1; fi
+  echo "moved only part of $p: some of it is in $dest, the rest is still at $p; nothing was deleted (move the rest by hand)"; return 3
 }
 
 # installed_self: the installed ade file ade uninstall removes; a checkout (no stamped version) is refused
@@ -1329,7 +1380,7 @@ installed_self() {
 }
 
 cmd_reset() {   # cmd_reset reset|uninstall [--keys] [--hub <path>]
-  local mode="$1" keys=0 hubp="" self="" label="" usage h n f st since conf=0 i
+  local mode="$1" keys=0 hubp="" self="" label="" usage h n f st since conf=0 i rc=0 stopfail=0
   shift; usage="usage: ade $mode [--keys] [--hub <path>]"
   while [ $# -gt 0 ]; do case "$1" in
     --keys) keys=1; shift ;;
@@ -1338,17 +1389,21 @@ cmd_reset() {   # cmd_reset reset|uninstall [--keys] [--hub <path>]
   esac; done
   [ "$mode" = uninstall ] && { self="$(installed_self)" || exit $?; }
   if [ -n "$hubp" ]; then
-    is_hub "$hubp" || die 2 "$hubp is not a hub (no bin/lib.sh and hub.conf)"
-    hubp="$(cd "$hubp" && pwd -P)" || die 2 "cannot enter $hubp"; hub_trash_check "$hubp"; label="$(hub_label "$hubp")"
+    if [ ! -e "$hubp" ] && [ -f "$MOVED_LOG" ] && f="$(awk -F '\t' -v p="$hubp" '$1 == p { w = $2 } END { print w }' "$MOVED_LOG")" && [ -n "$f" ]; then
+      echo "nothing to do for $hubp: ade reset already moved it to $f"; hubp=""
+    else
+      is_hub "$hubp" || die 2 "$hubp is not a hub (no bin/lib.sh and hub.conf)"
+      hubp="$(cd "$hubp" && pwd -P)" || die 2 "cannot enter $hubp"; hub_trash_check "$hubp"; label="$(hub_label "$hubp")"
+    fi
   fi
   # the plan
   local hubs orch="" svcs="" sets="" krecs="" plan=""
   hubs="$(known_hubs "$hubp")"
-  if [ -f "$ORCH" ]; then while IFS="$(printf '\t')" read -r n h; do
+  if [ -f "$ORCH" ]; then while IFS="$TAB" read -r n h; do
     [ -n "$n" ] || continue; read -r st since <<EOF
 $(orch_state "$h" < /dev/null)
 EOF
-    [ "$st" = running ] && orch="$orch$n	$h
+    [ "$st" = running ] && orch="$orch$n$TAB$h
 "; done < "$ORCH"; fi
   while IFS= read -r h; do [ -n "$h" ] || continue
     svcs="$svcs$(service_files "$h")
@@ -1359,7 +1414,7 @@ EOF
   svcs="$(printf '%s' "$svcs" | grep -v '^$')"; sets="$(printf '%s' "$sets" | grep -v '^$')"; orch="$(printf '%s' "$orch" | grep -v '^$')"
   [ "$keys" = 1 ] && krecs="$(key_records)"
   [ -d "$CONF_DIR" ] && conf=1
-  while IFS="$(printf '\t')" read -r n h; do [ -n "$n" ] && plan="$plan  - stop orchestrator $n (hub $h)
+  while IFS="$TAB" read -r n h; do [ -n "$n" ] && plan="$plan  - stop orchestrator $n (hub $h)
 "; done <<EOF
 $orch
 EOF
@@ -1373,28 +1428,30 @@ $sets
 EOF
   [ -n "$krecs" ] && plan="$plan  - ask, one key at a time, to forget the keys ade setup stored: $(printf '%s\n' "$krecs" | awk -F '\t' '{ printf "%s%s", (NR > 1 ? ", " : ""), $2 }')
 "
-  [ "$conf" = 1 ] && plan="$plan  - remove $CONF_DIR (the default hub, the hub list, the orchestrator registry; names only)
+  [ -n "$hubp" ] && plan="$plan  - run the hub's bin/schedule uninstall (all its jobs), then move the hub $hubp to the Trash (after you type its name, $label); it is never deleted
 "
-  [ -n "$hubp" ] && plan="$plan  - move the hub $hubp to the Trash (after you type its name, $label); it is never deleted
+  [ "$conf" = 1 ] && plan="$plan  - remove $CONF_DIR (the default hub, the hub list, the orchestrator registry; names only)
 "
   [ -n "$self" ] && plan="$plan  - remove ade itself ($self)
 "
   [ -n "$plan" ] || { echo "nothing to reset"; return 0; }
   echo "ade $mode will:"; printf '%s' "$plan"
   echo "It keeps your hubs${hubp:+ (but this one, moved to the Trash)}, projects, keys${krecs:+ you do not forget} and Claude Code."
-  confirm "Go ahead?" || { echo "nothing changed"; return 1; }
+  tty_ready "$mode"
+  tty_confirm "Go ahead?" || { echo "nothing changed"; return 1; }
   if [ -n "$hubp" ]; then
-    printf 'Type the hub name (%s) to move %s to the Trash: ' "$label" "$hubp"; IFS= read -r ANSWER || ANSWER=""; [ -t 0 ] || echo
+    tty_ask "Type the hub name ($label) to move $hubp to the Trash:"
     [ "$ANSWER" = "$label" ] || die 1 "the name did not match; nothing changed"
   fi
-  # the work: orchestrators, services, settings, keys, the journal, the hub, then ade's own config and binary
+  # the work: orchestrators, services, settings, keys, the hub, then ade's own config and binary; the journal says
+  # only what happened (never written into the hub that moves, so a restored hub is as clean as it was)
   local did=""
-  while IFS="$(printf '\t')" read -r n h; do [ -n "$n" ] || continue
-    if chat "$h" stop < /dev/null; then echo "stopped orchestrator $n"; else echo "could not stop orchestrator $n (its hub's bin/chat stop failed)"; fi
+  while IFS="$TAB" read -r n h; do [ -n "$n" ] || continue
+    if chat "$h" stop < /dev/null; then echo "stopped orchestrator $n"; else echo "could not stop orchestrator $n (its hub's bin/chat stop failed)"; stopfail=1; fi
   done <<EOF
 $orch
 EOF
-  [ -n "$orch" ] && did="${did}orchestrators stopped, "
+  [ -n "$orch" ] && [ "$stopfail" = 0 ] && did="${did}orchestrators stopped, "
   while IFS= read -r f; do [ -n "$f" ] || continue; remove_service "$f"; echo "removed the service $f"; done <<EOF
 $svcs
 EOF
@@ -1407,36 +1464,47 @@ $sets
 EOF
   [ -n "$sets" ] && did="${did}ade plugin entry removed, "
   i=0
-  while IFS="$(printf '\t')" read -r h n <&3; do [ -n "$h" ] || continue
-    if confirm "Forget the $n key in $h?"; then
+  while IFS="$TAB" read -r h n <&3; do [ -n "$h" ] || continue
+    if tty_confirm "Forget the $n key in $h?"; then
       if hub_run "$h" keys forget "$n" < /dev/null; then echo "forgot the $n key"; i=$((i + 1)); else echo "bin/keys could not forget the $n key; it is kept"; fi
     else echo "kept the $n key"; fi
   done 3<<EOF
 $krecs
 EOF
   [ "$i" -gt 0 ] && did="${did}$i key(s) forgotten, "
-  [ "$conf" = 1 ] && did="${did}~/.config/ade removed, "
-  [ -n "$hubp" ] && did="${did}hub $hubp moved to the Trash, "
-  [ -n "$self" ] && did="${did}ade uninstalled, "
-  did="${did%, }"
-  # the hub that moves gets its line first; the others once it has moved
-  [ -n "$hubp" ] && { journal_line "$hubp" "ade $mode: $did"; to_trash "$hubp"; }
-  while IFS= read -r h; do [ -n "$h" ] && [ "$h" != "$hubp" ] && journal_line "$h" "ade $mode: $did"; done <<EOF
+  if [ -n "$hubp" ]; then
+    if [ "$stopfail" = 1 ]; then echo "kept $hubp where it is: an orchestrator did not stop"; did="${did}hub $hubp kept (an orchestrator did not stop), "; rc=1
+    else
+      while IFS= read -r h; do [ -n "$h" ] && [ "$h" != "$hubp" ] && journal_line "$h" "ade $mode: moving the hub $hubp to the Trash"; done <<EOF
 $hubs
 EOF
+      [ -x "$hubp/bin/schedule" ] && { hub_run "$hubp" schedule uninstall < /dev/null > /dev/null 2>&1 || echo "the hub's bin/schedule uninstall failed; its jobs may still be loaded"; }
+      to_trash "$hubp"; case $? in
+        0) did="${did}hub $hubp moved to $TRASHED, "
+          ( umask 077; mkdir -p "$(dirname "$MOVED_LOG")" && printf '%s\t%s\t%s\n' "$hubp" "$TRASHED" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$MOVED_LOG" ) 2> /dev/null ;;
+        3) did="${did}moving the hub $hubp to the Trash FAILED part way (see its two places), "; rc=1 ;;
+        *) did="${did}moving the hub $hubp to the Trash FAILED (it is still there), "; rc=1 ;;
+      esac
+    fi
+  fi
   if [ "$conf" = 1 ]; then
-    case "$CONF_DIR" in "$HOME"/.config/ade) rm -rf -- "$CONF_DIR" && echo "removed $CONF_DIR" ;; esac
+    if [ "$rc" != 0 ] || [ "$stopfail" = 1 ]; then echo "kept $CONF_DIR (a step above failed; fix it, then run ade $mode again)"; rc=1
+    else case "$CONF_DIR" in "$HOME"/.config/ade) rm -rf -- "$CONF_DIR" && { echo "removed $CONF_DIR"; did="${did}~/.config/ade removed, "; } ;; esac; fi
   fi
-  if [ -n "$self" ]; then
-    rm -f -- "$self" || die 1 "could not remove $self"
-    echo "ade is removed. To install it again: $REINSTALL"
+  if [ -n "$self" ] && [ "$rc" = 0 ]; then
+    if rm -f -- "$self"; then did="${did}ade uninstalled, "; else echo "could not remove $self"; rc=1; fi
   fi
-  return 0
+  did="${did%, }"
+  while IFS= read -r h; do [ -n "$h" ] && [ "$h" != "$hubp" ] && [ -d "$h" ] && journal_line "$h" "ade $mode: ${did:-nothing changed}"; done <<EOF
+$hubs
+EOF
+  [ -n "$self" ] && [ "$rc" = 0 ] && echo "ade is removed. To install it again: $REINSTALL"
+  [ -n "$self" ] && [ "$rc" != 0 ] && echo "ade is still installed (a step above failed)"
+  return $rc
 }
 
 # connections (story A10): <folder>/.ade/connections.json names what the work depends on, never a secret, an email or
 # an account id; ade restore compares it with this machine and walks each gap (.ade/context/hub-interface.md)
-TAB="$(printf '\t')"
 conn_py() {   # conn_py <record file> <op> [args]: get prints tab-separated lines; the other ops update the record
   python3 - "$@" <<'PY'
 import json, os, re, sys
