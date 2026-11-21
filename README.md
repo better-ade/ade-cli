@@ -174,7 +174,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade sync` | Sync the hub (hub `bin/sync`) | **built** (A1) |
 | `ade context …` | The hub's context store (hub `bin/context`) | **built** (A1) |
 | `ade agent-run …` | Run an agent (hub `bin/agent`) | **built** (A1) |
-| `ade init [--here]` | Copy ade-method at its pinned tag into the project; never overwrites; records `.ade/method-version` | **built** (A1) |
+| `ade init [--here]` | Copy ade-method at its pinned tag into the project; never overwrites; installs the PR and commit templates and sets `commit.template`; records `.ade/method-version` | **built** (A1) |
 | `ade agent list` | Specialists in ade-agent-registry, name and description | **built** (A1) |
 | `ade agent add <name> [--here]` | Copy a specialist to `.ade/agents/<name>.md` | **built** (A1) |
 | `ade skills add <plugin>` | Add the ade-skills marketplace once, install the plugin at project scope | **built** (A1) |
@@ -201,7 +201,7 @@ or tool. A hub command exits with whatever the hub's script returns.
 | Variable | Default | Used for |
 |---|---|---|
 | `ADE_HUB` | unset | The hub to use, ahead of walking up and `~/.config/ade/hub` |
-| `ADE_METHOD_REF` | `v2.0.0` | The ade-method tag `ade init` copies |
+| `ADE_METHOD_REF` | `v2.1.0` | The ade-method tag `ade init` copies |
 | `ADE_REGISTRY_REF` | `v1.1.0` | The ade-agent-registry tag `ade agent` reads |
 | `ADE_METHOD_REPO` | `https://github.com/better-ade/ade-method` | Where ade-method comes from (tests use a local fixture) |
 | `ADE_REGISTRY_REPO` | `https://github.com/better-ade/ade-agent-registry` | Where the registry comes from |

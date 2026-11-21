@@ -6,7 +6,7 @@ set -u
 unset SECRET ANSWER HUB_ANSWER
 ADE_VERSION=""   # install.sh stamps this; a repo checkout reads VERSION beside the script
 ADE_METHOD_REPO="${ADE_METHOD_REPO:-https://github.com/better-ade/ade-method}"
-ADE_METHOD_REF="${ADE_METHOD_REF:-v2.0.0}"
+ADE_METHOD_REF="${ADE_METHOD_REF:-v2.1.0}"
 ADE_REGISTRY_REPO="${ADE_REGISTRY_REPO:-https://github.com/better-ade/ade-agent-registry}"
 ADE_REGISTRY_REF="${ADE_REGISTRY_REF:-v1.1.0}"
 
@@ -120,10 +120,23 @@ project_root() {
   cd "$top" || die 1 "cannot enter $top"
 }
 
+# set_commit_template: git config commit.template .ade/commit-template.txt in this repo, never replacing another value
+set_commit_template() {
+  local cur; [ -f .ade/commit-template.txt ] || return 0
+  git rev-parse --git-dir > /dev/null 2>&1 || { echo "not a git repository: commit.template not set"; return 0; }
+  local want="$PWD/.ade/commit-template.txt"   # absolute: git reads commit.template from wherever you commit
+  cur="$(git config --local commit.template 2>/dev/null)"
+  if [ -n "$cur" ]; then [ "$cur" = "$want" ] || echo "kept commit.template ($cur)"; return 0; fi
+  if [ -n "$(git config --global commit.template 2>/dev/null)" ]; then echo "kept your global commit.template ($(git config --global commit.template))"; return 0; fi
+  git config --local commit.template "$want" || die 1 "could not set commit.template"
+  echo "set commit.template to $want"
+}
+
 cmd_init() {
   project_root "$@"
-  local src f list old=""; src="$(fetch "$ADE_METHOD_REPO" "$ADE_METHOD_REF")" || exit $?
-  trap 'rm_tmp "$(dirname "$src")"' EXIT
+  local f list old=""; INIT_SRC="$(fetch "$ADE_METHOD_REPO" "$ADE_METHOD_REF")" || exit $?
+  trap 'rm_tmp "$(dirname "$INIT_SRC")"' EXIT   # global: the trap runs after cmd_init has returned
+  local src="$INIT_SRC"
   list="$(dirname "$src")/list"; : > "$list"   # src<TAB>dest, read without a subshell so put's counts and exits hold
   [ -f "$src/rules.md" ] && printf '%s\t%s\n' "$src/rules.md" .ade/rules.md >> "$list"
   for f in "$src"/agents/*.md; do [ -f "$f" ] && printf '%s\t%s\n' "$f" ".ade/agents/$(basename "$f")" >> "$list"; done
@@ -133,7 +146,21 @@ cmd_init() {
       printf '%s\t%s\n' "$src/templates/context/${f#./}" ".ade/context/${f#./}"; done >> "$list"
   fi
   [ -f "$src/templates/standards.md" ] && printf '%s\t%s\n' "$src/templates/standards.md" docs/standards.md >> "$list"
+  # ade.json install_templates: { "<file in ade-method>": "<path in the project>" } (ade-method v2.1.0)
+  if [ -f "$src/ade.json" ]; then
+    python3 - "$src" >> "$list" <<'PY' || die 1 "could not read ade.json install_templates"
+import json, os, sys
+src = sys.argv[1]
+for f, dest in sorted(json.load(open(os.path.join(src, "ade.json"))).get("install_templates", {}).items()):
+    p = os.path.normpath(os.path.join(src, f))
+    if (not dest or dest.startswith("/") or ".." in dest.split("/") or any(c in dest for c in "\t\n\r")
+            or not p.startswith(src + "/") or not os.path.isfile(p)):
+        sys.exit("ade: bad install_templates entry %s -> %s" % (f, dest))
+    print("%s\t%s" % (p, dest))
+PY
+  fi
   while IFS="$(printf '\t')" read -r f dest; do put "$f" "$dest"; done < "$list"
+  set_commit_template
   [ -f .ade/method-version ] && old="$(cat .ade/method-version)"
   if [ "$KEPT" -gt 0 ] && [ -n "$old" ] && [ "$old" != "$ADE_METHOD_REF" ]; then
     echo "kept files are from $old: .ade/method-version left at $old"
