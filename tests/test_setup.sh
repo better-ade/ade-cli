@@ -88,10 +88,10 @@ glm_needs_live_check() {   # AC4
 hub_when_missing() {   # AC5
   fresh; setup_fakes; mkdir -p "$T/nowhere"
   TPL="$T/template"; mkdir -p "$TPL/bin"; git init -q "$TPL"; : > "$TPL/bin/lib.sh"
-  printf '#!/bin/bash\necho "init ran" >> "%s"\necho HUB_NAME=fresh > hub.conf\n' "$CALLS" > "$TPL/bin/init"; chmod +x "$TPL/bin/init"; agent_stub "$TPL/bin/agent"; commit_tag "$TPL" t
+  printf '#!/bin/bash\n[ "$1" = --list ] && exit 0\necho "init ran: $*" >> "%s"\necho HUB_NAME=fresh > hub.conf\n' "$CALLS" > "$TPL/bin/init"; chmod +x "$TPL/bin/init"; agent_stub "$TPL/bin/agent"; commit_tag "$TPL" t
   export ADE_HUB_TEMPLATE_URL="$TPL"
-  (cd "$T/nowhere" && printf '%s\n' fresh n 1 "" n | bash "$ADE" setup) > "$T/out" 2>&1 || { cat "$T/out"; fail "setup exit"; }
-  assert_contains "$CALLS" "init ran" "ade hub new ran"; [ -f "$HOME/hubs/fresh/hub.conf" ] || fail "hub made"
+  (cd "$T/nowhere" && printf '%s\n' fresh n sre Acme owner1 1 "" n | bash "$ADE" setup) > "$T/out" 2>&1 || { cat "$T/out"; fail "setup exit"; }
+  assert_contains "$CALLS" "init ran: --persona sre --client Acme --owner owner1 --name fresh" "ade hub new ran"; [ -f "$HOME/hubs/fresh/hub.conf" ] || fail "hub made"
   fresh; setup_fakes; setup_hub; setup 1 "" n || fail "with a hub"
   assert_not_contains "$T/out" "No hub yet" "a hub skips it"
 }
