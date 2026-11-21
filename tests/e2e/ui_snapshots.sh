@@ -18,6 +18,7 @@ printf '#!/bin/bash\n[ "$1" = --list ] && printf "ready\\t1.3\\tprojects/api\\nw
 printf '#!/bin/bash\nprintf "routine    anthropic:sonnet\\nbuilder    anthropic:opus\\n"\n' > "$H/bin/roles"
 chmod +x "$H/bin/"*; export AGENT_STATE="$W/state"; mkdir -p "$AGENT_STATE"
 for i in 1 2 3; do printf '{"time": "2026-11-21T10:0%s:00Z", "from": "projects/api", "to": "all", "kind": "pushed", "text": "event %s"}\n' "$i" "$i"; done > "$AGENT_STATE/events.jsonl"
+bash "$REPO/install.sh" "$W/prefix" > /dev/null || fail "install"; export PATH="$W/prefix/bin:$PATH"
 fake_claude; export ADE_HUB="$H" ADE_NOW="2026-11-21T10:45:00Z" TMUX_TMPDIR="$W" ADE_TMUX_SOCKET=snap LANG=C.UTF-8 LC_ALL=C.UTF-8
 o() { tmux -L outer "$@"; }
 shot() {   # shot <name> <text to wait for>: capture the outer screen once the text shows, then compare
