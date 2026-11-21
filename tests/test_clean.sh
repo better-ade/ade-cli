@@ -317,6 +317,45 @@ setup_records_keys() {   # the record --keys relies on: ade setup notes which ke
   assert_eq "$(cat "$HOME/.config/ade/keys-set")" "$H	telegram" "recorded"; assert_not_contains "$HOME/.config/ade/keys-set" "tok-xyz" "never the value"
 }
 
-ALL="clean_preview_then_yes never_removes_live lock_gc_guard reset_keeps_hubs answers_only_from_a_person orchestrator_stop_fails reset_keys reset_hub_refusals reset_hub_refusals_2 reset_hub_path_guards reset_hub_wrong_name reset_hub_trash_linux reset_hub_trash_macos reset_hub_trash_clash reset_hub_trash_finder reset_hub_trash_fails reset_hub_cross_device uninstall_last journal_lines twice_nothing setup_records_keys"
+clean_edge_cases() {   # the clean scan's other branches: an old lock with no pid, a base branch not found, a locked worktree, a no
+  fresh; clean_fixture; stop_live
+  rm -f "$AGENT_STATE/sync.lock/pid"; touch -t 202001010000 "$AGENT_STATE/sync.lock"
+  printf '| Repo | Checkout | Branch |\n|---|---|---|\n| o/api | %s | trunk |\n' "$P" > "$H/projects/api/ACCESS.md"   # no trunk: origin's HEAD, else main
+  git -C "$P" worktree lock "$T/wt-ign" 2> /dev/null; git -C "$T/wt-ign" clean -qfdx 2> /dev/null; rm -f "$T/wt-ign/.env"
+  pty_run 'n\n' bash "$ADE" clean > "$T/out" 2>&1; assert_eq "$?" 1 "no at the terminal"; assert_contains "$T/out" "nothing changed" "says so"
+  assert_contains "$T/out" "stale lock $AGENT_STATE/sync.lock" "an old lock with no pid is stale"
+  assert_contains "$T/out" "merged worktree $T/wt-done (branch done is in main" "the base falls back to main"
+  assert_not_contains "$T/out" "wt-ign" "a locked worktree is never removed"
+  pty_run 'y\n' bash "$ADE" clean > "$T/out" 2>&1 || { cat "$T/out"; fail "yes at the terminal"; }
+  [ ! -e "$AGENT_STATE/sync.lock" ] && [ ! -e "$T/wt-done" ] && [ -d "$T/wt-ign" ] || fail "cleaned as listed"
+  mkdir -p "$AGENT_STATE/sync.lock"; bash "$ADE" clean < /dev/null > "$T/out" 2>&1
+  assert_not_contains "$T/out" "stale lock $AGENT_STATE/sync.lock" "a new lock with no pid is not stale yet"
+  bash "$ADE" no-such-command < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "an unknown command"; assert_contains "$T/out" "unknown command: no-such-command" "says so"
+}
+
+reset_hub_move_fails_linux() {   # Linux: a rename into ade's trash that fails, or stops part way, leaves the hub and exits 1
+  local how
+  for how in none part; do ( move_fails "$how" ) || exit 1; done
+}
+move_fails() {   # <none|part>: what the fake mv does before it fails
+  local how="$1"
+    hub_fixture; push_hub; cp -R "$H" "$T/hub2"; echo "$T/hub2" >> "$HOME/.config/ade/hubs"; export FAKE_UNAME=Linux FAKE_MV="$how"
+    cat > "$T/osbin/mv" <<'F'
+#!/bin/bash
+case "${@: -1}" in "$HOME"/.local/share/ade/trash/*)
+  [ "$FAKE_MV" = part ] && mkdir -p "${@: -1}" && cp "${@: -2:1}/hub.conf" "${@: -1}/"; exit 1 ;; esac
+exec /bin/mv "$@"
+F
+    chmod +x "$T/osbin/mv"
+    pty_run 'y\nacme\n' bash "$ADE" reset --hub "$H" > "$T/out" 2>&1; assert_eq "$?" 1 "$how: a failed move is an error"
+    [ -f "$H/hub.conf" ] || fail "$how: the hub stays"; [ -d "$HOME/.config/ade" ] || fail "$how: the setup is kept"
+    case "$how" in
+      none) assert_contains "$T/out" "could not move $H to" "none: says so" ;;
+      part) assert_contains "$T/out" "moved only part of $H" "part: says so"
+        assert_contains "$T/hub2/journal.log" "FAILED part way" "part: the journal says so" ;;
+    esac
+}
+
+ALL="clean_preview_then_yes never_removes_live lock_gc_guard reset_keeps_hubs answers_only_from_a_person orchestrator_stop_fails reset_keys reset_hub_refusals reset_hub_refusals_2 reset_hub_path_guards reset_hub_wrong_name reset_hub_trash_linux reset_hub_trash_macos reset_hub_trash_clash reset_hub_trash_finder reset_hub_trash_fails reset_hub_cross_device uninstall_last journal_lines twice_nothing setup_records_keys clean_edge_cases reset_hub_move_fails_linux"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
