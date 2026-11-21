@@ -7,6 +7,8 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - `hub`: the default hub's path (A1).
 - `hubs`: every hub `ade hub new` made or `ade hub use` chose, one path per line (A3).
 - `orchestrators`: one `name<TAB>hub` line per orchestrator (A2). Names `[a-z0-9-]+`, unique; one per hub.
+- `accounts`: `hub<TAB>recorded fingerprint<TAB>current fingerprint<TAB>continue` once the owner chose to continue
+  with another Claude account (A10).
 - `keys-set`: one `hub<TAB>tool` line per key `ade setup` stored (A9), names only; `ade reset --keys` offers only these.
 
 ## `hub.conf` keys `ade` reads
@@ -90,3 +92,16 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - Services: launchd `ai.agent-hub.<HUB_NAME>.<job>` in `${AGENT_LAUNCHAGENTS:-~/Library/LaunchAgents}`, systemd
   user units `~/.config/systemd/user/ai.agent-hub.<HUB_NAME>.<job>.service`; `reset` removes jobs `chat` and `monitor`.
 - ade's trash on Linux: `~/.local/share/ade/trash/<folder>-<UTC yyyymmddThhmmssZ>/`; on macOS the Finder Trash.
+
+## `.ade/connections.json` and `ade restore` (A10)
+- The record (committed, JSON, `format` 1, names only): `account` {`label`, `fingerprint` = first 16 hex of
+  sha256("ade-account-v1:<organizationUuid>:<accountUuid>") from `${HUB_CLAUDE_CONFIG_DIR:-${CLAUDE_CONFIG_DIR:-~}}/.claude.json`
+  `oauthAccount`}, `top` {`provider`, `sign_in` account|key, `model`}, `focus` [{`provider`, `sign_in`}], `channels`
+  [{`type`, `bot`}], `marketplaces` [{`name`, `repo`}], `plugins` [{`name`, `marketplace`, `ref`}], `specialists`
+  [names], `pins` {`ade-method`, `ade-agent-registry`, `ade-skills`}, `services` [chat|monitor|sync]. Never a key,
+  token, email or account id.
+- Needed from the hub (ade-brain builder): `bin/chat info <channel>` prints `bot @<username>` (the public bot name, no
+  token); `bin/chat setup telegram --repair` drops this device's old pairing and pairs again; `bin/schedule install`
+  installs the hub's services for this platform (launchd or systemd). Tests fake all three.
+- Installed plugins: Claude Code's `${CLAUDE_CONFIG_DIR:-~/.claude}/plugins/installed_plugins.json` (`plugins` keys
+  `<name>@<marketplace>`); marketplaces: `claude plugin marketplace list`.

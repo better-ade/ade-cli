@@ -1,6 +1,6 @@
 # A10: remember connections, restore them anywhere
 
-Status: Ready for development (2026-11-21). Risk: high (credentials, accounts). Depends on A5 (setup), A7 (skills).
+Status: In review (2026-11-21). Risk: high (credentials, accounts). Depends on A5 (setup), A7 (skills).
 Owner's intent (2026-11-21): if the user switches Claude account, `ade` asks for new connections before proceeding; the
 project's state is saved so that on a new device, after checking out the code, `ade` does its best to reinstate every
 connection. Verification command: `bash tests/run.sh`.

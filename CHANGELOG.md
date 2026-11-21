@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- `.ade/connections.json` and `ade restore [--check] [--label <name>]` (A10): `ade setup`, `skills add`, `agent add`,
+  `init`, `orchestrator new --channel` and `chat setup` record what the work depends on, by name only (the Claude
+  account as a label and a one-way fingerprint). `ade restore` walks each gap with a yes; `--check` prints one line per
+  connection. Another Claude account stops `work`, `dispatch`, `agent-run`, `claude` and `orchestrator start` until
+  the question is answered (remembered per machine in `~/.config/ade/accounts`).
 - `ade clean [--yes]`, `ade reset [--keys] [--hub <path>]`, `ade uninstall` (A9): each lists what it would do first.
   clean removes stale locks, old dispatch markers and event cursors, ade's old temp folders, dead `ade-*` tmux sessions
   and clean merged worktrees; reset stops orchestrators, removes the chat and monitor services, the `ade@ade-skills`

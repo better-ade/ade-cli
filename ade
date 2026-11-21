@@ -47,6 +47,7 @@ Housekeeping (each lists what it would do first; nothing of yours is deleted):
   clean       ade clean [--yes]: stale locks, old markers, cursors and temp folders, dead ade tmux sessions, clean merged worktrees
   reset       ade reset [--keys] [--hub <path>]: undo ade setup here; --keys forgets its keys; --hub moves that hub to the Trash
   uninstall   ade uninstall [--keys] [--hub <path>]: ade reset, then remove the installed ade
+  restore     ade restore [--check] [--label <name>]: bring back every connection .ade/connections.json names
 
 Project commands (no hub needed):
   init        copy ade-method at its pinned tag into this project (git top level, or --here); never overwrites
@@ -85,6 +86,7 @@ find_hub() {
 run_hub() {   # $1 = script name under bin/
   local script="$1" hub; shift; hub="$(find_hub)" || exit $?
   [ "$script" = work ] && claude_update "$hub"
+  case "$script" in work|dispatch|agent) conn_gate "$hub" ;; esac
   [ -e "$hub/bin/$script" ] || die 2 "this hub has no bin/$script; update it"
   [ -x "$hub/bin/$script" ] || die 2 "bin/$script is not executable"
   HUB="$hub"; export HUB   # a stale HUB in the caller's environment would win in the hub's lib.sh
@@ -139,6 +141,7 @@ cmd_init() {
     echo "kept files are from $old: .ade/method-version left at $old"
   else
     { mkdir -p .ade && echo "$ADE_METHOD_REF" > .ade/method-version; } || die 1 "could not write .ade/method-version"
+    conn_record "$PWD" pin ade-method "$ADE_METHOD_REF"
     echo "ade-method $ADE_METHOD_REF recorded in .ade/method-version"
   fi
 }
@@ -167,6 +170,7 @@ cmd_agent() {
     file="$(echo "$rows" | awk -F '\t' -v n="$2" '$1 == n { print $2; exit }')"
     if [ -z "$file" ] || [ ! -f "$src/$file" ]; then rm_tmp "$(dirname "$src")"; die 2 "no specialist named $2; ade agent list shows them"; fi
     put "$src/$file" ".ade/agents/$2.md"
+    conn_record "$PWD" specialist "$2"; conn_record "$PWD" pin ade-agent-registry "$ADE_REGISTRY_REF"
   fi
   rm_tmp "$(dirname "$src")"
 }
@@ -289,6 +293,7 @@ cmd_skills() {
         claude plugin marketplace add "$msrc" || die 1 "could not add the ade-skills marketplace"
       fi
       claude plugin install "$1@ade-skills" --scope project || exit $?
+      conn_record "$top" marketplace ade-skills "$ADE_SKILLS_REPO"; conn_record "$top" plugin "$1" ade-skills "$ADE_SKILLS_REF"
       skills_hint "$top" "plugin $1 installed in $(basename "$top"): run /reload-plugins in its open sessions to load it" ;;
     enable|disable)
       [ $# -eq 1 ] && [ -n "$1" ] || die 2 "$SKILLS_USAGE"
@@ -381,7 +386,7 @@ cmd_orchestrator() {
       [ -z "$(orch_hub "$name")" ] || die 2 "an orchestrator named $name already exists"
       n="$([ -f "$ORCH" ] && awk -F '\t' -v h="$hub" '$2 == h { print $1; exit }' "$ORCH")"
       [ -z "$n" ] || die 2 "$hub already has an orchestrator ($n); one per hub"
-      for ch in $channels; do ADE_ORCHESTRATOR="$name" chat "$hub" setup "$ch" || exit $?; done
+      for ch in $channels; do ADE_ORCHESTRATOR="$name" chat "$hub" setup "$ch" || exit $?; record_channel "$hub" "$ch"; done
       { [ -f "$ORCH" ] && cat "$ORCH"; printf '%s\t%s\n' "$name" "$hub"; } | write_conf_file orchestrators
       echo "orchestrator $name registered for $hub"
       [ -n "$channels" ] || echo "no channel yet: run bin/chat setup telegram in the hub to add one" ;;
@@ -389,7 +394,7 @@ cmd_orchestrator() {
       [ -n "${1:-}" ] && [ $# -eq 1 ] || die 2 "$ORCH_USAGE"
       hub="$(orch_hub "$1")"; [ -n "$hub" ] || die 2 "no orchestrator named $1; ade orchestrator list shows them"
       is_hub "$hub" || die 2 "the hub of $1 ($hub) is gone"
-      [ "$sub" = start ] && claude_update "$hub"
+      [ "$sub" = start ] && { conn_gate "$hub"; claude_update "$hub"; }
       chat "$hub" "$sub"; exit $? ;;
     list)
       [ $# -eq 0 ] || die 2 "$ORCH_USAGE"
@@ -547,7 +552,7 @@ cmd_claude() {
   skips_permissions "$@" && die 2 "ade claude never skips permissions (refused: $SKIP_ARG)"
   if [ $# -gt 0 ] && [ "$1" != -- ]; then run_hub work "$@"; fi
   [ $# -gt 0 ] && shift
-  hub="$(find_hub)" || exit $?
+  hub="$(find_hub)" || exit $?; conn_gate "$hub"
   model="$(conf_get "$hub" HUB_ROOT_MODEL)"; name="$(hub_label "$hub")"
   cl="$(conf_get "$hub" HUB_CLAUDE)"; cl="${cl:-claude}"; cfg="$(conf_get "$hub" HUB_CLAUDE_CONFIG_DIR)"
   command -v "$cl" > /dev/null 2>&1 || die 2 "$cl is not on PATH; install Claude Code first (ade setup does it)"
@@ -684,6 +689,8 @@ setup_top() {   # the everything agent: exactly one; GLM and Muse only after the
     esac
     sign_in "$hub" "$p" $how || continue
     if live_test "$hub" "$p"; then READY="$READY $p"; conf_set "$hub" HUB_ROOT_PROVIDER "$p"
+      conn_record "$hub" top "$p" "${how:-key}" "$(conf_get "$hub" HUB_ROOT_MODEL)"
+      [ "${how:-key}" = account ] && record_account "$hub"; record_services "$hub"
       local old; old="$(conf_get "$hub" HUB_PROVIDERS_ALLOWED)"   # the new top plus the old list
       conf_set "$hub" HUB_PROVIDERS_ALLOWED "$(printf '%s\n' $p $old | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//')"
       echo "everything agent: $p"; return 0; fi
@@ -705,6 +712,10 @@ setup_focus() {   # focus agents: several; each signed in and live-tested; only 
   top="$(conf_get "$hub" HUB_ROOT_PROVIDER)"
   for p in $top $READY; do case " $allowed " in *" $p "*) ;; *) allowed="${allowed:+$allowed }$p" ;; esac; done
   conf_set "$hub" HUB_PROVIDERS_ALLOWED "$allowed"
+  for p in $READY; do   # the sign-in kind: an account when Claude Code (or the Gemini CLI) is signed in without a stored key
+    case "$p" in anthropic|gemini) if key_stored "$hub" "$p"; then conn_record "$hub" focus "$p" key; else conn_record "$hub" focus "$p" account; fi ;;
+      *) conn_record "$hub" focus "$p" key ;; esac
+  done
   echo "providers in the roles: $allowed (HUB_PROVIDERS_ALLOWED); bin/roles shows which model each role gets"
 }
 
@@ -719,7 +730,8 @@ setup_telegram() {
   printf '%s\n' "$SECRET" | hub_run "$hub" keys set telegram > /dev/null; local rc=$?; SECRET=""
   [ "$rc" = 0 ] || die 1 "bin/keys could not store the Telegram token"
   record_key "$hub" telegram
-  hub_run "$hub" chat setup telegram
+  hub_run "$hub" chat setup telegram || return $?
+  record_channel "$hub" telegram; record_services "$hub"
 }
 
 setup_check() {   # one line per step; reads only
@@ -1422,6 +1434,273 @@ EOF
   return 0
 }
 
+# connections (story A10): <folder>/.ade/connections.json names what the work depends on, never a secret, an email or
+# an account id; ade restore compares it with this machine and walks each gap (.ade/context/hub-interface.md)
+TAB="$(printf '\t')"
+conn_py() {   # conn_py <record file> <op> [args]: get prints tab-separated lines; the other ops update the record
+  python3 - "$@" <<'PY'
+import json, os, re, sys
+p, op, a = sys.argv[1], sys.argv[2], sys.argv[3:]
+clean = lambda s: re.sub(r"[\t\r\n]", " ", str(s))
+d = {"format": 1}
+if os.path.exists(p):
+    try:
+        d = json.load(open(p))
+    except ValueError:
+        sys.exit("ade: %s is not valid JSON; fix it first" % p)
+    if not isinstance(d, dict):
+        sys.exit("ade: %s is not a JSON object" % p)
+if op == "get":
+    acc = d.get("account") or {}
+    if acc.get("fingerprint"):
+        print("account\t%s\t%s" % (clean(acc.get("label") or "the recorded account"), clean(acc["fingerprint"])))
+    top = d.get("top") or {}
+    if top.get("provider"):
+        print("provider\t%s\t%s\ttop" % (clean(top["provider"]), clean(top.get("sign_in", "key"))))
+    for f in d.get("focus") or []:
+        if f.get("provider"):
+            print("provider\t%s\t%s\tfocus" % (clean(f["provider"]), clean(f.get("sign_in", "key"))))
+    for m in d.get("marketplaces") or []:
+        print("marketplace\t%s\t%s" % (clean(m.get("name", "")), clean(m.get("repo", ""))))
+    for g in d.get("plugins") or []:
+        print("plugin\t%s\t%s\t%s" % (clean(g.get("name", "")), clean(g.get("marketplace", "ade-skills")), clean(g.get("ref", ""))))
+    for c in d.get("channels") or []:
+        print("channel\t%s\t%s" % (clean(c.get("type", "")), clean(c.get("bot", ""))))
+    for s in d.get("services") or []:
+        print("service\t%s" % clean(s))
+    sys.exit(0)
+def put(lst, item, key):
+    l = d.setdefault(lst, [])
+    l[:] = [x for x in l if x.get(key) != item[key]] + [item]
+if op == "account":
+    old = d.get("account") or {}
+    d["account"] = {"label": old.get("label") or a[1], "fingerprint": a[0]}
+elif op == "label":
+    d.setdefault("account", {})["label"] = a[0]
+elif op == "top":
+    d["top"] = {"provider": a[0], "sign_in": a[1], "model": a[2]}
+elif op == "focus":
+    put("focus", {"provider": a[0], "sign_in": a[1]}, "provider")
+elif op == "channel":
+    put("channels", {"type": a[0], "bot": a[1]}, "type")
+elif op == "marketplace":
+    put("marketplaces", {"name": a[0], "repo": a[1]}, "name")
+elif op == "plugin":
+    put("plugins", {"name": a[0], "marketplace": a[1], "ref": a[2]}, "name")
+    d.setdefault("pins", {})["ade-skills"] = a[2]
+elif op == "specialist":
+    s = d.setdefault("specialists", [])
+    if a[0] not in s:
+        s.append(a[0]); s.sort()
+elif op == "pin":
+    d.setdefault("pins", {})[a[0]] = a[1]
+elif op == "services":
+    d["services"] = sorted(set(a))
+else:
+    sys.exit("ade: unknown record operation %s" % op)
+os.makedirs(os.path.dirname(p), exist_ok=True)
+with open(p + ".ade-tmp", "w") as f:
+    json.dump(d, f, indent=2, sort_keys=True); f.write("\n")
+os.replace(p + ".ade-tmp", p)
+PY
+}
+conn_record() { local f="$1/.ade/connections.json"; shift; conn_py "$f" "$@" > /dev/null || echo "ade: could not update $f" >&2; return 0; }
+# account_fp [hub]: a one-way fingerprint of the signed-in Claude account (organisation and user id; never stored
+# raw); empty when not signed in with an account
+account_fp() {
+  local dir="${CLAUDE_CONFIG_DIR:-}"
+  [ -n "${1:-}" ] && { local hd; hd="$(conf_get "$1" HUB_CLAUDE_CONFIG_DIR)"; [ -n "$hd" ] && dir="$hd"; }
+  python3 - "${dir:-$HOME}/.claude.json" <<'PY' 2> /dev/null
+import hashlib, json, sys
+try:
+    a = json.load(open(sys.argv[1])).get("oauthAccount") or {}
+except Exception:
+    sys.exit(0)
+if a.get("accountUuid") and a.get("organizationUuid"):
+    print(hashlib.sha256(("ade-account-v1:%s:%s" % (a["organizationUuid"], a["accountUuid"])).encode()).hexdigest()[:16])
+PY
+}
+record_account() {   # <hub>: the signed-in account's fingerprint, with a default label the user can change
+  local f; f="$(account_fp "$1")"; [ -n "$f" ] || return 0
+  conn_record "$1" account "$f" "account-${f:0:6}"
+}
+record_services() {   # <hub>: the hub's services found here (chat, monitor, sync); an empty scan keeps the old list
+  local j list="" la="${AGENT_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}" n; n="$(hub_label "$1")"
+  for j in chat monitor sync; do
+    [ -f "$la/ai.agent-hub.$n.$j.plist" ] || [ -f "$HOME/.config/systemd/user/ai.agent-hub.$n.$j.service" ] && list="$list $j"; done
+  [ -z "$list" ] || conn_record "$1" services $list
+}
+service_present() { local n; n="$(hub_label "$1")"; [ -f "${AGENT_LAUNCHAGENTS:-$HOME/Library/LaunchAgents}/ai.agent-hub.$n.$2.plist" ] || [ -f "$HOME/.config/systemd/user/ai.agent-hub.$n.$2.service" ]; }
+record_channel() {   # <hub> <type>: the bot's public name from the hub (bin/chat info <type>), never the token
+  local bot; bot="$(hub_run "$1" chat info "$2" 2> /dev/null < /dev/null | awk '$1 == "bot" { print $2; exit }')"
+  conn_record "$1" channel "$2" "$bot"
+}
+plugin_installed() { python3 -c 'import json, sys
+try: d = json.load(open(sys.argv[1]))
+except Exception: sys.exit(1)
+sys.exit(0 if sys.argv[2] in (d.get("plugins", d) or {}) else 1)' "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/installed_plugins.json" "$1" 2> /dev/null; }
+
+# the account question (AC3): remembered per machine in ~/.config/ade/accounts as hub<TAB>recorded<TAB>current<TAB>continue
+acct_ok() { [ -f "$CONF_DIR/accounts" ] && grep -qxF -- "$(printf '%s\t%s\t%s\tcontinue' "$1" "$2" "$3")" "$CONF_DIR/accounts"; }
+acct_question() {   # <hub> <label> <recorded fp>: 0 once answered (continue, or signed in to the recorded account)
+  local h="$1" label="$2" rec="$3" cur; cur="$(account_fp "$h")"
+  if [ -n "$cur" ]; then echo "This hub was set up with $label; Claude Code here is signed in to another account."
+  else echo "This hub was set up with $label; Claude Code here is not signed in to an account."; fi
+  printf 'Continue with the current account and reconnect everything (c), or sign in to the recorded one (s)? [c/s] '
+  IFS= read -r ANSWER || ANSWER=""; [ -t 0 ] || echo
+  case "$ANSWER" in
+    c|C) { [ -f "$CONF_DIR/accounts" ] && cat "$CONF_DIR/accounts"; printf '%s\t%s\t%s\tcontinue\n' "$h" "$rec" "$cur"; } | write_conf_file accounts
+      echo "continuing with this account; run ade restore to reconnect everything"; return 0 ;;
+    s|S) command -v claude > /dev/null 2>&1 || die 2 "claude is not on PATH; install Claude Code first"
+      claude auth login || die 1 "the sign-in did not finish"
+      [ "$(account_fp "$h")" = "$rec" ] && { echo "signed in to $label"; return 0; }
+      die 1 "Claude Code is still signed in to another account than $label" ;;
+  esac
+  return 1
+}
+conn_gate() {   # <hub>: before a command that needs a connection; asks the account question until it is answered
+  local f="$1/.ade/connections.json" label rec cur
+  [ -f "$f" ] || return 0
+  IFS="$(printf '\t')" read -r _ label rec <<EOF
+$(conn_py "$f" get 2> /dev/null | grep "^account$TAB")
+EOF
+  [ -n "$rec" ] || return 0; cur="$(account_fp "$1")"
+  [ "$cur" = "$rec" ] || acct_ok "$1" "$rec" "$cur" && return 0
+  acct_question "$1" "$label" "$rec" && return 0
+  die 2 "answer the account question first (ade restore asks it again)"
+}
+
+# conn_state <hub>: one "kind<TAB>name<TAB>state<TAB>detail" line per connection; state ready|missing|different|unknown
+conn_state() {
+  local h="$1" k a b c cur mk=""
+  command -v claude > /dev/null 2>&1 && mk="$(claude plugin marketplace list 2> /dev/null < /dev/null)"
+  while IFS="$(printf '\t')" read -r k a b c <&3; do
+    case "$k" in
+      account) cur="$(account_fp "$h")"
+        if [ "$cur" = "$b" ]; then printf 'account\t%s\tready\t\n' "$a"
+        elif acct_ok "$h" "$b" "$cur"; then printf 'account\t%s\tdifferent\tcontinuing with this account\n' "$a"
+        elif [ -z "$cur" ]; then printf 'account\t%s\tmissing\tnot signed in\n' "$a"
+        else printf 'account\t%s\tdifferent\t%s\n' "$a" "another account is signed in"; fi ;;
+      provider)
+        if [ "$b" = account ]; then
+          case "$a" in anthropic) if command -v claude > /dev/null 2>&1 && claude_signed_in < /dev/null; then printf 'provider\t%s\tready\t\n' "$a"
+              else printf 'provider\t%s\tmissing\tnot signed in\n' "$a"; fi ;;
+            *) printf 'provider\t%s\tunknown\tsigned in through its own CLI\n' "$a" ;; esac
+        elif key_stored "$h" "$a" < /dev/null; then printf 'key\t%s\tready\t\n' "$a"
+        else printf 'key\t%s\tmissing\t\n' "$a"; fi ;;
+      marketplace) if printf '%s\n' "$mk" | grep -qF -- "$a"; then printf 'marketplace\t%s\tready\t%s\n' "$a" "$b"
+        else printf 'marketplace\t%s\tmissing\t%s\n' "$a" "$b"; fi ;;
+      plugin) if plugin_installed "$a@$b"; then printf 'plugin\t%s@%s\tready\t%s\n' "$a" "$b" "$c"
+        else printf 'plugin\t%s@%s\tmissing\t%s\n' "$a" "$b" "$c"; fi ;;
+      channel) if [ "$a" != telegram ]; then printf 'channel\t%s\tunknown\tbin/chat setup %s restores it\n' "$a" "$a"
+        elif key_stored "$h" telegram < /dev/null; then printf 'channel\t%s\tready\t%s\n' "$a" "$b"
+        else printf 'channel\t%s\tmissing\t%s\n' "$a" "$b"; fi ;;
+      service) if service_present "$h" "$a"; then printf 'service\t%s\tready\t\n' "$a"; else printf 'service\t%s\tmissing\t\n' "$a"; fi ;;
+    esac
+  done 3<<EOF
+$(conn_py "$h/.ade/connections.json" get)
+EOF
+}
+conn_gap() { case "$3" in missing) return 0 ;; different) [ "$4" != "continuing with this account" ] ;; *) return 1 ;; esac; }
+
+drop_role() {   # <hub> <provider>: takes a provider out of HUB_PROVIDERS_ALLOWED
+  local old new; old="$(conf_get "$1" HUB_PROVIDERS_ALLOWED)"
+  new="$(printf '%s\n' $old | grep -vx -- "$2" | tr '\n' ' ' | sed 's/ $//')"
+  [ "$new" = "$old" ] || conf_set "$1" HUB_PROVIDERS_ALLOWED "$new"
+}
+restore_plugin() {   # <hub> <name> <marketplace> <ref>: the marketplace when missing, the ref when still published
+  local h="$1" n="$2" m="$3" ref="$4" repo
+  repo="$(conn_py "$h/.ade/connections.json" get | awk -F '\t' -v m="$m" '$1 == "marketplace" && $2 == m { print $3; exit }')"
+  [ -n "$repo" ] || repo="$ADE_SKILLS_REPO"
+  command -v claude > /dev/null 2>&1 || { RESULT="failed (claude is not installed)"; return 1; }
+  if [ -n "$ref" ] && ! git ls-remote --exit-code --tags "$repo" "refs/tags/$ref" > /dev/null 2>&1 < /dev/null; then
+    echo "ade: $n@$m $ref is no longer published; installing the latest ($ADE_SKILLS_REF)" >&2; fi
+  if ! claude plugin marketplace list 2> /dev/null < /dev/null | grep -qF -- "$m"; then
+    local msrc="$repo"; [ "$msrc" = https://github.com/better-ade/ade-skills ] && msrc=better-ade/ade-skills
+    claude plugin marketplace add "$msrc" < /dev/null > /dev/null || { RESULT="failed (could not add the $m marketplace)"; return 1; }
+  fi
+  (cd "$h" && claude plugin install "$n@$m" --scope project < /dev/null > /dev/null) || { RESULT="failed (claude plugin install $n@$m)"; return 1; }
+  RESULT=ready
+}
+
+RESTORE_USAGE="usage: ade restore [--check] [--label <name>]"
+cmd_restore() {
+  local check=0 label="" hub f lines k n st det gaps=0 needs="" fixed=0 out
+  while [ $# -gt 0 ]; do case "$1" in
+    --check) check=1; shift ;;
+    --label) [ $# -ge 2 ] || die 2 "$RESTORE_USAGE"; label="$2"; shift 2
+      matches "$label" '^[A-Za-z0-9][A-Za-z0-9 ._-]{0,39}$' || die 2 "a label is letters, digits, spaces, . _ - (at most 40)" ;;
+    *) die 2 "$RESTORE_USAGE" ;;
+  esac; done
+  hub="$(find_hub)" || exit $?; f="$hub/.ade/connections.json"
+  [ -f "$f" ] || die 2 "no .ade/connections.json in $hub; ade setup writes one"
+  if [ -n "$label" ]; then conn_py "$f" label "$label" > /dev/null || exit 1; echo "account label: $label"; return 0; fi
+  lines="$(conn_state "$hub")" || exit 1
+  if [ "$check" = 1 ]; then
+    while IFS="$(printf '\t')" read -r k n st det; do [ -n "$k" ] || continue
+      echo "$k $n: $st${det:+ ($det)}"; conn_gap "$k" "$n" "$st" "$det" && gaps=$((gaps + 1)); done <<EOF
+$lines
+EOF
+    [ "$gaps" = 0 ]; return
+  fi
+  while IFS="$(printf '\t')" read -r k n st det; do [ -n "$k" ] && conn_gap "$k" "$n" "$st" "$det" && gaps=$((gaps + 1)); done <<EOF
+$lines
+EOF
+  [ "$gaps" -gt 0 ] || { echo "nothing to restore: every connection in .ade/connections.json is ready here"; return 0; }
+  echo "ade restore found:"
+  while IFS="$(printf '\t')" read -r k n st det; do [ -n "$k" ] && conn_gap "$k" "$n" "$st" "$det" && echo "  - $k $n: $st${det:+ ($det)}"; done <<EOF
+$lines
+EOF
+  local svc="" acct_label acct_rec
+  while IFS="$(printf '\t')" read -r k n st det <&4; do
+    [ -n "$k" ] && conn_gap "$k" "$n" "$st" "$det" || continue
+    RESULT=skipped
+    case "$k" in
+      account) IFS="$(printf '\t')" read -r _ acct_label acct_rec <<EOF
+$(conn_py "$f" get | grep "^account$TAB")
+EOF
+        acct_question "$hub" "$acct_label" "$acct_rec" && RESULT=ready ;;
+      provider) if confirm "Sign in to Claude Code with your account now?"; then
+          if claude auth login && claude_signed_in; then RESULT=ready; else RESULT="failed (the sign-in did not finish)"; fi; fi ;;
+      key) if confirm "Restore the $n key (a hidden prompt, then a live test)?"; then
+          if store_key "$hub" "$n"; then
+            if out="$(live_test "$hub" "$n")"; then RESULT=ready; echo "$out"
+            else echo "$out"; RESULT="failed (${out#"$n: failed ("}"; RESULT="${RESULT%)}"
+              drop_role "$hub" "$n"; echo "$n is left out of the roles (HUB_PROVIDERS_ALLOWED) until its live test passes"; fi
+          fi; fi ;;
+      marketplace) case "$lines" in *"plugin$TAB"*"@$n${TAB}missing"*) continue ;; esac   # restored with its plugin
+        if confirm "Add the $n marketplace?"; then
+          if claude plugin marketplace add "$det" < /dev/null > /dev/null; then RESULT=ready; else RESULT="failed (claude plugin marketplace add)"; fi; fi ;;
+      plugin) confirm "Install the plugin $n${det:+ ($det)}, with its marketplace?" && restore_plugin "$hub" "${n%@*}" "${n#*@}" "$det" ;;
+      channel) if confirm "Restore $n (its bot token at a hidden prompt, then pairing this device again)?"; then
+          ask_secret "Bot token for ${det:-the bot} (hidden):"
+          if [ -z "$SECRET" ]; then RESULT=skipped
+          else printf '%s\n' "$SECRET" | hub_run "$hub" keys set telegram > /dev/null; local rc=$?; SECRET=""
+            if [ "$rc" != 0 ]; then RESULT="failed (bin/keys could not store the token)"
+            elif hub_run "$hub" chat setup telegram --repair; then RESULT=ready; record_key "$hub" telegram
+            else RESULT="failed (bin/chat setup telegram --repair)"; fi
+          fi; fi ;;
+      service) svc="$svc $n"; continue ;;
+    esac
+    echo "$k $n: $RESULT"
+    if [ "$RESULT" = ready ]; then fixed=$((fixed + 1)); else needs="$needs, $k $n ($RESULT)"; fi
+  done 4<<EOF
+$lines
+EOF
+  if [ -n "$svc" ]; then
+    RESULT=skipped
+    if confirm "Reinstall the services ($(echo $svc | sed 's/ /, /g')) for this platform (bin/schedule install)?"; then
+      if hub_run "$hub" schedule install < /dev/null > /dev/null; then RESULT=ready; for n in $svc; do service_present "$hub" "$n" || RESULT="failed ($n is still not installed)"; done
+      else RESULT="failed (bin/schedule install)"; fi
+    fi
+    echo "services$svc: $RESULT"
+    if [ "$RESULT" = ready ]; then fixed=$((fixed + 1)); else needs="$needs, services$svc ($RESULT)"; fi
+  fi
+  journal_line "$hub" "ade restore: $fixed connection(s) restored${needs:+; still needs the owner: ${needs#, }}"
+  if [ -n "$needs" ]; then echo "still needs you: ${needs#, }"; return 1; fi
+  echo "every connection is ready"
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -1433,7 +1712,10 @@ cmd_version() {
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   work) work_in_ui; run_hub work "$@" ;;
-  dispatch|notify|chat|method|keys|models|roles|doctor|sync|context) run_hub "$cmd" "$@" ;;
+  chat) if [ "${1:-}" = setup ] && [ $# -ge 2 ]; then   # the channel is recorded once its setup succeeds
+      h="$(find_hub)" || exit $?; hub_run "$h" chat "$@" || exit $?; record_channel "$h" "$2"; exit 0; fi
+    run_hub chat "$@" ;;
+  dispatch|notify|method|keys|models|roles|doctor|sync|context) run_hub "$cmd" "$@" ;;
   ui) cmd_ui "$@" ;;
   dash) cmd_dash "$@" ;;
   status) run_hub sessions "$@" ;;
@@ -1448,6 +1730,7 @@ case "$cmd" in
   orchestrator) cmd_orchestrator "$@" ;;
   open) cmd_open "$@" ;;
   clean) cmd_clean "$@" ;;
+  restore) cmd_restore "$@" ;;
   reset) cmd_reset reset "$@" ;;
   uninstall) cmd_reset uninstall "$@" ;;
   version|--version|-v) cmd_version ;;
