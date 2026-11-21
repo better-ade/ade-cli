@@ -17,5 +17,8 @@
 - Layer 7: `ui_snapshots.sh` attaches a client inside an outer tmux (prefix moved to C-q) so `capture-pane` sees the
   tab bar and popups; goldens `tests/golden/ui-<W>x<H>-<view>.txt` (Linux tmux); `UPDATE_GOLDEN=1` rewrites. Found and
   fixed: the 44-column sidebar wrapped every row (now a compact layout below 70 columns), the help popup clipped.
-- Layer 8: `tests/coverage.sh` runs kcov (container `kcov/kcov`, ptrace allowed) over the suite; the floor in
-  `tests/coverage-floor` is the first measured figure rounded down.
+- Layer 8: `tests/coverage.sh` traces every run of this repo's `ade` (BASH_ENV turns on xtrace with the line number in
+  PS4, written to a per-process file through BASH_XTRACEFD, so no test output changes) and compares the executed lines
+  with `ade`'s executable lines (heredoc bodies, comments and bare keywords excluded). kcov was tried first: tracing the
+  whole suite under it leaked trace lines into the tests' captured output, and one kcov per ade call took over 25
+  minutes for the first test file. The floor in `tests/coverage-floor` is the first CI figure rounded down.
