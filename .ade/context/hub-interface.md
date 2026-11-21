@@ -136,8 +136,22 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - `https://github.com/better-ade/<repo>/releases/latest/download/release.json` (and `.../download/v<X.Y.Z>/release.json`),
   written by better-ade/.github's `release.yml`: `component`, `version`, `released`, `notes_url`, `summary`, `urgency`
   (`normal`|`security`), `min_supported` (X.Y.Z or null), `files` [{`name`, `url`, `sha256`}].
-- `~/.config/ade/updates/<component>.checked` (epoch of the last check), `.latest` (version, urgency, min_supported,
-  summary; `-` for empty), `.seen` (the last version announced).
+- Trust (review round): from `MANIFEST_SINCE` = 0.2.0 (hard-coded in `ade` and `install.sh`) every ade-cli release
+  has `.../download/v<X.Y.Z>/release.json`; without a valid one nothing is installed. It must say `component`
+  `ade-cli` and `version` = the requested version and name a 64-hex `sha256` for `ade`; its `url` is ignored (the file
+  is always `$ADE_CLI_BASE/v<X.Y.Z>/ade`, compared before stamping). A version lower than the installed one is refused
+  (only `ade update --rollback`). Printed manifest text loses control characters.
+- **Residual risk (stated, follow-up):** the sha256 and the file come from the same release pipeline (the repo and its
+  Actions), so the check proves integrity (a cut-short, swapped or stale file), not authenticity: whoever can publish
+  a release can publish a matching manifest. A signature or `gh attestation verify` is a later owner decision; not
+  built now.
+- ade-cli's `release.yml` passes `assets: ade` to the shared workflow; its manifest script refuses an empty file list
+  when the caller named assets (`ASSETS`).
+- `~/.config/ade/updates/`: `checked` (epoch of the day's fetch, one for all components), `fetching` (the detached
+  job's lock, stale after a minute), `<component>.latest` (version, urgency, min_supported, summary; tabs, `-` for
+  empty), `.seen` (the last version announced), `ade-cli.tried` (the last version auto-install acted on),
+  `installing` and `auto.log` (a running or finished auto-install; the next command prints it whole, then removes it).
+- `~/.config/ade/auto-update`: `on` or `off` (`ade update --auto on|off`); absent = on. `ADE_NO_AUTO_UPDATE=1` = off.
 - Installed versions: ade-cli the stamped version; ade-brain the hub's `VERSION`; ade-method the project's
   `.ade/method-version`; ade-skills and ade-agent-registry their pins, when in use.
 - Needed from the hub: `bin/chat send <text>` sends one line on the hub's channel (Telegram); faked in tests.

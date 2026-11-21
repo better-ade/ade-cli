@@ -14,3 +14,18 @@
 - Tests point `ADE_RELEASES_BASE` at a `file://` folder; when `ADE_CLI_BASE` is overridden and `ADE_RELEASES_BASE` is
   not, no manifest is read (a test never reaches GitHub). `tests/helpers.sh` turns checks off for every other test.
 - The ade ui badge: `⬆ N update(s)` after `[+ new]`, from the cached `.latest` files (no request while drawing).
+
+## Fix round (2026-11-22, after the adversarial review; risk raised to high)
+- `MANIFEST_SINCE=0.2.0` in `ade` and `install.sh` (no override: an environment variable could turn the check off).
+  `release_sha` fetches the per-version manifest; `manifest_py` checks component, version, a 64-hex sha256 for `ade`
+  and ignores `url`; the reason goes into the one message, never cut by `tail -1`. `releases_on` is gone: the manifest
+  is always read from `ADE_RELEASES_BASE` (default GitHub). `self_update` refuses a version lower than the installed
+  one. Tests for A11 publish a manifest for their 0.9.0 release (`rel_manifest`).
+- `update_check` makes no request: it prints from the cache (`update_banners`), reports a finished auto-install
+  (`update_auto_report`), and once a day (`checked`, lock `fetching`) starts `update_fetch_all` detached (`trap ''
+  HUP INT`, stdio closed): each component in use is fetched side by side, and one `sleep 2` watchdog sends TERM to
+  every fetch still running (each kills its own curl). The banner therefore shows on the command after the fetch.
+- `update_auto`: ade-cli only, a newer patch/minor (or security) release, `auto_on`, not `agent_context`, stdin and
+  stderr a terminal, once per version (`ade-cli.tried`); a major or a `min_supported` jump prints how to install it by
+  hand. The install itself is `self_update 0 <version>` in a detached job writing `auto.log`.
+- Residual risk recorded in `.ade/context/hub-interface.md`: integrity, not authenticity (signing is a later decision).

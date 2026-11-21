@@ -1,6 +1,7 @@
 # A12: release manifests and update notifications
 
-Status: In review (2026-11-22); part 1 is better-ade/.github#3. Risk: medium. Depends on A11. Owner's intent (2026-11-21): notify users when
+Status: In review (2026-11-22; fix round after the adversarial review); part 1 is better-ade/.github#3. Risk: high (raised
+in the review round: it installs code on the user's machine without a prompt). Depends on A11. Owner's intent (2026-11-21): notify users when
 there is a new version, through a JSON file that `ade` checks.
 
 ## Goal
@@ -19,6 +20,16 @@ there is a new version, through a JSON file that `ade` checks.
    `min_supported` is above the installed one asks first. `ADE_NO_AUTO_UPDATE=1` keeps notify-only.
 4. **`ade update`** (A11) installs a file only when its sha256 matches the manifest; a mismatch refuses and says so.
    The one-line installer (A3) checks the same sha256.
+5. **Fail closed (review round):** from a hard-coded `MANIFEST_SINCE` (0.2.0, the first release with a manifest) a
+   missing, unreadable or invalid manifest installs nothing, in `ade update`, the auto-update and `install.sh`, and
+   the reason is shown whole. The manifest must be ade-cli's and for exactly the requested version; any `url` in it is
+   ignored (the file always comes from its tag); a version lower than the installed one is refused (only
+   `ade update --rollback` goes back). This proves integrity, not authenticity: the hash and the file come from the
+   same release pipeline (residual risk; a signature or `gh attestation verify` is a later owner decision).
+6. **Never in a command's way (review round):** the day's fetch runs in a detached job with one 2-second budget for
+   every component; the next command reads the cached result. The auto-install runs in a detached job too, started
+   only when a person runs `ade` at a terminal (never in an agent session); `ade update --auto on|off` is a persistent
+   switch in `~/.config/ade` (default on, as the owner asked); `ADE_NO_AUTO_UPDATE=1` still works.
 
 ## Acceptance criteria (fake release server folder, no network)
 | AC | Criterion |
@@ -30,4 +41,8 @@ there is a new version, through a JSON file that `ade` checks.
 | 5 | A sha256 mismatch makes `ade update` and the installer refuse and keep the old version |
 | 6 | Offline, a 404 or a malformed manifest never blocks or slows a command by more than 2 s, and is retried tomorrow |
 | 7 | `ADE_NO_UPDATE_CHECK=1` makes no request |
-| 8 | Patch/minor auto-install on the daily check (then one line); security installs at once; major or min_supported jumps ask; `ADE_NO_AUTO_UPDATE=1` only notifies |
+| 8 | Patch/minor auto-install after the daily check (then one line); security installs at once; major or min_supported jumps ask; `ADE_NO_AUTO_UPDATE=1` and `ade update --auto off` only notify; no install without a terminal or inside an agent session |
+| 9 | From `MANIFEST_SINCE` on, a missing or invalid manifest installs nothing (`ade update`, auto-update, installer) and the reason is shown (`manifest_fail_closed`, `auto_update_failure_says_why`) |
+| 10 | A manifest of another version or component is refused; its `url` is ignored; a lower version is refused (`manifest_bound`) |
+| 11 | ade-cli's `release.yml` passes `assets: ade` (`release_workflow_passes_assets`); the manifest script refuses an empty file list when assets were named (better-ade/.github) |
+| 12 | A stalled network with every component in use never delays a command; every request ends within the 2-second budget (`never_delays_a_command`) |

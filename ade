@@ -47,7 +47,7 @@ Housekeeping (each lists what it would do first; nothing of yours is deleted):
   clean       ade clean [--yes]: stale locks, old markers, cursors and temp folders, dead ade tmux sessions, clean merged worktrees
   reset       ade reset [--keys] [--hub <path>]: undo ade setup here; --keys forgets its keys; --hub moves that hub to the Trash
   uninstall   ade uninstall [--keys] [--hub <path>]: ade reset, then remove the installed ade
-  update      ade update [--check | --rollback]: ade, the hub, its plugins and Claude Code, with nothing stopped; --rollback: the previous ade
+  update      ade update [--check | --rollback | --auto on|off]: ade, the hub, its plugins and Claude Code, with nothing stopped; --rollback: the previous ade; --auto: self-install on or off
   restore     ade restore [--check] [--label <name>]: bring back every connection .ade/connections.json names
 
 Project commands (no hub needed):
@@ -2017,16 +2017,25 @@ ade_put() {
   cp "$self" "$prev" && chmod 644 "$prev" && cp "$new" "$put" && chmod 755 "$put" || return 1
   mv -f "$prev" "$dir/.ade.prev" && mv -f "$put" "$self"
 }
-self_update() {   # <check 0|1>: 1 = the new file failed its check (the old one stays)
-  local v self tmp why
+self_update() {   # <check 0|1> [version]: 1 = the new file failed a check (the old one stays)
+  local v="${2:-}" self tmp why want
   if [ -z "$ADE_VERSION" ]; then echo "ade: a checkout ($(dirname "$(ade_self)")); update it with git pull"; return 0; fi
   [ -n "$v" ] || v="$(latest_version)" || { echo "ade: could not read the latest version (offline?); ade $ADE_VERSION stays"; return 0; }
-  ver_gt "$v" "$ADE_VERSION" || { echo "ade $ADE_VERSION is current"; return 0; }
+  matches "$v" '^[0-9]+\.[0-9]+\.[0-9]+$' || { echo "ade: $v is not a version; ade $ADE_VERSION stays"; return 1; }
+  if ! ver_gt "$v" "$ADE_VERSION"; then   # never a downgrade: only --rollback puts an older ade back
+    if [ "$v" = "$ADE_VERSION" ]; then echo "ade $ADE_VERSION is current"
+    else echo "ade: $v is older than the installed $ADE_VERSION; refused (ade update --rollback puts the kept previous version back)"; fi
+    return 0; fi
   [ "$1" = 1 ] && { echo "ade $ADE_VERSION -> $v"; return 0; }
   self="$(ade_self)"; upd_traps
   # the download and its check happen in a private temp folder, never in a folder on PATH
   tmp="$(mk_tmp)" || { upd_untrap; echo "ade: no temp folder; ade $ADE_VERSION stays"; return 1; }; upd_track "$tmp"
+  # A12: from MANIFEST_SINCE on the release's own release.json (component ade-cli, version $v) names the sha256; the
+  # file always comes from its tag (a url in the manifest is ignored), and anything short of a match installs nothing
+  if ! want="$(release_sha "$v" "$tmp")"; then upd_untrap; echo "ade: $want; nothing installed, ade $ADE_VERSION stays"; return 1; fi
   if ! dl "$ADE_CLI_BASE/v$v/ade" "$tmp/raw"; then upd_untrap; echo "ade: could not download ade $v; ade $ADE_VERSION stays"; return 1; fi
+  if [ -n "$want" ] && [ "$(sha256_of "$tmp/raw")" != "$want" ]; then
+    upd_untrap; echo "ade: the download of ade $v does not match its sha256 in release.json; nothing installed, ade $ADE_VERSION stays"; return 1; fi
   sed "s/^ADE_VERSION=\"\"/ADE_VERSION=\"$v\"/" "$tmp/raw" > "$tmp/ade"; chmod 600 "$tmp/ade"
   if ! why="$(ade_check "$tmp/ade" "$v")"; then upd_untrap; echo "ade: the new ade $v failed its check ($why); ade $ADE_VERSION stays"; return 1; fi
   ade_put "$tmp/ade" "$self" || { upd_untrap; echo "ade: could not rename the new ade into place; ade $ADE_VERSION stays"; return 1; }
@@ -2100,8 +2109,13 @@ EOF
 }
 cmd_update() {
   local check=0 rc=0 hub="" p plugins s line
-  while [ $# -gt 0 ]; do case "$1" in --check) check=1; shift ;; --rollback) [ $# -eq 1 ] && [ "$check" = 0 ] || die 2 "usage: ade update [--check | --rollback]"; self_rollback; return ;;
-    *) die 2 "usage: ade update [--check | --rollback]" ;; esac; done
+  local usage="usage: ade update [--check | --rollback | --auto on|off]"
+  while [ $# -gt 0 ]; do case "$1" in --check) check=1; shift ;; --rollback) [ $# -eq 1 ] && [ "$check" = 0 ] || die 2 "$usage"; self_rollback; return ;;
+    --auto) [ $# -eq 2 ] && [ "$check" = 0 ] || die 2 "$usage"
+      case "$2" in on|off) echo "$2" | write_conf_file auto-update ;; *) die 2 "$usage" ;; esac
+      if [ "$2" = on ]; then echo "auto-update on: ade patch and minor releases install themselves (from a terminal, never in an agent session)"
+      else echo "auto-update off: ade only tells you about a new release (ade update installs it)"; fi; return 0 ;;
+    *) die 2 "$usage" ;; esac; done
   UPD_CHANGED=""; RESTART_NEEDED=0
   self_update "$check" || rc=1
   hub="$( (find_hub) 2> /dev/null)" || hub=""
@@ -2129,33 +2143,60 @@ cmd_update() {
   return $rc
 }
 
-# release manifests and update notifications (story A12): release.json of each better-ade component in use, checked
-# at most once a day (2 s at most, offline = try tomorrow); a banner once per new version (security: every command);
-# ade-cli patch and minor versions install themselves (A11's rename), majors and min_supported jumps ask first.
-ADE_RELEASES_BASE_SET="${ADE_RELEASES_BASE:+1}"
+# release manifests and update notifications (story A12): release.json of each better-ade component in use, fetched
+# at most once a day by a detached job (one 2 s budget for all of them; offline = try tomorrow), so no command ever
+# waits for the network; the next command reads the cache: a banner once per new version (security: every command).
+# ade-cli patch and minor releases install themselves in a detached job started from a terminal (never an agent),
+# majors and min_supported jumps ask first; ade update --auto off (or ADE_NO_AUTO_UPDATE=1) keeps notify-only.
+MANIFEST_SINCE=0.2.0   # the first ade-cli release with release.json: from it on, no valid manifest = nothing installed
 ADE_RELEASES_BASE="${ADE_RELEASES_BASE:-https://github.com}"
 UPD_DIR="$CONF_DIR/updates"
 COMPONENTS="ade-cli ade-brain ade-method ade-skills ade-agent-registry"
-releases_on() {   # the manifest is read from GitHub unless a test points ade at another release folder
-  [ -n "$ADE_RELEASES_BASE_SET" ] || [ "$ADE_CLI_BASE" = https://raw.githubusercontent.com/better-ade/ade-cli ]
-}
+ver_ge() { ! ver_gt "$2" "$1"; }
 sha256_of() { if command -v shasum > /dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1; else sha256sum "$1" | cut -d' ' -f1; fi; }
-manifest_field() {   # <release.json> <field|file:NAME>: one value, or nothing when the manifest is not one
-  python3 - "$1" "$2" <<'PY' 2> /dev/null
-import json, re, sys
+# manifest_py <release.json> <component> <version|latest> [file name]: checks that the manifest is for exactly that
+# component (and version); prints the file's sha256 when a name is given, else "version urgency min summary" (tabs;
+# "-" for an empty field; no control character). Any url in it is ignored: the file always comes from its tag.
+# 1 with the reason on stdout when it is not such a manifest.
+manifest_py() {
+  python3 - "$@" <<'PY' 2> /dev/null
+import json, os, re, sys
+p, comp, ver = sys.argv[1:4]; name = sys.argv[4] if len(sys.argv) > 4 else ""
+SEMVER = re.compile(r"[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}")
+def no(why):
+    print(why); sys.exit(1)
 try:
-    d = json.load(open(sys.argv[1]))
-    assert isinstance(d, dict) and re.match(r"^[0-9]+\.[0-9]+\.[0-9]+$", d["version"])
-except Exception:
-    sys.exit(1)
-k = sys.argv[2]
-if k.startswith("file:"):
-    for f in d.get("files") or []:
-        if f.get("name") == k[5:] and re.match(r"^[0-9a-f]{64}$", str(f.get("sha256", ""))):
-            print("%s\t%s" % (f["sha256"], f.get("url", ""))); break
-else:
-    v = d.get(k); print("" if v is None else re.sub(r"[\t\r\n]", " ", str(v)))
+    if os.path.getsize(p) > 65536: no("it is larger than 64 KiB")
+    d = json.load(open(p))
+except (OSError, ValueError):
+    no("it is not valid JSON")
+if not isinstance(d, dict): no("it is not a JSON object")
+if d.get("component") != comp: no("it is not the manifest of %s" % comp)
+v = d.get("version")
+if not isinstance(v, str) or not SEMVER.fullmatch(v): no("its version is not X.Y.Z")
+if ver != "latest" and v != ver: no("it is the manifest of another version than %s" % ver)
+if name:
+    for f in d.get("files") if isinstance(d.get("files"), list) else []:
+        if isinstance(f, dict) and f.get("name") == name:
+            sha = f.get("sha256")
+            if isinstance(sha, str) and re.fullmatch(r"[0-9a-f]{64}", sha): print(sha); sys.exit(0)
+    no("it names no sha256 for %s" % name)
+clean = lambda s: re.sub(r"\s+", " ", re.sub(r"[\x00-\x1f\x7f-\x9f]", " ", s)).strip()[:160] or "-"
+urg = d.get("urgency") if d.get("urgency") in ("normal", "security") else "normal"
+mins = d.get("min_supported") if isinstance(d.get("min_supported"), str) and SEMVER.fullmatch(d["min_supported"]) else "-"
+summ = clean(d["summary"]) if isinstance(d.get("summary"), str) else "-"
+print("\t".join((v, urg, mins, summ)))
 PY
+}
+# release_sha <version> <tmp folder>: the sha256 of ade in the per-version release.json, which must exist from
+# MANIFEST_SINCE on; prints the reason and returns 1 when it cannot be had (nothing may be installed then)
+release_sha() {
+  local v="$1" out
+  ver_ge "$v" "$MANIFEST_SINCE" || return 0   # an older release has no manifest: shebang, bash -n and ade version only
+  dl "$ADE_RELEASES_BASE/better-ade/ade-cli/releases/download/v$v/release.json" "$2/release.json" ||
+    { echo "there is no release.json for ade $v (every release from $MANIFEST_SINCE on has one)"; return 1; }
+  out="$(manifest_py "$2/release.json" ade-cli "$v" ade)" || { echo "its release.json is not valid: $out"; return 1; }
+  echo "$out"
 }
 comp_installed() {   # <component> <hub>: the installed version (X.Y.Z), or nothing when it is not in use here
   local v="" top
@@ -2168,56 +2209,96 @@ comp_installed() {   # <component> <hub>: the installed version (X.Y.Z), or noth
   esac
   v="${v#v}"; matches "$v" '^[0-9]+\.[0-9]+\.[0-9]+$' && echo "$v"
 }
-fetch_manifest() {   # <component>: the latest release.json into $UPD_DIR/<c>.latest (version urgency min summary); 2 s at most
-  local c="$1" tmp proto="=https" v
-  releases_on || return 1
+fetch_manifest() {   # <component>: its latest release.json, checked, into $UPD_DIR/<c>.latest; TERM stops the request
+  local c="$1" tmp proto="=https" line cp=""
   [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"
   tmp="$(mktemp "$UPD_DIR/.$c.XXXXXX")" || return 1
-  if curl --proto "$proto" --proto-redir "$proto" -fsSL --connect-timeout 2 --max-time 2 \
-      "$ADE_RELEASES_BASE/better-ade/$c/releases/latest/download/release.json" -o "$tmp" 2> /dev/null < /dev/null &&
-      v="$(manifest_field "$tmp" version)"; then
-    local u m sm; u="$(manifest_field "$tmp" urgency)"; m="$(manifest_field "$tmp" min_supported)"
-    sm="$(manifest_field "$tmp" summary | cut -c1-160)"   # "-" for an empty field: IFS=tab would merge two tabs
-    printf '%s\t%s\t%s\t%s\n' "$v" "${u:--}" "${m:--}" "${sm:--}" > "$UPD_DIR/$c.latest"
-    rm -f "$tmp"; return 0
-  fi
-  rm -f "$tmp"; return 1
+  trap '[ -z "$cp" ] || kill "$cp" 2> /dev/null; rm -f "$tmp"; exit 1' TERM
+  curl --proto "$proto" --proto-redir "$proto" -fsSL --connect-timeout 2 --max-time 2 \
+    "$ADE_RELEASES_BASE/better-ade/$c/releases/latest/download/release.json" -o "$tmp" 2> /dev/null < /dev/null & cp=$!
+  if wait "$cp" && line="$(manifest_py "$tmp" "$c" latest)"; then printf '%s\n' "$line" > "$tmp.ok" && mv -f "$tmp.ok" "$UPD_DIR/$c.latest"; fi
+  rm -f "$tmp" "$tmp.ok"
 }
-major_of() { echo "${1%%.*}"; }
-update_check() {   # before a command: the daily check, the banner, the Telegram line, the auto-update policy
-  [ "${ADE_NO_UPDATE_CHECK:-}" = 1 ] && return 0
-  local hub c inst now t ver urg min sum seen fetched line
-  ( umask 077; mkdir -p "$UPD_DIR" ) 2> /dev/null || return 0
-  hub="$( (find_hub) 2> /dev/null)" || hub=""; now="$(date +%s)"
+update_fetch_all() {   # the detached job: every component in use, side by side, within one 2-second budget
+  local hub c pids="" w
+  hub="$( (find_hub) 2> /dev/null)" || hub=""
   for c in $COMPONENTS; do
-    inst="$(comp_installed "$c" "$hub" 2> /dev/null)" || continue
-    t=0; [ -f "$UPD_DIR/$c.checked" ] && t="$(cat "$UPD_DIR/$c.checked" 2> /dev/null)"; matches "$t" '^[0-9]+$' || t=0
-    fetched=0
-    if [ $((now - t)) -ge 86400 ]; then echo "$now" > "$UPD_DIR/$c.checked"; fetch_manifest "$c" && fetched=1; fi
-    [ -f "$UPD_DIR/$c.latest" ] || continue
-    IFS="$TAB" read -r ver urg min sum < "$UPD_DIR/$c.latest" || [ -n "$ver" ] || continue
-    [ "$urg" = - ] && urg=""; [ "$min" = - ] && min=""; [ "$sum" = - ] && sum=""
-    ver_gt "$ver" "$inst" || continue
-    seen=""; [ -f "$UPD_DIR/$c.seen" ] && seen="$(cat "$UPD_DIR/$c.seen" 2> /dev/null)"
-    if [ "$c" = ade-cli ] && [ "$fetched" = 1 ] && [ "${ADE_NO_AUTO_UPDATE:-}" != 1 ]; then
-      if [ "$(major_of "$ver")" != "$(major_of "$inst")" ] || { [ -n "$min" ] && ver_gt "$min" "$inst"; }; then
-        echo "ade: ade $ver is a major update (or needs $min first); it asks first: run ade update to install it" >&2
-        echo "$ver" > "$UPD_DIR/$c.seen"; update_telegram "$hub" "ade $ver is out (you have $inst); it needs ade update by hand"; continue
-      fi
-      if line="$(self_update 0 "$ver" 2>&1)"; then
-        echo "ade: auto-updated: $(printf '%s\n' "$line" | tail -1) (ADE_NO_AUTO_UPDATE=1 turns this off)" >&2
-        echo "$ver" > "$UPD_DIR/$c.seen"; update_telegram "$hub" "ade updated itself to $ver"; continue
-      fi
-      echo "ade: the auto-update to ade $ver failed: $(printf '%s\n' "$line" | tail -1)" >&2
-    fi
-    if [ "$urg" = security ] || [ "$ver" != "$seen" ]; then
-      echo "ade: $c $ver is out (you have $inst)${sum:+: $sum}${urg:+$([ "$urg" = security ] && echo ' [security update]')}; ade update installs it" >&2
-      [ "$ver" != "$seen" ] && update_telegram "$hub" "$c $ver is out (you have $inst)${sum:+: $sum}"
-      echo "$ver" > "$UPD_DIR/$c.seen"
-    fi
+    comp_installed "$c" "$hub" > /dev/null 2>&1 || continue
+    fetch_manifest "$c" & pids="$pids $!"
   done
+  [ -n "$pids" ] || return 0
+  # shellcheck disable=SC2086  # pids is a list on purpose
+  { sleep 2; kill $pids 2> /dev/null; } & w=$!
+  # shellcheck disable=SC2086
+  wait $pids 2> /dev/null; kill "$w" 2> /dev/null; wait "$w" 2> /dev/null
+}
+auto_on() { [ "${ADE_NO_AUTO_UPDATE:-}" != 1 ] && [ "$(cat "$CONF_DIR/auto-update" 2> /dev/null)" != off ]; }
+UPD_HUB=""; UPD_HUB_SET=0
+upd_hub() { [ "$UPD_HUB_SET" = 1 ] || { UPD_HUB="$( (find_hub) 2> /dev/null)" || UPD_HUB=""; UPD_HUB_SET=1; }; }
+update_check() {   # before a command: what the cache says (no request here), and once a day the detached fetch
+  [ "${ADE_NO_UPDATE_CHECK:-}" = 1 ] && return 0
+  ( umask 077; mkdir -p "$UPD_DIR" ) 2> /dev/null || return 0
+  local now t
+  update_auto_report
+  now="$(date +%s)"; t="$(cat "$UPD_DIR/checked" 2> /dev/null)"; matches "$t" '^[0-9]+$' || t=0
+  # a fetch job that died left its lock: after a minute it is stale
+  [ -n "$(find "$UPD_DIR/fetching" -maxdepth 0 -mmin +1 2> /dev/null)" ] && rmdir "$UPD_DIR/fetching" 2> /dev/null
+  if [ $((now - t)) -ge 86400 ] && mkdir "$UPD_DIR/fetching" 2> /dev/null; then
+    echo "$now" > "$UPD_DIR/checked"
+    ( trap '' HUP INT; update_fetch_all; rmdir "$UPD_DIR/fetching" ) < /dev/null > /dev/null 2>&1 &
+  fi
+  update_auto
+  update_banners
   return 0
 }
+update_banners() {   # one line per component with a newer cached release, once per version (security: every command)
+  local c ver urg min sum seen inst
+  for c in $COMPONENTS; do
+    [ -f "$UPD_DIR/$c.latest" ] || continue
+    IFS="$TAB" read -r ver urg min sum < "$UPD_DIR/$c.latest" || [ -n "$ver" ] || continue
+    [ "$sum" = - ] && sum=""
+    seen="$(cat "$UPD_DIR/$c.seen" 2> /dev/null)"
+    [ "$urg" = security ] || [ "$ver" != "$seen" ] || continue
+    upd_hub; inst="$(comp_installed "$c" "$UPD_HUB" 2> /dev/null)" || continue
+    if ver_gt "$ver" "$inst"; then
+      echo "ade: $c $ver is out (you have $inst)${sum:+: $sum}$([ "$urg" = security ] && echo ' [security update]'); ade update installs it" >&2
+      [ "$ver" != "$seen" ] && update_telegram "$UPD_HUB" "$c $ver is out (you have $inst)${sum:+: $sum}"
+    fi
+    echo "$ver" > "$UPD_DIR/$c.seen"
+  done
+}
+# update_auto: a newer ade-cli patch or minor release (or a security one) installs itself through self_update (the
+# manifest's sha256, A11's rename) in a detached job; only when a person runs ade at a terminal, never in an agent
+# session; once per version; the next command says how it went (update_auto_report)
+update_auto() {
+  local ver urg min sum
+  [ -n "$ADE_VERSION" ] && [ -f "$UPD_DIR/ade-cli.latest" ] || return 0
+  IFS="$TAB" read -r ver urg min sum < "$UPD_DIR/ade-cli.latest" || [ -n "$ver" ] || return 0
+  ver_gt "$ver" "$ADE_VERSION" && auto_on || return 0
+  agent_context && return 0
+  [ -t 0 ] && [ -t 2 ] || return 0
+  [ "$(cat "$UPD_DIR/ade-cli.tried" 2> /dev/null)" = "$ver" ] && return 0
+  echo "$ver" > "$UPD_DIR/ade-cli.tried"
+  if [ "$(major_of "$ver")" != "$(major_of "$ADE_VERSION")" ] || { [ "$min" != - ] && ver_gt "$min" "$ADE_VERSION"; }; then
+    echo "ade: ade $ver is a major update (or needs $min first); it asks first: run ade update to install it" >&2
+    upd_hub; update_telegram "$UPD_HUB" "ade $ver is out (you have $ADE_VERSION); it needs ade update by hand"
+    echo "$ver" > "$UPD_DIR/ade-cli.seen"; return 0
+  fi
+  mkdir "$UPD_DIR/installing" 2> /dev/null || return 0
+  echo "ade: ade $ver is out; installing it in the background (ade update --auto off turns this off)" >&2
+  echo "$ver" > "$UPD_DIR/ade-cli.seen"
+  ( trap '' HUP INT; self_update 0 "$ver" > "$UPD_DIR/auto.log" 2>&1; echo "exit $?" >> "$UPD_DIR/auto.log"; rmdir "$UPD_DIR/installing" ) < /dev/null > /dev/null 2>&1 &
+}
+update_auto_report() {   # a finished auto-install, once: every line it printed (a failure keeps its reason)
+  local f="$UPD_DIR/auto.log" last
+  [ -f "$f" ] && [ ! -d "$UPD_DIR/installing" ] || return 0
+  last="$(tail -1 "$f")"
+  if [ "$last" = "exit 0" ]; then sed '$d' "$f" | no_ctl | sed 's/^ade: //; s/^/ade: auto-update: /' >&2
+    upd_hub; update_telegram "$UPD_HUB" "ade updated itself: $(sed '$d' "$f" | tail -1 | no_ctl)"
+  else sed '$d' "$f" | no_ctl | sed 's/^ade: //; s/^/ade: the auto-update failed: /' >&2; fi
+  rm -f "$f"
+}
+major_of() { echo "${1%%.*}"; }
 update_telegram() {   # <hub> <text>: one line through the orchestrator's channel when the hub has one (bin/chat send)
   [ -n "$1" ] && [ -n "$(conf_get "$1" HUB_CHANNELS)" ] && [ -x "$1/bin/chat" ] || return 0
   hub_run "$1" chat send "$2" < /dev/null > /dev/null 2>&1 || true

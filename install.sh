@@ -22,13 +22,26 @@ else
   tmp="$(mktemp -d)"; script="$tmp/ade"
   curl -fsSL "$base/$ref/ade" -o "$script" || die "could not download ade $ref"
   [ "$(head -1 "$script")" = "#!/bin/bash" ] || die "the download of ade $ref is not the ade script"
-  # release.json (A12) names the sha256 of ade; a mismatch installs nothing. GitHub's unless ADE_CLI_BASE points elsewhere
-  rbase="${ADE_RELEASES_BASE:-}"; [ -z "$rbase" ] && [ -z "${ADE_CLI_BASE:-}" ] && rbase=https://github.com
-  if [ -n "$rbase" ] && curl -fsSL --max-time 20 "$rbase/better-ade/ade-cli/releases/download/$ref/release.json" -o "$tmp/release.json" 2> /dev/null; then
-    want="$(python3 -c 'import json, sys
-for f in json.load(open(sys.argv[1])).get("files") or []:
-    if f.get("name") == "ade": print(f.get("sha256", ""))' "$tmp/release.json" 2> /dev/null || true)"
-    [ -n "$want" ] || die "release.json of $ref names no sha256 for ade; nothing installed"
+  # release.json (A12): every release from MANIFEST_SINCE on has one; it must be ade-cli's, for exactly this version,
+  # and name the sha256 of ade (a url in it is ignored: the file comes from its tag). Anything short of a match installs
+  # nothing. ADE_RELEASES_BASE (tests) points at another release folder.
+  MANIFEST_SINCE=0.2.0
+  if [ "$(printf '%s\n%s\n' "$MANIFEST_SINCE" "$version" | sort -t. -k1,1n -k2,2n -k3,3n | head -1)" = "$MANIFEST_SINCE" ]; then
+    rbase="${ADE_RELEASES_BASE:-https://github.com}"
+    curl -fsSL --max-time 20 "$rbase/better-ade/ade-cli/releases/download/$ref/release.json" -o "$tmp/release.json" 2> /dev/null ||
+      die "there is no release.json for ade $ref (every release from $MANIFEST_SINCE on has one); nothing installed"
+    want="$(python3 -c 'import json, re, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except (OSError, ValueError):
+    print("!it is not valid JSON"); sys.exit()
+if not isinstance(d, dict) or d.get("component") != "ade-cli" or d.get("version") != sys.argv[2]:
+    print("!it is not the manifest of ade-cli %s" % sys.argv[2]); sys.exit()
+for f in d.get("files") if isinstance(d.get("files"), list) else []:
+    if isinstance(f, dict) and f.get("name") == "ade" and isinstance(f.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", f["sha256"]):
+        print(f["sha256"]); sys.exit()
+print("!it names no sha256 for ade")' "$tmp/release.json" "$version" 2> /dev/null || true)"
+    case "$want" in "!"*|"") die "the release.json of ade $ref is not valid (${want#!}); nothing installed" ;; esac
     got="$( (shasum -a 256 "$script" 2> /dev/null || sha256sum "$script") | cut -d' ' -f1)"
     [ "$got" = "$want" ] || die "the download of ade $ref does not match its sha256 in release.json; nothing installed"
   fi

@@ -6,7 +6,10 @@
   version (security: every command), a badge in `ade ui`'s tab bar, one Telegram line through the hub's `bin/chat send`.
   ade-cli patch and minor releases install themselves (security at once); majors and `min_supported` jumps ask first;
   `ADE_NO_AUTO_UPDATE=1` only notifies, `ADE_NO_UPDATE_CHECK=1` makes no request. `ade update` and `install.sh` refuse
-  a file whose sha256 does not match `release.json`.
+  a file whose sha256 does not match `release.json`. From 0.2.0 on a missing or invalid manifest installs nothing (the manifest must
+  be ade-cli's, for that version; its url is ignored; never a downgrade). The day's check runs in a detached job
+  (2 s for all components; no command waits); the auto-install runs detached, only from a terminal and never in an
+  agent session; `ade update --auto on|off` switches it.
 - `ade update [--check]` (A11): replaces ade by one rename after the new file passes `ade version` (a running ade keeps
 - `ade update [--check | --rollback]` (A11; the previous ade is kept as `.ade.prev`, untracked hub files never block): replaces ade by one rename after the new file passes `ade version` (a running ade keeps
   its code; `ade dash` re-execs on a new version), pulls the hub with `--ff-only` (local changes or a merge refuse),
