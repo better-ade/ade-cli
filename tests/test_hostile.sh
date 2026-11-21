@@ -36,6 +36,9 @@ table() {
     ui) echo "R|ui --tab-name X"; echo "R|ui --menu role X"; echo "S|ui --preview X"; echo "F|ui --menu new" ;;
     agent) echo "R|agent add X" ;;
     skills) echo "R|skills add X"; echo "R|skills enable X"; echo "R|skills disable X"; echo "S|skills search X" ;;
+    clean) echo "R|clean X" ;;
+    reset) echo "R|reset X"; echo "R|reset --hub X"; echo "R|reset --keys --hub X" ;;
+    uninstall) echo "R|uninstall X"; echo "R|uninstall --hub X" ;;
     init|dash|version|help) echo none ;;
     *) return 1 ;;
   esac
