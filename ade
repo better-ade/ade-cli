@@ -93,10 +93,12 @@ project_root() {
 set_commit_template() {
   local cur; [ -f .ade/commit-template.txt ] || return 0
   git rev-parse --git-dir > /dev/null 2>&1 || { echo "not a git repository: commit.template not set"; return 0; }
+  local want="$PWD/.ade/commit-template.txt"   # absolute: git reads commit.template from wherever you commit
   cur="$(git config --local commit.template 2>/dev/null)"
-  if [ -z "$cur" ]; then git config --local commit.template .ade/commit-template.txt || die 1 "could not set commit.template"
-    echo "set commit.template to .ade/commit-template.txt"
-  elif [ "$cur" != .ade/commit-template.txt ]; then echo "kept commit.template ($cur)"; fi
+  if [ -n "$cur" ]; then [ "$cur" = "$want" ] || echo "kept commit.template ($cur)"; return 0; fi
+  if [ -n "$(git config --global commit.template 2>/dev/null)" ]; then echo "kept your global commit.template ($(git config --global commit.template))"; return 0; fi
+  git config --local commit.template "$want" || die 1 "could not set commit.template"
+  echo "set commit.template to $want"
 }
 
 cmd_init() {
@@ -120,7 +122,8 @@ import json, os, sys
 src = sys.argv[1]
 for f, dest in sorted(json.load(open(os.path.join(src, "ade.json"))).get("install_templates", {}).items()):
     p = os.path.normpath(os.path.join(src, f))
-    if dest.startswith("/") or ".." in dest.split("/") or not p.startswith(src + "/") or not os.path.isfile(p):
+    if (not dest or dest.startswith("/") or ".." in dest.split("/") or any(c in dest for c in "\t\n\r")
+            or not p.startswith(src + "/") or not os.path.isfile(p)):
         sys.exit("ade: bad install_templates entry %s -> %s" % (f, dest))
     print("%s\t%s" % (p, dest))
 PY

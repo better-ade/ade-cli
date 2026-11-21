@@ -153,7 +153,7 @@ init_installs_templates() {   # ade.json install_templates are copied (never ove
   (cd "$P" && bash "$ADE" init) > "$T/out" 2>&1 || { cat "$T/out"; fail "init exit"; }
   assert_eq "$(cat "$P/.github/pull_request_template.md")" "## Overview" "PR template in .github/"
   assert_eq "$(cat "$P/.ade/commit-template.txt")" "<type>(<scope>): <summary>" "commit template in .ade/"
-  assert_eq "$(git -C "$P" config --local commit.template)" ".ade/commit-template.txt" "commit.template set in that repo"
+  assert_eq "$(git -C "$P" config --local commit.template)" "$P/.ade/commit-template.txt" "commit.template set in that repo, absolute"
   Q="$T/proj2"; mkdir -p "$Q/.github"; git init -q "$Q"; echo mine > "$Q/.github/pull_request_template.md"
   git -C "$Q" config commit.template my-template.txt
   (cd "$Q" && bash "$ADE" init) > "$T/out" 2>&1 || { cat "$T/out"; fail "second init exit"; }
@@ -166,6 +166,29 @@ init_installs_templates() {   # ade.json install_templates are copied (never ove
   N="$T/plain"; mkdir -p "$N"; (cd "$N" && bash "$ADE" init --here) > "$T/out" 2>&1 || { cat "$T/out"; fail "--here outside git"; }
   [ -f "$N/.ade/commit-template.txt" ] || fail "--here copies the templates"
   assert_contains "$T/out" "not a git repository: commit.template not set" "outside git it says so"
+  G="$T/proj4"; mkdir -p "$G"; git init -q "$G"; git config --global commit.template "$HOME/my-global.txt"
+  (cd "$G" && bash "$ADE" init) > "$T/out" 2>&1 || fail "fourth init"
+  assert_eq "$(git -C "$G" config --local commit.template)" "" "a global commit.template is respected"
+  assert_contains "$T/out" "kept your global commit.template" "and said so"
+}
+
+install_templates_guard() {   # review: a destination outside the project, or with a tab or newline, is refused (exit 1)
+  for bad in '../x' '/etc/x' 'a/../../x' "$(printf 'a\tb')" "$(printf 'a\nb')"; do
+    fresh; make_method_repo
+    BAD="$bad" python3 - "$M/ade.json" <<'PY'
+import json, os, sys
+d = json.load(open(sys.argv[1])); d["install_templates"] = {"templates/commit-template.txt": os.environ["BAD"]}
+json.dump(d, open(sys.argv[1], "w"))
+PY
+    commit_tag "$M" bad; git -C "$M" tag -f v2.1.0 > /dev/null 2>&1
+    P="$T/proj"; mkdir -p "$P/sub"; git init -q "$P"
+    (cd "$P/sub" && bash "$ADE" init) > "$T/out" 2>&1; assert_eq "$?" 1 "refused: [$bad]"
+    [ ! -e "$T/x" ] && [ ! -e "$P/x" ] || fail "nothing written for [$bad]"
+  done
+}
+
+tests_clean_up() {   # review: every test's folder is removed when it ends (the disk filled from leaked folders)
+  T=""; t1="$(fresh; echo "$T")"; [ -n "$t1" ] && [ ! -e "$t1" ] || fail "a test's folder is removed on exit"
 }
 
 symlinked_version() {   # review: a symlinked dev install finds VERSION beside the real script
@@ -173,6 +196,6 @@ symlinked_version() {   # review: a symlinked dev install finds VERSION beside t
   assert_eq "$("$T/bin/ade" version)" "ade $(cat "$REPO/VERSION")" "version through a symlink"
 }
 
-ALL="finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors init_installs_templates symlinked_version"
+ALL="finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors init_installs_templates install_templates_guard tests_clean_up symlinked_version"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

@@ -7,9 +7,15 @@ assert_eq() { [ "$1" = "$2" ] || fail "$3: got [$1] want [$2]"; }
 assert_contains() { grep -qF -- "$2" "$1" || fail "$3: [$2] not in $1"; }
 assert_not_contains() { ! grep -qF -- "$2" "$1" || fail "$3: [$2] unexpectedly in $1"; }
 # every test starts clean: no tester's hub, ADE terminal or real home config reaches it
+# drop_t: remove this test's own folder (only one fresh made, named ade-test.*); on exit and before the next fresh
+drop_t() {
+  [ -n "${T:-}" ] && [ -d "$T" ] || return 0
+  case "$T" in */ade-test.?*) cd / && chmod -R u+w "$T" 2> /dev/null; rm -rf -- "$T" ;; esac
+}
 fresh() {
   unset ADE_HUB ADE_HOOK_BIN ADE_METHOD_REPO ADE_REGISTRY_REPO ADE_METHOD_REF ADE_REGISTRY_REF
-  T="$(mktemp -d)"; T="$(cd "$T" && pwd -P)"; export HOME="$T/home"; mkdir -p "$HOME"
+  drop_t; T="$(mktemp -d "${TMPDIR:-/tmp}/ade-test.XXXXXX")"; T="$(cd "$T" && pwd -P)"; trap drop_t EXIT
+  export HOME="$T/home"; mkdir -p "$HOME"
   export GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 }
 # a minimal hub at $1 named $2: bin/work and bin/sessions print the hub name and each argument on its own line
