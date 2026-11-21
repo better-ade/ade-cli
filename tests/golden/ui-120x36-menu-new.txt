@@ -1,0 +1,36 @@
+orchestrator ready
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                 ┌─New agent: folder─┐
+                                                 │ projects/api      │
+                                                 │ projects/web      │
+                                                 │ ops/db            │
+                                                 └───────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+● 0 orchestrator  [+ new]

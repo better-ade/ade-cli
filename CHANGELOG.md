@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- Testing (A8): CI on macOS Bash 3.2 and Ubuntu bash 5, pinned shellcheck, a hostile-input table over every
+  name-taking command, clean-machine, upgrade and interactive e2e jobs, `ade ui` snapshots at two sizes, and a kcov
+  coverage floor. Fixes it found: names starting with `-`, names with newlines, `projects/..`, `setup --test ""`,
+  a 64-character cap on hub and orchestrator names, the sidebar layout below 70 columns.
 - `ade skills list|add|enable|disable|search` (A7): BMAD skills via `skillOverrides` (absent = on; disable = name-only;
   ade-method's never list cannot be enabled), ade-skills plugins from the marketplace file; after a change the folder's
   running sessions get the reload hint through the hub's `bin/notify`; unknown names exit 2 with the closest ones.

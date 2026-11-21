@@ -885,7 +885,7 @@ bind-key -T prefix a run-shell "$run ui --menu approve"
 bind-key -T prefix t display-popup -E -w 80% -h 60% "$run ui --tickets"
 bind-key -T prefix p run-shell "$run ui --menu preview #{window_index}"
 bind-key -T prefix f run-shell "$run ui --sidebar"
-bind-key -T prefix ? display-popup -E -w 70% -h 70% "$run ui --keys"
+bind-key -T prefix ? display-popup -E -w 66 -h 16 "$run ui --keys"
 bind-key -T prefix Left previous-window
 bind-key -T prefix Right next-window
 CONF

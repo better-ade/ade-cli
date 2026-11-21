@@ -1,0 +1,24 @@
+orchestrator ready
+
+
+
+
+
+
+
+
+                             ┌─Approve a ticket──┐
+                             │ 2.1  projects/api │
+                             └───────────────────┘
+
+
+
+
+
+
+
+
+
+
+
+● 0 orchestrator  [+ new]
