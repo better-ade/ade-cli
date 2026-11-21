@@ -58,7 +58,13 @@ self_fixture() {   # ade installed at $T/prefix as 0.1.0; the release folder nam
   bash "$T/src/install.sh" "$T/prefix" > /dev/null 2>&1 || { cp "$REPO/install.sh" "$T/src/"; bash "$T/src/install.sh" "$T/prefix" > /dev/null; }
   echo 0.9.0 > "$T/rel/main/VERSION"
   if [ "${1:-}" = broken ]; then printf '#!/bin/bash\nexit 3\n' > "$T/rel/v0.9.0/ade"; else cp "$REPO/ade" "$T/rel/v0.9.0/ade"; fi
-  A="$T/prefix/bin/ade"
+  A="$T/prefix/bin/ade"; export ADE_RELEASES_BASE="file://$T/gh"; rel_manifest
+}
+# rel_manifest: release.json of 0.9.0 for the file now in the release folder (every release from 0.2.0 on has one)
+rel_manifest() {
+  local d="$T/gh/better-ade/ade-cli/releases/download/v0.9.0"; mkdir -p "$d"
+  printf '{"component": "ade-cli", "version": "0.9.0", "files": [{"name": "ade", "sha256": "%s"}]}\n' \
+    "$( (shasum -a 256 "$T/rel/v0.9.0/ade" 2> /dev/null || sha256sum "$T/rel/v0.9.0/ade") | cut -d' ' -f1)" > "$d/release.json"
 }
 hub_fixture() {   # a hub that is a clone of $T/origin.git, with fakes for bin/method, bin/notify, bin/sessions, bin/chat
   H="$T/hub"; make_hub "$H" hub; echo "HUB_NAME=acme" > "$H/hub.conf"
@@ -187,10 +193,10 @@ previous_kept_and_rollback() {   # item 8: the previous ade beside the installed
 
 cut_short_refused() {   # item 8: a release cut short (or with no end-of-file marker) fails the check, whatever it says
   fresh; self_fixture; fake_tools; H="$T/hub"; make_hub "$H" hub; export ADE_HUB="$H"
-  head -n "$(( $(wc -l < "$REPO/ade") - 1 ))" "$REPO/ade" > "$T/rel/v0.9.0/ade"
+  head -n "$(( $(wc -l < "$REPO/ade") - 1 ))" "$REPO/ade" > "$T/rel/v0.9.0/ade"; rel_manifest
   "$A" update > "$T/out" 2>&1; assert_eq "$?" 1 "refused"; assert_contains "$T/out" "no end-of-file marker" "the reason"
   assert_eq "$("$A" version)" "ade 0.1.0" "the old one stays"
-  printf '#!/bin/bash\nif [ "$1" = version ]; then echo "ade 0.9.0"; fi\n(\n%s\n' "$(tail -1 "$REPO/ade")" > "$T/rel/v0.9.0/ade"
+  printf '#!/bin/bash\nif [ "$1" = version ]; then echo "ade 0.9.0"; fi\n(\n%s\n' "$(tail -1 "$REPO/ade")" > "$T/rel/v0.9.0/ade"; rel_manifest
   "$A" update > "$T/out" 2>&1; assert_eq "$?" 1 "refused"; assert_contains "$T/out" "bash -n" "a file that does not parse"
 }
 
@@ -198,7 +204,7 @@ never_executable_before_check() {   # item 8: while the new file is checked, not
   fresh; self_fixture; fake_tools; H="$T/hub"; make_hub "$H" hub; export ADE_HUB="$H" PREFIX_BIN="$T/prefix/bin" PROBE="$T/during"
   { printf '#!/bin/bash\nADE_VERSION=""\n'
     printf 'if [ "$1" = version ]; then { echo "self $0 $([ -x "$0" ] && echo x)"; ls -a "$PREFIX_BIN"; } > "$PROBE"; echo "ade $ADE_VERSION"; fi\n'
-    tail -1 "$REPO/ade"; } > "$T/rel/v0.9.0/ade"
+    tail -1 "$REPO/ade"; } > "$T/rel/v0.9.0/ade"; rel_manifest
   "$A" update > "$T/out" 2>&1 || { cat "$T/out"; fail "update"; }
   case "$(head -1 "$T/during")" in "self $T/prefix/bin/"*) fail "checked inside the install folder" ;; *" x") fail "made executable before its check" ;; esac
   assert_eq "$(sed 1d "$T/during" | grep -v '^\.\.\?$' | tr '\n' ' ')" "ade " "nothing else in the install folder during the check"

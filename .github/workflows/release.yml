@@ -6,4 +6,4 @@ permissions: { contents: write }
 jobs:
   release:
     uses: better-ade/.github/.github/workflows/release.yml@v1
-    with: { command: "bash tests/run.sh" }
+    with: { command: "bash tests/run.sh", assets: ade }   # ade is attached and hashed in release.json (A12)

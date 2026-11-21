@@ -88,6 +88,10 @@ list_and_use() {   # AC6
 curl_install() {   # AC7
   fresh; mkdir -p "$T/raw/main" "$T/raw/v9.9.9" "$T/raw/v1.2.3" "$T/run"; echo 9.9.9 > "$T/raw/main/VERSION"
   cp "$ADE" "$T/raw/v9.9.9/ade"; sed 's/^set -u$/set -u; echo tagged-1.2.3 >\&2/' "$ADE" > "$T/raw/v1.2.3/ade"
+  local v d; export ADE_RELEASES_BASE="file://$T/gh"   # each release's release.json (A12: required from 0.2.0 on)
+  for v in 9.9.9 1.2.3; do d="$T/gh/better-ade/ade-cli/releases/download/v$v"; mkdir -p "$d"
+    printf '{"component": "ade-cli", "version": "%s", "files": [{"name": "ade", "sha256": "%s"}]}\n' "$v" \
+      "$( (shasum -a 256 "$T/raw/v$v/ade" 2> /dev/null || sha256sum "$T/raw/v$v/ade") | cut -d' ' -f1)" > "$d/release.json"; done
   (cd "$T/run" && ADE_CLI_BASE="file://$T/raw" PATH="/usr/bin:/bin" bash -s -- "$T/prefix" < "$REPO/install.sh") > "$T/out" 2>&1 || { cat "$T/out"; fail "piped install"; }
   assert_eq "$("$T/prefix/bin/ade" version)" "ade 9.9.9" "the release named in main's VERSION"
   assert_contains "$T/out" "add $T/prefix/bin to your PATH" "missing PATH entry reported"
