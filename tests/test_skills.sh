@@ -74,6 +74,27 @@ unknown_names() {   # AC6
   assert_not_contains "$CLAUDE_LOG" "brwoser" "nothing installed"
 }
 
-ALL="list_states enable_disable never_list add_notifies search unknown_names"
+disable_keeps_off() {   # review: disable never raises an off skill to name-only
+  fresh; skills_fixture; bash "$ADE" skills disable bmod-method > "$T/out" 2>&1 || fail "exit"
+  assert_eq "$(over bmod-method)" "off" "stays off"
+}
+
+pinned_and_offline() {   # review: ade-skills at a tag by default; offline, the marketplace Claude Code installed is used
+  fresh; skills_fixture; unset ADE_SKILLS_REF; git -C "$K" tag -d v0.1.0 > /dev/null; git -C "$K" tag v0.1.0-not-default
+  echo '{"plugins": [{"name": "later", "description": "only on main"}]}' > "$K/.claude-plugin/marketplace.json"; commit_tag "$K" main-only
+  git -C "$K" tag "$(bash "$ADE" skills --pin)" HEAD~1
+  bash "$ADE" skills search later > "$T/out" 2>&1; assert_eq "$?" 1 "the pinned tag, not the branch tip"
+  export ADE_SKILLS_REPO="$T/no-such-repo"; M2="$HOME/.claude/plugins/marketplaces/ade-skills/.claude-plugin"; mkdir -p "$M2"
+  echo '{"plugins": [{"name": "cached", "description": "from the installed marketplace"}]}' > "$M2/marketplace.json"
+  bash "$ADE" skills search cached > "$T/out" 2>&1 || { cat "$T/out"; fail "offline falls back to the installed file"; }
+  assert_contains "$T/out" "installed marketplace" "and says so"
+}
+
+add_uses_repo() {   # review: add registers the marketplace from $ADE_SKILLS_REPO
+  fresh; skills_fixture; bash "$ADE" skills add notes > /dev/null 2>&1 || fail "exit"
+  assert_contains "$CLAUDE_LOG" "plugin marketplace add $K" "the configured repo"
+}
+
+ALL="disable_keeps_off pinned_and_offline add_uses_repo list_states enable_disable never_list add_notifies search unknown_names"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

@@ -22,7 +22,7 @@ step "ade ui on real tmux"
 if command -v tmux > /dev/null; then
   export TMUX_TMPDIR="$W" ADE_TMUX_SOCKET=e2e
   ade ui --detach || fail "ui"; ade ui --detach || fail "ui again"
-  [ "$(tmux -L e2e list-sessions -F '#{session_name}' | grep -c '^ade-e2e$')" = 1 ] || fail "one session"
+  [ "$(tmux -L e2e list-sessions -F '#{session_name}' | grep -cx "$(ade ui --session)")" = 1 ] || fail "one session"
   tmux -L e2e kill-server
 else echo "no tmux here"; fi
 echo; echo "e2e clean: ok"

@@ -9,7 +9,7 @@ ui_fixture() {
   cat > "$T/hub/bin/sessions" <<'S'
 #!/bin/bash
 echo "NAME             FOLDER                     PID      PARENT   STARTED               ROLE       STATUS LAST"
-echo "1.2              projects/api               123      -        2026-11-21T10:00:00Z  builder    busy   2026-11-21T10:30:00Z"
+echo "1.2              projects/api               123      -        2026-11-21T10:00:00Z  builder    busy   2026-11-21T10:30:00Z"; echo x >> "$AGENT_STATE/sessions.calls"
 echo "db               ops/db                     124      -        2026-11-21T08:00:00Z  -          idle   -"
 echo "rev              projects/web               125      -        2026-11-21T10:20:00Z  reviewer   blocked -"
 S
@@ -34,13 +34,14 @@ esac
 exit 0
 F
   printf '#!/bin/bash\necho "claude $*"\n' > "$T/fakebin/claude"; chmod +x "$T/fakebin/tmux" "$T/fakebin/claude"; export PATH="$T/fakebin:$PATH"
+  S="$(bash "$ADE" ui --session)"
 }
 
 creates_then_attaches() {   # AC1
   fresh; ui_fixture
   bash "$ADE" ui > "$T/out" 2>&1 || { cat "$T/out"; fail "first ui"; }
-  grep -E "^tmux new-session -d -s ade-acme -n orchestrator -c $T/hub .*AGENT_TERMINAL=tmux ADE_UI_SESSION=ade-acme .*claude" "$TMUX_LOG" > /dev/null || { cat "$TMUX_LOG"; fail "tab 0 runs the orchestrator"; }
-  grep -q "^tmux attach-session -t =ade-acme" "$TMUX_LOG" || fail "attaches"
+  grep -E "^tmux new-session -d -s $S -n orchestrator -c $T/hub .*AGENT_TERMINAL=tmux ADE_UI_SESSION=$S .*claude" "$TMUX_LOG" > /dev/null || { cat "$TMUX_LOG"; fail "tab 0 runs the orchestrator"; }
+  grep -q "^tmux attach-session -t =$S" "$TMUX_LOG" || fail "attaches"
   bash "$ADE" ui > "$T/out" 2>&1 || fail "second ui"
   assert_eq "$(grep -c '^tmux new-session' "$TMUX_LOG")" 1 "never duplicated"
   assert_eq "$(grep -c '^tmux attach-session' "$TMUX_LOG")" 2 "the second attaches"
@@ -50,7 +51,7 @@ work_opens_tab() {   # AC2: with the session up, ade work hands bin/work the tmu
   fresh; ui_fixture; printf '#!/bin/bash\necho "work $* AGENT_TERMINAL=${AGENT_TERMINAL:-} ADE_UI_SESSION=${ADE_UI_SESSION:-}"\n' > "$T/hub/bin/work"; chmod +x "$T/hub/bin/work"
   out=$(bash "$ADE" work projects/api); assert_eq "$out" "work projects/api AGENT_TERMINAL= ADE_UI_SESSION=" "no session: unchanged"
   touch "$TMUX_LOG.session"
-  out=$(bash "$ADE" work projects/api); assert_eq "$out" "work projects/api AGENT_TERMINAL=tmux ADE_UI_SESSION=ade-acme" "session: a tab in it"
+  out=$(bash "$ADE" work projects/api); assert_eq "$out" "work projects/api AGENT_TERMINAL=tmux ADE_UI_SESSION=$S" "session: a tab in it"
   out=$(AGENT_TERMINAL=iterm bash "$ADE" work projects/api); assert_eq "$out" "work projects/api AGENT_TERMINAL=iterm ADE_UI_SESSION=" "an explicit terminal wins"
   out=$(bash "$ADE" ui --tab-name projects/api 1.2); assert_eq "$out" "projects/api:1.2" "tab name with ticket"
   out=$(bash "$ADE" ui --tab-name ops/db); assert_eq "$out" "ops/db" "tab name without ticket"
@@ -58,11 +59,11 @@ work_opens_tab() {   # AC2: with the session up, ade work hands bin/work the tmu
 
 tab_bar() {   # AC3
   fresh; ui_fixture; mkdir -p "$HOME/.config/ade"; printf 'busy=#ff8800\nblocked=red\n' > "$HOME/.config/ade/theme"
-  out=$(bash "$ADE" ui --bar ade-acme); echo "$out" > "$T/out"
+  out=$(bash "$ADE" ui --bar "$S"); echo "$out" > "$T/out"
   for s in "● 0 orchestrator" "#[fg=#ff8800]⟳ 1 projects/api · builder · 1.2" "○ 2 ops/db" "#[fg=red]⚠ 3 projects/web · reviewer · rev" "[+ new]"; do
     assert_contains "$T/out" "$s" "bar: $s"; done
   printf 'busy=#ff8800;run-shell x\n' > "$HOME/.config/ade/theme"
-  bash "$ADE" ui --bar ade-acme > "$T/out" 2>&1; assert_not_contains "$T/out" "run-shell" "a bad colour is ignored"
+  bash "$ADE" ui --bar "$S" > "$T/out" 2>&1; assert_not_contains "$T/out" "run-shell" "a bad colour is ignored"
 }
 
 dash_golden() {   # AC4
@@ -73,7 +74,7 @@ dash_golden() {   # AC4
 
 key_table() {   # AC5
   fresh; ui_fixture; bash "$ADE" ui --detach > /dev/null 2>&1 || fail "ui"
-  C="$HOME/.config/ade/ui-ade-acme.tmux.conf"; [ -f "$C" ] || fail "conf written"
+  C="$HOME/.config/ade/ui-$S.tmux.conf"; [ -f "$C" ] || fail "conf written"
   grep -q "^tmux source-file $C" "$TMUX_LOG" || fail "conf loaded"
   for k in "n run-shell" "a run-shell" "t display-popup" "p run-shell" "f run-shell" "? display-popup"; do
     grep -q "^bind-key -T prefix $k" "$C" || fail "binds $k"; done
@@ -99,9 +100,9 @@ approve_popup() {   # AC6
 
 unread_marks() {   # AC7
   fresh; ui_fixture; echo 2 > "$AGENT_STATE/unread.1.2"
-  bash "$ADE" ui --bar ade-acme > "$T/out"; assert_contains "$T/out" "projects/api · builder · 1.2 #[fg=" "marked"
+  bash "$ADE" ui --bar "$S" > "$T/out"; assert_contains "$T/out" "projects/api · builder · 1.2 #[fg=" "marked"
   grep -q "✉2" "$T/out" || fail "unread count shown"
-  echo 0 > "$AGENT_STATE/unread.1.2"; bash "$ADE" ui --bar ade-acme > "$T/out"; ! grep -q "✉" "$T/out" || fail "cleared after reading"
+  echo 0 > "$AGENT_STATE/unread.1.2"; sleep 2; bash "$ADE" ui --bar "$S" > "$T/out"; ! grep -q "✉" "$T/out" || fail "cleared after reading"
 }
 
 no_tmux_no_glow() {   # AC8
@@ -122,12 +123,52 @@ real_tmux() {   # AC1 on a real tmux, when installed
   unset TMUX
   bash "$ADE" ui --detach > "$T/out" 2>&1 || { cat "$T/out"; fail "real ui"; }
   bash "$ADE" ui --detach > "$T/out" 2>&1 || { cat "$T/out"; fail "real ui again"; }
-  n=$(tmux -L "$ADE_TMUX_SOCKET" list-sessions -F '#{session_name}' | grep -c '^ade-real$')
-  w=$(tmux -L "$ADE_TMUX_SOCKET" list-windows -t =ade-real -F '#{window_index} #{window_name}' | head -1)
+  RS="$(bash "$ADE" ui --session)"; n=$(tmux -L "$ADE_TMUX_SOCKET" list-sessions -F "#{session_name}" | grep -cx "$RS")
+  w=$(tmux -L "$ADE_TMUX_SOCKET" list-windows -t "=$RS" -F '#{window_index} #{window_name}' | head -1)
   tmux -L "$ADE_TMUX_SOCKET" kill-server 2>/dev/null
   assert_eq "$n" 1 "one session"; assert_eq "$w" "0 orchestrator" "tab 0 is the orchestrator"
 }
 
-ALL="creates_then_attaches work_opens_tab tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
+session_names() {   # review: the session name carries a short hash of the hub path (two hubs named acme never share one)
+  fresh; ui_fixture; [[ $S =~ ^ade-acme-[0-9a-f]{6}$ ]] || fail "name and hash: $S"
+  make_hub "$T/other" other; echo "HUB_NAME=acme" > "$T/other/hub.conf"
+  [ "$(ADE_HUB="$T/other" bash "$ADE" ui --session)" != "$S" ] || fail "another hub named acme gets another session"
+}
+
+menu_skips_bad_folders() {   # review: a folder name that is not a plain name never reaches a tmux command
+  fresh; ui_fixture; mkdir -p "$T/hub/projects/a\$(touch $T/pwned)" "$T/hub/projects/.hidden" "$T/hub/ops/b;c"
+  bash "$ADE" ui --menu new > /dev/null 2>&1; grep "display-menu" "$TMUX_LOG" | tail -1 > "$T/m"
+  assert_contains "$T/m" "projects/api" "good folders listed"
+  for bad in 'touch' '.hidden' 'b;c'; do assert_not_contains "$T/m" "$bad" "skipped: $bad"; done
+  [ ! -e "$T/pwned" ] || fail "nothing ran"
+}
+
+sq_refuses() {   # review: paths with $, \\, # or quotes are refused before they go into the tmux config
+  fresh; ui_fixture; for d in 'h$x' 'h#x' 'h\x'; do make_hub "$T/$d" h
+    ADE_HUB="$T/$d" bash "$ADE" ui --detach > "$T/out" 2>&1; assert_eq "$?" 2 "refused: $d"; done
+}
+
+bar_cached() {   # review: the bar's data is cached for 2 seconds (each client redraws every 2 s)
+  fresh; ui_fixture; export ADE_UI_CACHE_SECONDS=60   # a slow machine never straddles the window
+  bash "$ADE" ui --bar "$S" > /dev/null; bash "$ADE" ui --bar "$S" > /dev/null
+  assert_eq "$(wc -l < "$AGENT_STATE/sessions.calls" | tr -d ' ')" 1 "bin/sessions read once within the cache window"
+  ADE_UI_CACHE_SECONDS=0 bash "$ADE" ui --bar "$S" > /dev/null
+  assert_eq "$(wc -l < "$AGENT_STATE/sessions.calls" | tr -d ' ')" 2 "and again after it"
+}
+
+dash_tokens_and_events() {   # UX review: TOKENS only when bin/sessions reports it; events read as plain sentences
+  fresh; ui_fixture
+  printf '{"time": "2026-11-21T10:11:00Z", "from": "ops/db", "to": "all", "kind": "idle", "text": "tests green"}\n{"time": "2026-11-21T10:12:00Z", "from": "projects/web", "to": "main", "kind": "blocked", "text": "needs the API key"}\n' >> "$AGENT_STATE/events.jsonl"
+  COLUMNS=100 bash "$ADE" dash --once > "$T/out" 2>&1
+  assert_not_contains "$T/out" "TOKENS" "no TOKENS column when no session reports usage"
+  assert_contains "$T/out" "10:10 api pushed event 10" "pushed: folder name, kind, text"
+  assert_contains "$T/out" "10:11 db idle" "idle reads short"; assert_not_contains "$T/out" "tests green" "without the STATE text"
+  assert_contains "$T/out" "10:12 web blocked: needs the API key" "blocked with its reason"
+  sed -i.bak 's/STATUS LAST"/STATUS LAST TOKENS"/; s/2026-11-21T10:30:00Z"/2026-11-21T10:30:00Z 12.3k"/; s/idle   -"/idle   - -"/' "$T/hub/bin/sessions"
+  COLUMNS=100 bash "$ADE" dash --once > "$T/out" 2>&1
+  assert_contains "$T/out" "TOKENS" "the column shows when reported"; assert_contains "$T/out" "12.3k" "with the session's usage"
+}
+
+ALL="dash_tokens_and_events session_names menu_skips_bad_folders sq_refuses bar_cached creates_then_attaches work_opens_tab tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

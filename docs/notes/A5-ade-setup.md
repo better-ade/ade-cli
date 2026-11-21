@@ -17,3 +17,10 @@ Modes: `--check` reads only (5 lines); `--test [p|telegram]` re-runs live tests 
 Open items for ade-brain (blocking for a real run, faked in tests): `bin/agent --live-test`, `bin/keys` tools
 `anthropic` and `telegram`, `bin/chat setup|test telegram` (C5), Gemini through `bin/agent` (E1), and the hub reading
 `HUB_ROOT_PROVIDER`. Starting a non-Anthropic everything agent from `ade claude` is not built yet.
+
+Review round (high risk): temp folders come only from `mk_tmp` (fails closed) and are removed only by `rm_tmp` (paths
+under the temp root named `ade.*`); `SECRET`, `ANSWER` and `HUB_ANSWER` are unset at start; READY must be a whole line;
+the installer prompt shows the URL and curl is https-only (`ADE_TEST_ALLOW_FILE_URLS=1` lets tests use file://);
+`--top` keeps the old allowed list; a failed provider is signed out of the session cache; the guided session runs
+with `--permission-mode default`; only "no hub found" makes a new hub; failure reasons are redacted; the live test's
+environment is scrubbed of key variables; Gemini offers its CLI's Google login (`ADE_GEMINI_CLI` names the command).

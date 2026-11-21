@@ -4,18 +4,22 @@
 # coverage/). Fails when the suite fails or ade's line coverage drops below tests/coverage-floor.
 set -u; cd "$(dirname "$0")/.." || exit 1; out="${1:-$PWD/coverage}"; rm -rf "$out"; mkdir -p "$out/runs"
 command -v kcov > /dev/null || { echo "coverage: kcov is not installed" >&2; exit 2; }
-real="$(command -v bash)"; wrap="$(mktemp -d)"
+real="$(command -v bash)"; kc="$(command -v kcov)"   # absolute: some tests narrow PATH
+wrap="$(mktemp -d "${TMPDIR:-/tmp}/ade-cov.XXXXXX")" || exit 1
+trap 'case "$wrap" in */ade-cov.?*) rm -rf -- "$wrap" ;; esac' EXIT
 cat > "$wrap/bash" <<W
 #!$real
 # coverage wrapper: bash <this repo's ade> ... runs under kcov; anything else is plain bash
 if [ -z "\${ADE_KCOV_INSIDE:-}" ] && [ "\${1:-}" = "$PWD/ade" ]; then
   shift; ADE_KCOV_INSIDE=1; export ADE_KCOV_INSIDE
-  exec kcov --include-pattern=/ade "$out/runs/\$\$-\$RANDOM" "$PWD/ade" "\$@"
+  exec "$kc" --include-pattern=/ade "$out/runs/\$\$-\$RANDOM" "$PWD/ade" "\$@"
 fi
 exec "$real" "\$@"
 W
 chmod +x "$wrap/bash"
-PATH="$wrap:$PATH" "$real" tests/run.sh; rc=$?
+# the hostile-input table (hundreds of calls that stop at the first check) adds little coverage and most of the time
+subset=""; for t in tests/test_*.sh; do t="${t#tests/}"; [ "$t" = test_hostile.sh ] || subset="$subset $t"; done
+ADE_TESTS="$subset" PATH="$wrap:$PATH" "$real" tests/run.sh; rc=$?
 [ "$rc" = 0 ] || { echo "coverage: the suite failed under kcov (exit $rc)" >&2; exit 1; }
 kcov --merge "$out" "$out"/runs/* > /dev/null || { echo "coverage: kcov could not merge the runs" >&2; exit 1; }
 pct="$(python3 - "$out/kcov-merged/coverage.json" <<'PY'
