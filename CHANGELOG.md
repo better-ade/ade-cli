@@ -1,7 +1,7 @@
 # Changelog
 
 ## Unreleased
-- `ade update [--check]` (A11): replaces ade by one rename after the new file passes `ade version` (a running ade keeps
+- `ade update [--check | --rollback]` (A11; the previous ade is kept as `.ade.prev`, untracked hub files never block): replaces ade by one rename after the new file passes `ade version` (a running ade keeps
   its code; `ade dash` re-execs on a new version), pulls the hub with `--ff-only` (local changes or a merge refuse),
   runs `bin/method sync`, `claude plugin update` for ade-skills plugins and `claude update`, reloads `ade ui` with
   `tmux source-file`, restarts an orchestrator on new chat code only when it is idle (else later), and sends one

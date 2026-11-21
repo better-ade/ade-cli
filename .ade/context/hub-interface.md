@@ -123,7 +123,10 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 ## `ade update` and the hub (A11)
 - Releases: `$ADE_CLI_BASE/main/VERSION` and `$ADE_CLI_BASE/v<version>/ade` (default
   `https://raw.githubusercontent.com/better-ade/ade-cli`, as `install.sh`); the new file is stamped like `install.sh`.
-- The hub: `git pull --ff-only` on its upstream, then `bin/method sync`. A pull that changes `bin/chat`, `bin/chat.py`,
+- The `ade` file ends with the line `# ade: end of file (ade update checks this line; keep it last)`; `ade update`
+  refuses a file without it. The previous installed file is kept beside it as `.ade.prev` (mode 644);
+  `ade update --rollback` swaps the two.
+- The hub: `git pull --ff-only` on its upstream (local changes to tracked files refuse; untracked files do not), then `bin/method sync`. A pull that changes `bin/chat`, `bin/chat.py`,
   `bin/brain` or `bin/brain.py` needs a running orchestrator restarted: only when `bin/sessions` shows the row `main`
   as `idle` (`bin/chat stop`, then `bin/chat start`, journaled); else `~/.config/ade/restart-pending` (one hub path
   per line) keeps it for the next `ade update`.

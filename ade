@@ -47,7 +47,7 @@ Housekeeping (each lists what it would do first; nothing of yours is deleted):
   clean       ade clean [--yes]: stale locks, old markers, cursors and temp folders, dead ade tmux sessions, clean merged worktrees
   reset       ade reset [--keys] [--hub <path>]: undo ade setup here; --keys forgets its keys; --hub moves that hub to the Trash
   uninstall   ade uninstall [--keys] [--hub <path>]: ade reset, then remove the installed ade
-  update      ade update [--check]: ade, the hub, its plugins and Claude Code, with nothing stopped
+  update      ade update [--check | --rollback]: ade, the hub, its plugins and Claude Code, with nothing stopped; --rollback: the previous ade
   restore     ade restore [--check] [--label <name>]: bring back every connection .ade/connections.json names
 
 Project commands (no hub needed):
@@ -1987,21 +1987,63 @@ dl() {   # dl <url> [file]: https only (file:// for tests), never more than ADE_
 }
 latest_version() { local v; v="$(dl "$ADE_CLI_BASE/main/VERSION" | tr -d ' \r\n')"; matches "$v" '^[0-9]+\.[0-9]+\.[0-9]+$' && echo "$v"; }
 UPD_CHANGED=""
+ADE_END_MARKER="# ade: end of file (ade update checks this line; keep it last)"
+# temp files of an update: a trap removes every one on EXIT, INT and TERM (one path per line in UPD_TMPS)
+UPD_TMPS=""
+upd_cleanup() { local f; while IFS= read -r f; do [ -n "$f" ] && rm -rf -- "$f"; done <<EOF2
+$UPD_TMPS
+EOF2
+  UPD_TMPS=""; }
+upd_track() { UPD_TMPS="$UPD_TMPS$1
+"; }
+upd_traps() { trap upd_cleanup EXIT; trap 'upd_cleanup; exit 130' INT; trap 'upd_cleanup; exit 143' TERM; }
+upd_untrap() { upd_cleanup; trap - EXIT INT TERM; }
+# ade_check <file> <version>: the file is a whole ade script (its shebang, bash -n, the end-of-file marker as its last
+# line) and, run with bash (never made executable for this), says it is that version; prints the reason when not
+ade_check() {
+  [ "$(head -1 "$1")" = "#!/bin/bash" ] || { echo "it is not the ade script"; return 1; }
+  bash -n "$1" 2> /dev/null || { echo "it does not parse (bash -n)"; return 1; }
+  [ "$(tail -1 "$1")" = "$ADE_END_MARKER" ] || { echo "it is cut short (no end-of-file marker)"; return 1; }
+  [ "$(bash "$1" version 2> /dev/null < /dev/null)" = "ade $2" ] || { echo "ade version does not say $2"; return 1; }
+}
+# ade_put <new file> <installed path>: keeps the installed file as .ade.prev beside it (not executable), then renames
+# a copy of the new one into place; the copy is made executable only now, after its check
+ade_put() {
+  local new="$1" self="$2" dir prev put; dir="$(dirname "$self")"
+  prev="$(mktemp "$dir/.ade-prev.XXXXXX")" && upd_track "$prev" && put="$(mktemp "$dir/.ade-update.XXXXXX")" && upd_track "$put" || return 1
+  cp "$self" "$prev" && chmod 644 "$prev" && cp "$new" "$put" && chmod 755 "$put" || return 1
+  mv -f "$prev" "$dir/.ade.prev" && mv -f "$put" "$self"
+}
 self_update() {   # <check 0|1>: 1 = the new file failed its check (the old one stays)
-  local v self dir tmp
+  local v self tmp why
   if [ -z "$ADE_VERSION" ]; then echo "ade: a checkout ($(dirname "$(ade_self)")); update it with git pull"; return 0; fi
   v="$(latest_version)" || { echo "ade: could not read the latest version (offline?); ade $ADE_VERSION stays"; return 0; }
   ver_gt "$v" "$ADE_VERSION" || { echo "ade $ADE_VERSION is current"; return 0; }
   [ "$1" = 1 ] && { echo "ade $ADE_VERSION -> $v"; return 0; }
-  self="$(ade_self)"; dir="$(dirname "$self")"
-  tmp="$(mktemp "$dir/.ade-update.XXXXXX")" || { echo "ade: cannot write in $dir; ade $ADE_VERSION stays"; return 1; }
-  if ! dl "$ADE_CLI_BASE/v$v/ade" "$tmp.raw" || [ "$(head -1 "$tmp.raw")" != "#!/bin/bash" ]; then
-    rm -f "$tmp" "$tmp.raw"; echo "ade: could not download ade $v; ade $ADE_VERSION stays"; return 1; fi
-  sed "s/^ADE_VERSION=\"\"/ADE_VERSION=\"$v\"/" "$tmp.raw" > "$tmp"; rm -f "$tmp.raw"; chmod 755 "$tmp"
-  if [ "$(bash "$tmp" version 2> /dev/null < /dev/null)" != "ade $v" ]; then
-    rm -f "$tmp"; echo "ade: the new ade $v failed its check (ade version); ade $ADE_VERSION stays"; return 1; fi
-  mv -f "$tmp" "$self" || { rm -f "$tmp"; echo "ade: could not rename the new ade into place; ade $ADE_VERSION stays"; return 1; }
-  echo "ade $ADE_VERSION -> $v (renamed into place; a running ade keeps its code until it restarts)"; UPD_CHANGED="$UPD_CHANGED, ade $v"
+  self="$(ade_self)"; upd_traps
+  # the download and its check happen in a private temp folder, never in a folder on PATH
+  tmp="$(mk_tmp)" || { upd_untrap; echo "ade: no temp folder; ade $ADE_VERSION stays"; return 1; }; upd_track "$tmp"
+  if ! dl "$ADE_CLI_BASE/v$v/ade" "$tmp/raw"; then upd_untrap; echo "ade: could not download ade $v; ade $ADE_VERSION stays"; return 1; fi
+  sed "s/^ADE_VERSION=\"\"/ADE_VERSION=\"$v\"/" "$tmp/raw" > "$tmp/ade"; chmod 600 "$tmp/ade"
+  if ! why="$(ade_check "$tmp/ade" "$v")"; then upd_untrap; echo "ade: the new ade $v failed its check ($why); ade $ADE_VERSION stays"; return 1; fi
+  ade_put "$tmp/ade" "$self" || { upd_untrap; echo "ade: could not rename the new ade into place; ade $ADE_VERSION stays"; return 1; }
+  upd_untrap
+  echo "ade $ADE_VERSION -> $v (renamed into place; a running ade keeps its code until it restarts; ade update --rollback returns to $ADE_VERSION)"
+  UPD_CHANGED="$UPD_CHANGED, ade $v"
+}
+self_rollback() {   # ade update --rollback: the kept previous version (.ade.prev) back into place; the current one is kept instead
+  local self prev pv why; [ -n "$ADE_VERSION" ] || die 2 "a checkout ($(dirname "$(ade_self)")) has no kept version; use git"
+  self="$(ade_self)"; prev="$(dirname "$self")/.ade.prev"
+  [ -f "$prev" ] || die 1 "no previous version is kept ($prev); nothing changed"
+  pv="$(sed -n 's/^ADE_VERSION="\([^"]*\)".*/\1/p' "$prev" 2> /dev/null | head -1)"
+  matches "$pv" '^[0-9]+\.[0-9]+\.[0-9]+$' || die 1 "the kept previous version has no version stamp; nothing changed"
+  # a version older than the end-of-file marker has none: its shebang, bash -n and its own version line are checked
+  [ "$(head -1 "$prev")" = "#!/bin/bash" ] && bash -n "$prev" 2> /dev/null && [ "$(bash "$prev" version 2> /dev/null < /dev/null)" = "ade $pv" ] ||
+    die 1 "the kept previous version ($pv) failed its check; nothing changed"
+  upd_traps; local tmp; tmp="$(mk_tmp)" || { upd_untrap; die 1 "no temp folder; nothing changed"; }; upd_track "$tmp"
+  cp "$prev" "$tmp/ade" || { upd_untrap; die 1 "could not copy $prev; nothing changed"; }
+  ade_put "$tmp/ade" "$self" || { upd_untrap; die 1 "could not rename the previous ade into place; nothing changed"; }
+  upd_untrap; echo "ade $ADE_VERSION -> $pv (rolled back; ade update --rollback again returns to $ADE_VERSION)"
 }
 RESTART_NEEDED=0
 hub_update() {   # <hub> <check>: git pull --ff-only, then bin/method sync; 1 = refused (the hub is unchanged)
@@ -2014,12 +2056,14 @@ hub_update() {   # <hub> <check>: git pull --ff-only, then bin/method sync; 1 = 
     if [ -z "$rs" ]; then echo "hub: could not reach ${up%%/*}"; elif [ "$rs" = "$old" ]; then echo "hub: current"
     else echo "hub: new commits on $up (git pull --ff-only, then bin/method sync)"; fi; return 0
   fi
-  st="$(git -C "$h" status --porcelain 2> /dev/null)"
+  # untracked files (a journal entry, a scratch note) never block; git merge --ff-only refuses to overwrite one itself
+  st="$(git -C "$h" status --porcelain --untracked-files=no 2> /dev/null)"
   [ -z "$st" ] || { echo "hub: it has local changes (git status); commit or stash them, then ade update again; the hub is unchanged"; return 1; }
   git -C "$h" fetch -q 2> /dev/null < /dev/null || { echo "hub: could not fetch (offline?); unchanged"; return 0; }
   git -C "$h" merge-base --is-ancestor HEAD "$up" ||
     { echo "hub: not a fast-forward (it has commits $up does not); merge or rebase it yourself; the hub is unchanged"; return 1; }
-  git -C "$h" merge -q --ff-only "$up" > /dev/null 2>&1 || { echo "hub: git merge --ff-only failed; unchanged"; return 1; }
+  git -C "$h" merge -q --ff-only "$up" > /dev/null 2>&1 ||
+    { echo "hub: git merge --ff-only failed (an untracked file in the way?); the hub is unchanged"; return 1; }
   new="$(git -C "$h" rev-parse HEAD)"
   if [ "$new" = "$old" ]; then echo "hub: current"
   else echo "hub: updated ($(git -C "$h" rev-list --count "$old..$new") commit(s))"; UPD_CHANGED="$UPD_CHANGED, the hub"
@@ -2053,7 +2097,8 @@ EOF
 }
 cmd_update() {
   local check=0 rc=0 hub="" p plugins s line
-  while [ $# -gt 0 ]; do case "$1" in --check) check=1; shift ;; *) die 2 "usage: ade update [--check]" ;; esac; done
+  while [ $# -gt 0 ]; do case "$1" in --check) check=1; shift ;; --rollback) [ $# -eq 1 ] && [ "$check" = 0 ] || die 2 "usage: ade update [--check | --rollback]"; self_rollback; return ;;
+    *) die 2 "usage: ade update [--check | --rollback]" ;; esac; done
   UPD_CHANGED=""; RESTART_NEEDED=0
   self_update "$check" || rc=1
   hub="$( (find_hub) 2> /dev/null)" || hub=""
@@ -2118,3 +2163,4 @@ case "$cmd" in
   help|--help|-h) usage ;;
   *) usage >&2; die 2 "unknown command: $cmd" ;;
 esac
+# ade: end of file (ade update checks this line; keep it last)

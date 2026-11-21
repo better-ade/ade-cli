@@ -112,10 +112,10 @@ hub_ff_only() {   # AC3
   bash "$ADE" update > "$T/out" 2>&1 || { cat "$T/out"; fail "update exit"; }
   [ -f "$H/notes.md" ] || fail "fast-forwarded"; assert_contains "$FAKE_LOG" "method sync" "then bin/method sync"
   assert_contains "$T/out" "a checkout" "a checkout of ade is not replaced"
-  upstream_commit notes.md two; echo local > "$H/scratch"
+  upstream_commit notes.md two; echo local >> "$H/hub.conf"
   head="$(git -C "$H" rev-parse HEAD)"; bash "$ADE" update > "$T/out" 2>&1; assert_eq "$?" 1 "local changes refuse"
   assert_contains "$T/out" "local changes" "the reason"; assert_eq "$(git -C "$H" rev-parse HEAD)" "$head" "unchanged"
-  rm "$H/scratch"; echo diverge > "$H/mine"; commit_tag "$H" mine
+  git -C "$H" checkout -q hub.conf; echo diverge > "$H/mine"; commit_tag "$H" mine
   head="$(git -C "$H" rev-parse HEAD)"; bash "$ADE" update > "$T/out" 2>&1; assert_eq "$?" 1 "a merge refuses"
   assert_contains "$T/out" "not a fast-forward" "the reason"; assert_eq "$(git -C "$H" rev-parse HEAD)" "$head" "unchanged"
 }
@@ -159,6 +159,69 @@ ui_reloads() {   # AC8: ade ui reloads its config in place
   assert_contains "$FAKE_LOG" "tmux source-file" "reloaded"; ! grep -Eq "tmux (kill-|detach)" "$FAKE_LOG" || fail "never detached or killed"
 }
 
-ALL="updates_before_launch once_per_day env_skips failure_never_blocks other_launchers ui_updates self_replaced_by_rename broken_release_kept_out hub_ff_only nothing_killed_and_notified restart_when_idle check_changes_nothing ui_reloads"
+hub_untracked_files() {   # item 7: an untracked file (a journal entry) never blocks; one in the way of the pull refuses
+  fresh; self_fixture; fake_tools; hub_fixture; upstream_commit notes.md one
+  mkdir -p "$H/journal"; echo "today" > "$H/journal/2026-11-22.md"
+  bash "$ADE" update > "$T/out" 2>&1 || { cat "$T/out"; fail "an untracked journal file blocked the update"; }
+  [ -f "$H/notes.md" ] || fail "fast-forwarded"; assert_eq "$(cat "$H/journal/2026-11-22.md")" today "the journal file kept"
+  upstream_commit later.md upstream; echo mine > "$H/later.md"; head="$(git -C "$H" rev-parse HEAD)"
+  bash "$ADE" update > "$T/out" 2>&1; assert_eq "$?" 1 "an untracked file the pull would overwrite refuses"
+  assert_eq "$(git -C "$H" rev-parse HEAD)" "$head" "unchanged"; assert_eq "$(cat "$H/later.md")" mine "never overwritten"
+}
+
+previous_kept_and_rollback() {   # item 8: the previous ade beside the installed one; --rollback swaps them
+  fresh; self_fixture; fake_tools; H="$T/hub"; make_hub "$H" hub; export ADE_HUB="$H"
+  "$A" update --rollback > "$T/out" 2>&1; assert_eq "$?" 1 "nothing kept yet"; assert_contains "$T/out" "no previous version is kept" "says so"
+  "$A" update > "$T/out" 2>&1 || { cat "$T/out"; fail "update"; }
+  P="$T/prefix/bin/.ade.prev"; [ -f "$P" ] || fail "the previous version is kept"; [ ! -x "$P" ] || fail "and is not executable"
+  assert_eq "$(bash "$P" version)" "ade 0.1.0" "the previous version"
+  "$A" update --rollback > "$T/out" 2>&1 || { cat "$T/out"; fail "rollback"; }
+  assert_eq "$("$A" version)" "ade 0.1.0" "rolled back"; assert_eq "$(bash "$P" version)" "ade 0.9.0" "the newer one kept in turn"
+  [ -x "$A" ] || fail "the rolled-back ade runs"
+  "$A" update --rollback > /dev/null 2>&1 && assert_eq "$("$A" version)" "ade 0.9.0" "and back again"
+  ls -a "$T/prefix/bin" | grep -q '^\.ade-' && fail "no temp file left"
+  "$A" update --rollback --check > /dev/null 2>&1; assert_eq "$?" 2 "--rollback takes nothing else"
+  printf '#!/bin/bash\nexit 3\n' > "$P"; "$A" update --rollback > "$T/out" 2>&1; assert_eq "$?" 1 "a broken kept file"
+  assert_eq "$("$A" version)" "ade 0.9.0" "is never put in place"
+}
+
+cut_short_refused() {   # item 8: a release cut short (or with no end-of-file marker) fails the check, whatever it says
+  fresh; self_fixture; fake_tools; H="$T/hub"; make_hub "$H" hub; export ADE_HUB="$H"
+  head -n "$(( $(wc -l < "$REPO/ade") - 1 ))" "$REPO/ade" > "$T/rel/v0.9.0/ade"
+  "$A" update > "$T/out" 2>&1; assert_eq "$?" 1 "refused"; assert_contains "$T/out" "no end-of-file marker" "the reason"
+  assert_eq "$("$A" version)" "ade 0.1.0" "the old one stays"
+  printf '#!/bin/bash\nif [ "$1" = version ]; then echo "ade 0.9.0"; fi\n(\n%s\n' "$(tail -1 "$REPO/ade")" > "$T/rel/v0.9.0/ade"
+  "$A" update > "$T/out" 2>&1; assert_eq "$?" 1 "refused"; assert_contains "$T/out" "bash -n" "a file that does not parse"
+}
+
+never_executable_before_check() {   # item 8: while the new file is checked, nothing new in the install folder runs
+  fresh; self_fixture; fake_tools; H="$T/hub"; make_hub "$H" hub; export ADE_HUB="$H" PREFIX_BIN="$T/prefix/bin" PROBE="$T/during"
+  { printf '#!/bin/bash\nADE_VERSION=""\n'
+    printf 'if [ "$1" = version ]; then { echo "self $0 $([ -x "$0" ] && echo x)"; ls -a "$PREFIX_BIN"; } > "$PROBE"; echo "ade $ADE_VERSION"; fi\n'
+    tail -1 "$REPO/ade"; } > "$T/rel/v0.9.0/ade"
+  "$A" update > "$T/out" 2>&1 || { cat "$T/out"; fail "update"; }
+  case "$(head -1 "$T/during")" in "self $T/prefix/bin/"*) fail "checked inside the install folder" ;; *" x") fail "made executable before its check" ;; esac
+  assert_eq "$(sed 1d "$T/during" | grep -v '^\.\.\?$' | tr '\n' ' ')" "ade " "nothing else in the install folder during the check"
+}
+
+interrupted_cleans_up() {   # item 8: INT or TERM during the download leaves no temp file anywhere
+  local sig
+  for sig in ${SIGS:-INT TERM}; do ( interrupted_by "$sig" ) || exit 1; done
+}
+interrupted_by() {   # <signal>: sent to ade's process group (as a Ctrl-C at a terminal) while it downloads
+  local sig="$1" real
+  fresh; self_fixture; fake_tools; H="$T/hub"; make_hub "$H" hub; export ADE_HUB="$H" TMPDIR="$T/tmp"; mkdir -p "$TMPDIR"
+  real="$(PATH="${PATH#"$T/fakebin:"}" command -v curl)"
+  printf '#!/bin/bash\nfor a in "$@"; do case "$a" in */v0.9.0/ade) echo started > "%s/started"; exec sleep 30 ;; esac; done\nexec "%s" "$@"\n' "$T" "$real" > "$T/fakebin/curl"
+  chmod +x "$T/fakebin/curl"
+  set -m; "$A" update > "$T/out" 2>&1 & pid=$!; set +m
+  for i in $(seq 1 100); do [ -f "$T/started" ] && break; sleep 0.1; done; [ -f "$T/started" ] || { cat "$T/out"; fail "$sig: the download started"; }
+  kill -"$sig" -- -"$pid"; wait "$pid" 2> /dev/null
+  ls -a "$T/prefix/bin" | grep -q '^\.ade-' && fail "$sig: a temp file left in the install folder"
+  [ -z "$(ls -A "$TMPDIR")" ] || { ls -la "$TMPDIR"; fail "$sig: a temp folder left"; }
+  assert_eq "$("$A" version)" "ade 0.1.0" "$sig: the old ade stays"
+}
+
+ALL="updates_before_launch once_per_day env_skips failure_never_blocks other_launchers ui_updates self_replaced_by_rename broken_release_kept_out hub_ff_only nothing_killed_and_notified restart_when_idle check_changes_nothing ui_reloads hub_untracked_files previous_kept_and_rollback cut_short_refused never_executable_before_check interrupted_cleans_up"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
