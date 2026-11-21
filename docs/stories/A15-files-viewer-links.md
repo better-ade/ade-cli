@@ -19,6 +19,12 @@ or Finder, and every file link viewable there. Verification command: `bash tests
   paths (`path`, `path:line`, `path:line:col`), Markdown links and URLs; lists them; opens the pick in `ade view` at the
   line, or URLs in the browser. Paths are resolved against the agent's working folder. `ade`'s own output wraps paths in
   terminal hyperlinks (OSC 8) where supported, pointing at `ade view`.
+- **Tools installed by ade, not by hand (owner, 2026-11-21):** required tools (`git`, `python3`, `tmux`, `gh`) are
+  checked by the one-line installer (A3) and `ade setup` (A5) and installed after a yes (Homebrew on macOS, apt on
+  Ubuntu); the viewer extras (`yazi`, `bat`, `glow`, `poppler`, `chafa`) are one yes/no step in `ade setup`; `ade files`
+  and `ade view` fall back to built-ins when an extra is missing and print a one-line hint once; `ade doctor` lists each
+  tool as installed or missing; `ade setup --tools` installs what is missing; V2's `ade server install` installs the
+  same set with apt.
 - **Read-only and contained:** nothing edits, moves or deletes; viewing outside the hub and its project checkouts asks
   first; symlinks leaving those folders are shown, not followed, unless confirmed.
 
@@ -32,3 +38,4 @@ or Finder, and every file link viewable there. Verification command: `bash tests
 | 5 | The link picker finds `src/a.ts:3`, `./docs/x.md`, `[t](docs/y.md)` and a URL in a captured pane, and opens each correctly |
 | 6 | Paths outside the hub and checkouts ask first; escaping symlinks are not followed without confirmation |
 | 7 | No command writes, moves or deletes anything (a test compares the fixture tree before and after) |
+| 8 | The installer and `ade setup` detect missing required tools and install them after a yes (fake brew/apt record the calls); `ade setup` offers the extras as one step; `ade doctor` lists them; `--tools` installs only what is missing |
