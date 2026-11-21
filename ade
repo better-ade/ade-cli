@@ -2,6 +2,8 @@
 # ade: one command for ADE in any terminal. Hub commands run the hub's own bin/ scripts (the single source of truth);
 # project commands copy ade-method and registry files at their pinned tags. Bash 3.2 and Linux bash.
 set -u
+# names ade uses for typed answers and secrets: never inherited, so an exported one cannot carry a key to a child
+unset SECRET ANSWER HUB_ANSWER
 ADE_VERSION=""   # install.sh stamps this; a repo checkout reads VERSION beside the script
 ADE_METHOD_REPO="${ADE_METHOD_REPO:-https://github.com/better-ade/ade-method}"
 ADE_METHOD_REF="${ADE_METHOD_REF:-v2.0.0}"
@@ -76,12 +78,18 @@ run_hub() {   # $1 = script name under bin/
   exec "$hub/bin/$script" "$@"
 }
 
+# mk_tmp: a fresh temp folder under the temp root, or failure (never an empty or current path);
+# rm_tmp <path>: removes only a folder mk_tmp made (under the temp root, named ade.*)
+TMP_ROOT="${TMPDIR:-/tmp}"; TMP_ROOT="${TMP_ROOT%/}"
+mk_tmp() { local d; d="$(mktemp -d "$TMP_ROOT/ade.XXXXXX" 2> /dev/null)" && [ -n "$d" ] && [ -d "$d" ] || return 1; printf '%s' "$d"; }
+rm_tmp() { case "${1:-}" in "$TMP_ROOT"/ade.?*) [ -d "$1" ] && rm -rf -- "$1" ;; esac; return 0; }
+
 # fetch <repo> <ref>: a temp checkout of repo at ref; prints its path
 fetch() {
-  local tmp err; tmp="$(mktemp -d)"
+  local tmp err; tmp="$(mk_tmp)" || die 1 "could not make a temp folder"
   if [ -d "$1" ]; then err="$(git clone -q --branch "$2" "$1" "$tmp/src" 2>&1)"
   else err="$(git -c advice.detachedHead=false clone -q --depth 1 --branch "$2" "$1" "$tmp/src" 2>&1)"; fi \
-    || { rm -rf "$tmp"; die 1 "could not fetch $1 at $2: $(printf '%s\n' "$err" | tail -1)"; }
+    || { rm_tmp "$tmp"; die 1 "could not fetch $1 at $2: $(printf '%s\n' "$err" | tail -1)"; }
   echo "$tmp/src"
 }
 
@@ -102,7 +110,7 @@ project_root() {
 cmd_init() {
   project_root "$@"
   local src f list old=""; src="$(fetch "$ADE_METHOD_REPO" "$ADE_METHOD_REF")" || exit $?
-  trap 'rm -rf "$(dirname "$src")"' EXIT
+  trap 'rm_tmp "$(dirname "$src")"' EXIT
   list="$(dirname "$src")/list"; : > "$list"   # src<TAB>dest, read without a subshell so put's counts and exits hold
   [ -f "$src/rules.md" ] && printf '%s\t%s\n' "$src/rules.md" .ade/rules.md >> "$list"
   for f in "$src"/agents/*.md; do [ -f "$f" ] && printf '%s\t%s\n' "$f" ".ade/agents/$(basename "$f")" >> "$list"; done
@@ -144,10 +152,10 @@ cmd_agent() {
     echo "$rows" | while IFS="$(printf '\t')" read -r name file desc; do printf '%-20s %s\n' "$name" "$desc"; done
   else
     file="$(echo "$rows" | awk -F '\t' -v n="$2" '$1 == n { print $2; exit }')"
-    if [ -z "$file" ] || [ ! -f "$src/$file" ]; then rm -rf "$(dirname "$src")"; die 2 "no specialist named $2; ade agent list shows them"; fi
+    if [ -z "$file" ] || [ ! -f "$src/$file" ]; then rm_tmp "$(dirname "$src")"; die 2 "no specialist named $2; ade agent list shows them"; fi
     put "$src/$file" ".ade/agents/$2.md"
   fi
-  rm -rf "$(dirname "$src")"
+  rm_tmp "$(dirname "$src")"
 }
 
 cmd_skills() {
@@ -424,13 +432,22 @@ store_key() {   # store_key <hub> <tool>: hidden prompt, then the hub's bin/keys
 
 # live_test <hub> <provider>: one tiny read-only task in a throwaway folder through the hub's bin/agent --live-test.
 # Prints "<p>: ready (Ns)" or "<p>: failed (<reason>)"; returns 0 only when ready.
+SCRUB_VARS="ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_OAUTH_TOKEN
+  CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX DEEPSEEK_API_KEY GEMINI_API_KEY GOOGLE_API_KEY ZAI_API_KEY GLM_API_KEY
+  TELEGRAM_BOT_TOKEN"
+# redact: hide key-shaped strings and Telegram bot tokens in text ade prints
+redact() { sed -E 's#bot[0-9]+:[A-Za-z0-9_-]+#bot<hidden>#g; s#(sk|pk|ak|key)-[A-Za-z0-9_-]{8,}#<hidden key>#g; s#[A-Za-z0-9_-]{32,}#<hidden>#g'; }
 live_test() {
   local hub="$1" p="$2" tmp out rc t0 why
-  tmp="$(mktemp -d)"; tmp="$(cd "$tmp" && pwd -P)"; t0=$(date +%s)
-  out="$(cd "$tmp" && printf '%s\n' "$LIVE_TASK" | AGENT_TIMEOUT=120 hub_run "$hub" agent --live-test "$p" --dir "$tmp" 2>&1)"; rc=$?
-  rm -rf "$tmp"
-  if [ "$rc" = 0 ] && printf '%s' "$out" | grep -q READY; then echo "$p: ready ($(( $(date +%s) - t0 ))s)"; return 0; fi
-  why="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1)"
+  tmp="$(mk_tmp)" || { echo "$p: failed (no temp folder)"; return 1; }
+  t0=$(date +%s)
+  # run from the throwaway folder only; no provider key or backend switch from this shell reaches the test
+  out="$(cd "$tmp" && { unset $SCRUB_VARS; printf '%s\n' "$LIVE_TASK" | AGENT_TIMEOUT=120 hub_run "$hub" agent --live-test "$p" --dir "$tmp"; } 2>&1)"; rc=$?
+  rm_tmp "$tmp"
+  if [ "$rc" = 0 ] && printf '%s\n' "$out" | tr -d '\r' | grep -qx '[[:space:]]*READY[[:space:]]*'; then
+    echo "$p: ready ($(( $(date +%s) - t0 ))s)"; return 0; fi
+  why="$(printf '%s\n' "$out" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -1 | redact | cut -c1-200)"
+  [ "$rc" = 0 ] && [ -n "$why" ] && why="no READY line; it said: $why"
   echo "$p: failed (${why:-exit $rc})"; return 1
 }
 
@@ -453,15 +470,21 @@ sign_in() {
       SIGNED="$SIGNED $p"; return 0
     fi
   fi
+  if [ "$p" = gemini ] && command -v "${ADE_GEMINI_CLI:-gemini}" > /dev/null 2>&1; then
+    ask "Gemini: sign in with your Google account in the Gemini CLI (a) or a Gemini API key (k)? [a/k]"
+    case "$ANSWER" in k|K) ;; *) echo "The Gemini CLI opens: pick \"Login with Google\", then leave it (/quit); ade stores nothing."
+      "${ADE_GEMINI_CLI:-gemini}" || { echo "gemini: sign-in did not finish"; return 1; }; SIGNED="$SIGNED $p"; return 0 ;; esac
+  fi
   store_key "$hub" "$p" || { echo "$p: skipped (no key)"; return 1; }
   SIGNED="$SIGNED $p"
 }
 
+unsign() { SIGNED=" $(printf '%s' " $SIGNED " | sed "s/ $1 / /g") "; }   # a failed provider asks for its key again
 READY=""
 provider_ready() {   # sign in, then the live test once per provider; READY collects the ones that passed
   case " $READY " in *" $2 "*) echo "$2: ready (tested above)"; return 0 ;; esac
   sign_in "$@" || return 1
-  live_test "$1" "$2" || return 1
+  live_test "$1" "$2" || { unsign "$2"; return 1; }
   READY="$READY $2"
 }
 
@@ -495,7 +518,11 @@ setup_top() {   # the everything agent: exactly one; GLM and Muse only after the
       *) echo "pick one number from 1 to 5"; continue ;;
     esac
     sign_in "$hub" "$p" $how || continue
-    if live_test "$hub" "$p"; then READY="$READY $p"; conf_set "$hub" HUB_ROOT_PROVIDER "$p"; echo "everything agent: $p"; return 0; fi
+    if live_test "$hub" "$p"; then READY="$READY $p"; conf_set "$hub" HUB_ROOT_PROVIDER "$p"
+      local old; old="$(conf_get "$hub" HUB_PROVIDERS_ALLOWED)"   # the new top plus the old list
+      conf_set "$hub" HUB_PROVIDERS_ALLOWED "$(printf '%s\n' $p $old | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//')"
+      echo "everything agent: $p"; return 0; fi
+    unsign "$p"
     case "$p" in glm|muse) echo "$p cannot be the everything agent until its live check passes" ;;
       *) echo "$p failed its live test; pick it again once fixed, or another" ;; esac
   done
@@ -568,11 +595,16 @@ cmd_setup() {
     *) die 2 "usage: ade setup [--check | --test [provider|telegram] | --top | --telegram]" ;;
   esac
   if ! command -v claude > /dev/null 2>&1; then
-    yes_no "Claude Code is not installed. Install it now with the official installer ($CLAUDE_INSTALL_CMD)?" ||
+    local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"   # file:// only for tests
+    case "$ADE_CLAUDE_INSTALLER" in https://*) ;; file://*) [ "$proto" != "=https" ] || die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;;
+      *) die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;; esac
+    yes_no "Claude Code is not installed. Install it now? This runs: curl -fsSL $ADE_CLAUDE_INSTALLER | bash" ||
       die 1 "install Claude Code yourself, then run ade setup again: $CLAUDE_INSTALL_CMD"
-    curl -fsSL "$ADE_CLAUDE_INSTALLER" | bash || die 1 "the Claude Code installer failed; try: $CLAUDE_INSTALL_CMD"
+    curl --proto "$proto" --proto-redir "$proto" --tlsv1.2 -fsSL "$ADE_CLAUDE_INSTALLER" | bash || die 1 "the Claude Code installer failed; try: $CLAUDE_INSTALL_CMD"
     PATH="$HOME/.local/bin:$PATH"; command -v claude > /dev/null 2>&1 || die 1 "claude is still not on PATH; open a new terminal and run ade setup again"
   fi
+  local herr; herr="$(find_hub 2>&1 > /dev/null)"
+  if [ -n "$herr" ] && ! printf '%s' "$herr" | grep -q "no hub found"; then echo "$herr" >&2; exit 2; fi
   if ! hub="$(find_hub 2> /dev/null)"; then
     echo "No hub yet: ade makes one now (ade hub new)."
     ask "Name for your hub (lower-case letters, digits and -, e.g. acme-sre):"; name="$ANSWER"
@@ -584,7 +616,7 @@ cmd_setup() {
   setup_focus "$hub"
   setup_telegram "$hub"
   echo "Starting the guided session (ade claude); it asks before each change."
-  cmd_claude -- "$SETUP_PROMPT"
+  cmd_claude -- --permission-mode default "$SETUP_PROMPT"
 }
 
 cmd_version() {
