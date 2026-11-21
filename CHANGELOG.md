@@ -4,6 +4,13 @@
 - `ade init` installs ade-method's `install_templates` (`.github/pull_request_template.md`, `.ade/commit-template.txt`,
   never overwriting) and sets `git config commit.template .ade/commit-template.txt` in that repo unless one is set;
   the default `ADE_METHOD_REF` is now `v2.1.0`; the temp checkout is removed again (the exit trap no longer fails).
+- `ade claude [<folder>] [-- args]` (A4): Claude Code at the hub root with the hub's `HUB_ROOT_MODEL` and Remote
+  Control named after the hub, the `ade@ade-skills` plugin enabled in the hub's settings; `--dangerously-skip-permissions`
+  is refused.
+- `ade hub new <name> [--private|--public] [--dir] [--no-github]`, `ade hub list|use`, and `ade` alone saying what
+  to do next (A3); `install.sh` piped from curl installs the release tag main's `VERSION` names.
+- `ade orchestrator new|start|stop|list|logs|remove` (A2): named orchestrators, one per hub, in
+  `~/.config/ade/orchestrators` (0600); the hub's `bin/chat` does the work (`.ade/context/hub-interface.md`).
 
 ## 0.1.0
 - `ade`: hub commands (work, status, dispatch, notify, chat, method, keys, models, roles, doctor, sync, context,

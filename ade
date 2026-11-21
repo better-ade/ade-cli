@@ -29,6 +29,15 @@ Hub commands (run the hub's bin/ scripts):
   context     the hub's context store (bin/context)
   agent-run   run an agent (bin/agent)
 
+Orchestrators (one per hub, run by the hub's bin/chat):
+  orchestrator  new <name> --hub <path> [--channel telegram] | start | stop | list | logs <name> [-n N] | remove
+
+Hubs:
+  claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root; with a folder, ade work <folder>
+  hub         ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]
+              | ade hub list | ade hub use <path>
+  (none)      ade alone: the hub, its sessions and what to do next
+
 Project commands (no hub needed):
   init        copy ade-method at its pinned tag into this project (git top level, or --here); never overwrites
   agent       ade agent list | ade agent add <name>: specialists from ade-agent-registry
@@ -55,11 +64,12 @@ find_hub() {
     if [ -n "$h" ]; then is_hub "$h" && { echo "$h"; return; }
       die 2 "~/.config/ade/hub points to $h, which is not a hub"; fi
   fi
-  die 2 "no hub found: set ADE_HUB, run ade inside a hub, or put the hub's path in ~/.config/ade/hub"
+  die 2 "no hub found: set ADE_HUB, run ade inside a hub, or put the hub's path in ~/.config/ade/hub (no hub yet: ade hub new <name>)"
 }
 
 run_hub() {   # $1 = script name under bin/
   local script="$1" hub; shift; hub="$(find_hub)" || exit $?
+  [ "$script" = work ] && claude_update "$hub"
   [ -e "$hub/bin/$script" ] || die 2 "this hub has no bin/$script; update it"
   [ -x "$hub/bin/$script" ] || die 2 "bin/$script is not executable"
   HUB="$hub"; export HUB   # a stale HUB in the caller's environment would win in the hub's lib.sh
@@ -181,6 +191,256 @@ cmd_open() {
   exec "$ADE_HOOK_BIN" open "$@"
 }
 
+# claude_update [hub]: before ade launches Claude Code, `claude update` at most once per 24 h per machine (stamp
+# ~/.config/ade/claude-updated, written per attempt), cut off after ADE_CLAUDE_UPDATE_TIMEOUT s (default 60); offline or
+# failing prints one line and the installed version runs. ADE_NO_CLAUDE_UPDATE=1 skips it.
+claude_update() {
+  [ "${ADE_NO_CLAUDE_UPDATE:-}" = 1 ] && return 0
+  local cl="" now t=0 stamp="$HOME/.config/ade/claude-updated" lim="${ADE_CLAUDE_UPDATE_TIMEOUT:-60}" pid w rc
+  [ -n "${1:-}" ] && cl="$(conf_get "$1" HUB_CLAUDE)"; cl="${cl:-claude}"
+  command -v "$cl" > /dev/null 2>&1 || return 0
+  now="$(date +%s)"; [ -f "$stamp" ] && t="$(cat "$stamp" 2> /dev/null)"; [[ $t =~ ^[0-9]+$ ]] || t=0
+  [ $((now - t)) -lt 86400 ] && return 0
+  [[ $lim =~ ^[0-9]+$ ]] || lim=60
+  echo "$now" | write_conf_file claude-updated
+  "$cl" update > /dev/null 2>&1 < /dev/null & pid=$!
+  ( sleep "$lim"; kill "$pid" 2> /dev/null ) > /dev/null 2>&1 & w=$!
+  wait "$pid" 2> /dev/null; rc=$?; kill "$w" 2> /dev/null; wait "$w" 2> /dev/null
+  if [ "$rc" = 0 ]; then echo "ade: Claude Code is up to date" >&2
+  else echo "ade: Claude Code update skipped (offline, failed or over ${lim}s); using the installed version" >&2; fi
+  return 0
+}
+
+# conf_get <hub> <KEY>: a hub.conf value (sourced in a subshell, as the hub's own scripts read it)
+conf_get() {
+  case "$2" in *[!A-Z0-9_]*|"") return 1 ;; esac
+  ( . "$1/hub.conf" > /dev/null 2>&1; eval "printf '%s' \"\${$2:-}\"" )
+}
+
+# ~/.config/ade: the folder 0700, every file in it 0600; write_conf_file <name> < content replaces one atomically
+CONF_DIR="$HOME/.config/ade"
+write_conf_file() {
+  local tmp; ( umask 077; mkdir -p "$CONF_DIR" ) && chmod 700 "$CONF_DIR" || die 1 "cannot create $CONF_DIR"
+  tmp="$(umask 077; mktemp "$CONF_DIR/.$1.XXXXXX")" || die 1 "cannot write $CONF_DIR/$1"
+  { cat > "$tmp" && chmod 600 "$tmp" && mv "$tmp" "$CONF_DIR/$1"; } || { rm -f "$tmp"; die 1 "cannot write $CONF_DIR/$1"; }
+}
+
+# orchestrators: ~/.config/ade/orchestrators, one "name<TAB>hub" line each (story A2, .ade/context/hub-interface.md)
+ORCH="$CONF_DIR/orchestrators"
+orch_hub() { [ -f "$ORCH" ] && awk -F '\t' -v n="$1" '$1 == n { print $2; exit }' "$ORCH"; }
+# chat <hub> <args>: the hub's own bin/chat, with HUB exported to that hub; its exit code is returned unchanged
+chat() {
+  local hub="$1"; shift
+  [ -e "$hub/bin/chat" ] || die 2 "this hub has no bin/chat; update it"
+  [ -x "$hub/bin/chat" ] || die 2 "bin/chat is not executable"
+  ( HUB="$hub"; export HUB; "$hub/bin/chat" "$@" )
+}
+# orch_state <hub>: "running <since>", "stopped -", "missing -" or "unknown -", from the hub's bin/chat status
+orch_state() {
+  local first st since
+  is_hub "$1" && [ -x "$1/bin/chat" ] || { echo "missing -"; return; }
+  first="$(chat "$1" status 2>/dev/null | head -1)"
+  st="${first%% *}"; since="$(printf '%s\n' "$first" | sed -n 's/.* since \([^ ]*\).*/\1/p')"
+  case "$st" in running|stopped) echo "$st ${since:--}" ;; *) echo "unknown -" ;; esac
+}
+
+ORCH_USAGE="usage: ade orchestrator new <name> --hub <path> [--channel telegram] | start|stop|remove <name> | list | logs <name> [-n N]"
+cmd_orchestrator() {
+  local sub="${1:-}" name hub ch n st since chans channels=""; [ $# -gt 0 ] && shift
+  case "$sub" in
+    new)
+      name="${1:-}"; [ $# -gt 0 ] && shift; hub=""
+      while [ $# -gt 0 ]; do case "$1" in
+        --hub) [ $# -ge 2 ] || die 2 "--hub needs a path"; hub="$2"; shift 2 ;;
+        --channel) [ $# -ge 2 ] || die 2 "--channel needs a name"; channels="$channels $2"; shift 2 ;;
+        *) die 2 "$ORCH_USAGE" ;;
+      esac; done
+      [[ $name =~ ^[a-z0-9][a-z0-9-]{0,63}$ ]] || die 2 "orchestrator names are lower-case letters, digits and - (a letter or digit first, at most 64)"
+      [ -n "$hub" ] || die 2 "$ORCH_USAGE"
+      is_hub "$hub" || die 2 "$hub is not a hub (no bin/lib.sh and hub.conf)"
+      hub="$(cd "$hub" && pwd -P)"
+      [ -z "$(orch_hub "$name")" ] || die 2 "an orchestrator named $name already exists"
+      n="$([ -f "$ORCH" ] && awk -F '\t' -v h="$hub" '$2 == h { print $1; exit }' "$ORCH")"
+      [ -z "$n" ] || die 2 "$hub already has an orchestrator ($n); one per hub"
+      for ch in $channels; do ADE_ORCHESTRATOR="$name" chat "$hub" setup "$ch" || exit $?; done
+      { [ -f "$ORCH" ] && cat "$ORCH"; printf '%s\t%s\n' "$name" "$hub"; } | write_conf_file orchestrators
+      echo "orchestrator $name registered for $hub"
+      [ -n "$channels" ] || echo "no channel yet: run bin/chat setup telegram in the hub to add one" ;;
+    start|stop)
+      [ -n "${1:-}" ] && [ $# -eq 1 ] || die 2 "$ORCH_USAGE"
+      hub="$(orch_hub "$1")"; [ -n "$hub" ] || die 2 "no orchestrator named $1; ade orchestrator list shows them"
+      is_hub "$hub" || die 2 "the hub of $1 ($hub) is gone"
+      [ "$sub" = start ] && claude_update "$hub"
+      chat "$hub" "$sub"; exit $? ;;
+    list)
+      [ $# -eq 0 ] || die 2 "$ORCH_USAGE"
+      printf '%-16s %-8s %-12s %-20s %s\n' NAME STATUS CHANNELS SINCE HUB
+      [ -f "$ORCH" ] || return 0
+      while IFS="$(printf '\t')" read -r name hub; do
+        [ -n "$name" ] || continue
+        read -r st since <<EOF
+$(orch_state "$hub" < /dev/null)
+EOF
+        chans="-"; [ "$st" = missing ] || chans="$(conf_get "$hub" HUB_CHANNELS < /dev/null | tr ' ' ',')"
+        printf '%-16s %-8s %-12s %-20s %s\n' "$name" "$st" "${chans:--}" "$since" "$hub"
+      done < "$ORCH" ;;
+    logs)
+      name="${1:-}"; [ $# -gt 0 ] && shift; n=50
+      [ -n "$name" ] || die 2 "$ORCH_USAGE"
+      if [ $# -gt 0 ]; then { [ "$1" = -n ] && [ $# -eq 2 ]; } || die 2 "$ORCH_USAGE"; n="$2"; fi
+      printf '%s' "$n" | grep -Eq '^[1-9][0-9]{0,5}$' || die 2 "-n needs a number of lines"
+      hub="$(orch_hub "$name")"; [ -n "$hub" ] || die 2 "no orchestrator named $name; ade orchestrator list shows them"
+      is_hub "$hub" || die 2 "the hub of $name ($hub) is gone"
+      chat "$hub" logs -n "$n"; exit $? ;;
+    remove)
+      [ -n "${1:-}" ] && [ $# -eq 1 ] || die 2 "$ORCH_USAGE"
+      hub="$(orch_hub "$1")"; [ -n "$hub" ] || die 2 "no orchestrator named $1; ade orchestrator list shows them"
+      read -r st since <<EOF
+$(orch_state "$hub")
+EOF
+      if [ "$st" = running ]; then chat "$hub" stop || die 1 "could not stop $1; it stays registered"; fi
+      awk -F '\t' -v n="$1" '$1 != n' "$ORCH" | write_conf_file orchestrators
+      echo "orchestrator $1 removed (its hub $hub is untouched)" ;;
+    *) die 2 "$ORCH_USAGE" ;;
+  esac
+}
+
+# hubs: ~/.config/ade/hub is the default; ~/.config/ade/hubs lists every hub ade made or was pointed at (story A3)
+ADE_HUB_TEMPLATE="${ADE_HUB_TEMPLATE:-better-ade/ade-brain}"
+ADE_HUB_TEMPLATE_URL="${ADE_HUB_TEMPLATE_URL:-https://github.com/$ADE_HUB_TEMPLATE}"
+hub_label() { local n; n="$(conf_get "$1" HUB_NAME)"; echo "${n:-$(basename "$1")}"; }
+default_hub() { local h=""; [ -f "$CONF_DIR/hub" ] && IFS= read -r h < "$CONF_DIR/hub"; printf '%s' "$h"; }
+remember_hub() {   # <path>: make it the default and add it to the known list once
+  local p="$1"
+  { [ -f "$CONF_DIR/hubs" ] && grep -vxF -- "$p" "$CONF_DIR/hubs"; echo "$p"; } | write_conf_file hubs
+  echo "$p" | write_conf_file hub
+}
+
+cmd_hub() {
+  local sub="${1:-}"; [ $# -gt 0 ] && shift
+  case "$sub" in
+    new) hub_new "$@" ;;
+    list)
+      [ $# -eq 0 ] || die 2 "usage: ade hub list"
+      local d p; d="$(default_hub)"
+      { [ -f "$CONF_DIR/hubs" ] && cat "$CONF_DIR/hubs"; [ -n "$d" ] && echo "$d"; } | awk 'NF && !seen[$0]++' |
+        while IFS= read -r p; do
+          if [ "$p" = "$d" ]; then printf '* '; else printf '  '; fi
+          if is_hub "$p"; then echo "$p"; else echo "$p (missing)"; fi
+        done ;;
+    use)
+      [ $# -eq 1 ] || die 2 "usage: ade hub use <path>"
+      is_hub "$1" || die 2 "$1 is not a hub (no bin/lib.sh and hub.conf)"
+      local p; p="$(cd "$1" && pwd -P)"; remember_hub "$p"; echo "default hub: $p" ;;
+    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] | ade hub list | ade hub use <path>" ;;
+  esac
+}
+
+hub_ask() { printf '%s ' "$1"; IFS= read -r HUB_ANSWER || { echo; die 1 "stopped: no answer"; }; [ -t 0 ] || echo
+  [ -n "$HUB_ANSWER" ] || die 2 "an answer is needed"; }
+
+hub_new() {
+  local name="${1:-}" vis=--private dir="$HOME/hubs" gh=1 target persona="" client="" owner=""; [ $# -gt 0 ] && shift
+  while [ $# -gt 0 ]; do case "$1" in
+    --private|--public) vis="$1"; shift ;;
+    --persona|--client|--owner) [ $# -ge 2 ] && [ -n "$2" ] || die 2 "$1 needs a value"
+      case "$1" in --persona) persona="$2" ;; --client) client="$2" ;; *) owner="$2" ;; esac; shift 2 ;;
+    --dir) [ $# -ge 2 ] || die 2 "--dir needs a folder"; dir="$2"; shift 2 ;;
+    --no-github) gh=0; shift ;;
+    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]" ;;
+  esac; done
+  printf '%s' "$name" | grep -Eq '^[a-z0-9-]+$' || die 2 "hub names are lower-case letters, digits and - (e.g. acme-sre)"
+  case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+  target="$dir/$name"
+  [ ! -e "$target" ] || die 2 "$target already exists; pick another name or --dir"
+  if [ "$gh" = 1 ]; then
+    command -v gh > /dev/null 2>&1 || die 2 "gh (GitHub CLI) is not installed: install it, or pass --no-github for a local hub"
+    mkdir -p "$dir" || die 1 "cannot create $dir"
+    (cd "$dir" && gh repo create "$name" --template "$ADE_HUB_TEMPLATE" "$vis" --clone) || die 1 "gh could not create $name"
+  else
+    mkdir -p "$dir" || die 1 "cannot create $dir"
+    git clone -q "$ADE_HUB_TEMPLATE_URL" "$target" || die 1 "could not clone $ADE_HUB_TEMPLATE_URL"
+    git -C "$target" remote remove origin 2> /dev/null
+  fi
+  [ -x "$target/bin/init" ] || die 1 "$target has no bin/init; is $ADE_HUB_TEMPLATE the hub template?"
+  echo "hub $name created in $target"
+  # bin/init needs a persona, the client and the owner: the flags, else asked here
+  if [ -z "$persona" ]; then echo "Personas:"; (cd "$target" && ./bin/init --list) 2> /dev/null | sed 's/^/  /'
+    hub_ask "Persona for this hub (one of the names above):"; persona="$HUB_ANSWER"; fi
+  [ -n "$client" ] || { hub_ask "Client or team this hub works for:"; client="$HUB_ANSWER"; }
+  [ -n "$owner" ] || { hub_ask "Owner (your name, as it should appear in the hub):"; owner="$HUB_ANSWER"; }
+  (cd "$target" && HUB="$target" && export HUB && ./bin/init --persona "$persona" --client "$client" --owner "$owner" --name "$name") ||
+    die 1 "bin/init did not finish: run it again with cd $target && bin/init --persona <p> --client <c> --owner <o> --name $name"
+  is_hub "$target" || die 1 "bin/init wrote no hub.conf: run it again with cd $target && bin/init"
+  target="$(cd "$target" && pwd -P)"; remember_hub "$target"
+  echo "default hub: $target"; echo "next: ade (what to do next)"
+}
+
+# ade with no arguments: what to do next (story A3)
+cmd_home() {
+  local hub err; err="$(mktemp)"
+  if ! hub="$(find_hub 2> "$err")"; then
+    grep -q "no hub found" "$err" || cat "$err" >&2; rm -f "$err"
+    echo 'no hub yet: run `ade hub new <name>`'; return 0
+  fi
+  rm -f "$err"
+  echo "hub: $(hub_label "$hub") ($hub)"
+  [ -x "$hub/bin/sessions" ] && (HUB="$hub"; export HUB; "$hub/bin/sessions")
+  echo "next:"
+  echo "  ade claude           open the orchestrator (Claude Code at the hub root)"
+  echo "  ade work <folder>    start a focus agent on a folder"
+  echo "  ade help             every command"
+}
+
+# ade claude [<folder>] [-- args]: Claude Code at the hub root as the orchestrator (story A4)
+ADE_SKILLS_MARKETPLACE="better-ade/ade-skills"
+enable_ade_plugin() {   # <settings.json>: list the ade-skills marketplace and enable ade@ade-skills; other keys kept
+  mkdir -p "$(dirname "$1")" || return 1
+  python3 - "$1" "$ADE_SKILLS_MARKETPLACE" <<'PY'
+import json, os, sys
+p, repo = sys.argv[1], sys.argv[2]
+d = {}
+if os.path.exists(p):
+    try:
+        d = json.load(open(p))
+    except ValueError:
+        sys.exit("ade: %s is not valid JSON; fix it, then run ade claude again" % p)
+    if not isinstance(d, dict):
+        sys.exit("ade: %s is not a JSON object" % p)
+before = json.dumps(d, sort_keys=True)
+d.setdefault("extraKnownMarketplaces", {}).setdefault("ade-skills", {"source": {"source": "github", "repo": repo}})
+d.setdefault("enabledPlugins", {}).setdefault("ade@ade-skills", True)
+if json.dumps(d, sort_keys=True) != before:
+    tmp = p + ".ade-tmp"
+    with open(tmp, "w") as f:
+        json.dump(d, f, indent=2); f.write("\n")
+    os.replace(tmp, p)
+PY
+}
+
+# skips_permissions <args>: any spelling that turns permission checks off (sets SKIP_ARG); case and = forms included
+skips_permissions() {
+  local a l; for a in "$@"; do l="$(printf '%s' "$a" | tr 'A-Z' 'a-z')"
+    case "$l" in *skip-permissions*|*bypasspermissions*) SKIP_ARG="$a"; return 0 ;; esac; done; return 1
+}
+
+cmd_claude() {
+  local a hub model name cl cfg
+  skips_permissions "$@" && die 2 "ade claude never skips permissions (refused: $SKIP_ARG)"
+  if [ $# -gt 0 ] && [ "$1" != -- ]; then run_hub work "$@"; fi
+  [ $# -gt 0 ] && shift
+  hub="$(find_hub)" || exit $?
+  model="$(conf_get "$hub" HUB_ROOT_MODEL)"; name="$(hub_label "$hub")"
+  cl="$(conf_get "$hub" HUB_CLAUDE)"; cl="${cl:-claude}"; cfg="$(conf_get "$hub" HUB_CLAUDE_CONFIG_DIR)"
+  command -v "$cl" > /dev/null 2>&1 || die 2 "$cl is not on PATH; install Claude Code first (ade setup does it)"
+  claude_update "$hub"
+  enable_ade_plugin "$hub/.claude/settings.json" || exit 1
+  cd "$hub" || die 1 "cannot enter $hub"
+  HUB="$hub"; export HUB; [ -z "$cfg" ] || { CLAUDE_CONFIG_DIR="$cfg"; export CLAUDE_CONFIG_DIR; }
+  set -- --remote-control "$name" "$@"; [ -z "$model" ] || set -- --model "$model" "$@"   # opus[1m] never globbed
+  exec "$cl" "$@"
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -189,7 +449,7 @@ cmd_version() {
   echo "ade ${v:-unknown}"
 }
 
-cmd="${1:-help}"; [ $# -gt 0 ] && shift
+cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in
   work|dispatch|notify|chat|method|keys|models|roles|doctor|sync|context) run_hub "$cmd" "$@" ;;
   status) run_hub sessions "$@" ;;
@@ -197,6 +457,10 @@ case "$cmd" in
   init) cmd_init "$@" ;;
   agent) cmd_agent "$@" ;;
   skills) cmd_skills "$@" ;;
+  "") cmd_home ;;
+  claude) cmd_claude "$@" ;;
+  hub) cmd_hub "$@" ;;
+  orchestrator) cmd_orchestrator "$@" ;;
   open) cmd_open "$@" ;;
   version|--version|-v) cmd_version ;;
   help|--help|-h) usage ;;
