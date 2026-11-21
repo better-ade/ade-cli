@@ -33,7 +33,8 @@ Orchestrators (one per hub, run by the hub's bin/chat):
   orchestrator  new <name> --hub <path> [--channel telegram] | start | stop | list | logs <name> [-n N] | remove
 
 Hubs:
-  hub         ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] | ade hub list | ade hub use <path>
+  hub         ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]
+              | ade hub list | ade hub use <path>
   (none)      ade alone: the hub, its sessions and what to do next
 
 Project commands (no hub needed):
@@ -285,13 +286,18 @@ cmd_hub() {
   esac
 }
 
+hub_ask() { printf '%s ' "$1"; IFS= read -r HUB_ANSWER || { echo; die 1 "stopped: no answer"; }; [ -t 0 ] || echo
+  [ -n "$HUB_ANSWER" ] || die 2 "an answer is needed"; }
+
 hub_new() {
-  local name="${1:-}" vis=--private dir="$HOME/hubs" gh=1 target; [ $# -gt 0 ] && shift
+  local name="${1:-}" vis=--private dir="$HOME/hubs" gh=1 target persona="" client="" owner=""; [ $# -gt 0 ] && shift
   while [ $# -gt 0 ]; do case "$1" in
     --private|--public) vis="$1"; shift ;;
+    --persona|--client|--owner) [ $# -ge 2 ] && [ -n "$2" ] || die 2 "$1 needs a value"
+      case "$1" in --persona) persona="$2" ;; --client) client="$2" ;; *) owner="$2" ;; esac; shift 2 ;;
     --dir) [ $# -ge 2 ] || die 2 "--dir needs a folder"; dir="$2"; shift 2 ;;
     --no-github) gh=0; shift ;;
-    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] [--no-github]" ;;
+    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]" ;;
   esac; done
   printf '%s' "$name" | grep -Eq '^[a-z0-9-]+$' || die 2 "hub names are lower-case letters, digits and - (e.g. acme-sre)"
   case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
@@ -307,8 +313,14 @@ hub_new() {
     git -C "$target" remote remove origin 2> /dev/null
   fi
   [ -x "$target/bin/init" ] || die 1 "$target has no bin/init; is $ADE_HUB_TEMPLATE the hub template?"
-  echo "hub $name created in $target; bin/init asks a few questions next"
-  (cd "$target" && HUB="$target" && export HUB && ./bin/init) || die 1 "bin/init did not finish: run it again with cd $target && bin/init"
+  echo "hub $name created in $target"
+  # bin/init needs a persona, the client and the owner: the flags, else asked here
+  if [ -z "$persona" ]; then echo "Personas:"; (cd "$target" && ./bin/init --list) 2> /dev/null | sed 's/^/  /'
+    hub_ask "Persona for this hub (one of the names above):"; persona="$HUB_ANSWER"; fi
+  [ -n "$client" ] || { hub_ask "Client or team this hub works for:"; client="$HUB_ANSWER"; }
+  [ -n "$owner" ] || { hub_ask "Owner (your name, as it should appear in the hub):"; owner="$HUB_ANSWER"; }
+  (cd "$target" && HUB="$target" && export HUB && ./bin/init --persona "$persona" --client "$client" --owner "$owner" --name "$name") ||
+    die 1 "bin/init did not finish: run it again with cd $target && bin/init --persona <p> --client <c> --owner <o> --name $name"
   is_hub "$target" || die 1 "bin/init wrote no hub.conf: run it again with cd $target && bin/init"
   target="$(cd "$target" && pwd -P)"; remember_hub "$target"
   echo "default hub: $target"; echo "next: ade (what to do next)"
