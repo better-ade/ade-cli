@@ -3,7 +3,7 @@
 # project commands copy ade-method and registry files at their pinned tags. Bash 3.2 and Linux bash.
 set -u
 # names ade uses for typed answers and secrets: never inherited, so an exported one cannot carry a key to a child
-unset SECRET ANSWER HUB_ANSWER
+unset SECRET ANSWER HUB_ANSWER CHOICE
 ADE_VERSION=""   # install.sh stamps this; a repo checkout reads VERSION beside the script
 ADE_METHOD_REPO="${ADE_METHOD_REPO:-https://github.com/better-ade/ade-method}"
 ADE_METHOD_REF="${ADE_METHOD_REF:-v2.1.0}"
@@ -37,9 +37,9 @@ Orchestrators (one per hub, run by the hub's bin/chat):
 Hubs:
   ui          ade ui [--detach]: one tmux window, a tab per agent (keys: prefix ? in it)
   dash        ade dash [--once]: the fleet panel (agents, tickets, last events)
-  setup       ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]: tools, sign in, providers, Telegram, hub, guided session
+  setup       ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]: the guide, one step at a time (resumes where you are)
   claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root; with a folder, ade work <folder>
-  hub         ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]
+  hub         ade hub new <name> [--private|--public] [--dir <folder>] [--persona P --client C --owner O]
               | ade hub list | ade hub use <path>
   (none)      ade alone: the hub, its sessions and what to do next
 
@@ -541,48 +541,65 @@ cmd_hub() {
       [ $# -eq 1 ] || die 2 "usage: ade hub use <path>"
       is_hub "$1" || die 2 "$1 is not a hub (no bin/lib.sh and hub.conf)"
       local p; p="$(cd "$1" && pwd -P)"; remember_hub "$p"; echo "default hub: $p" ;;
-    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] | ade hub list | ade hub use <path>" ;;
+    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] | ade hub list | ade hub use <path>" ;;
   esac
 }
 
-hub_ask() { printf '%s ' "$1"; IFS= read -r HUB_ANSWER || { echo; die 1 "stopped: no answer"; }; [ -t 0 ] || echo
-  [ -n "$HUB_ANSWER" ] || die 2 "an answer is needed"; }
 
+# hub_new: the repository (GitHub, after its sign-in step; --no-github, for tests and scripts: a local clone), then
+# the hub's own bin/init with answers ade asked and checked, as flags (bin/init asks nothing). A clone that bin/init
+# has not finished is marked (.git/ade-hub-new, never committed), so ade hub new <name> again picks up there (A18).
+# shellcheck disable=SC2088  # a literal ~ for the person to read
+tilde() { case "$1" in "$HOME") printf '~' ;; "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
 hub_new() {
-  local name="${1:-}" vis=--private dir="$HOME/hubs" gh=1 target persona="" client="" owner=""; [ $# -gt 0 ] && shift
+  local name="${1:-}" vis=--private dir="$HOME/hubs" gh=1 target persona="" client="" owner="" resume=0 v why; [ $# -gt 0 ] && shift
   while [ $# -gt 0 ]; do case "$1" in
     --private|--public) vis="$1"; shift ;;
     --persona|--client|--owner) [ $# -ge 2 ] && [ -n "$2" ] || die 2 "$1 needs a value"
+      why="$(ask_bad "$2")"; [ -z "$why" ] || die 2 "$1: $why"
       case "$1" in --persona) persona="$2" ;; --client) client="$2" ;; *) owner="$2" ;; esac; shift 2 ;;
     --dir) [ $# -ge 2 ] || die 2 "--dir needs a folder"; dir="$2"; shift 2 ;;
     --no-github) gh=0; shift ;;
-    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]" ;;
+    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] [--persona P --client C --owner O]" ;;
   esac; done
   matches "$name" '^[a-z0-9][a-z0-9-]{0,63}$' || die 2 "hub names are lower-case letters, digits and - (start with a letter or digit, at most 64; e.g. acme-sre)"
   case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
   target="$dir/$name"
-  [ ! -e "$target" ] || die 2 "$target already exists; pick another name or --dir"
-  if [ "$gh" = 1 ]; then
-    command -v gh > /dev/null 2>&1 || die 2 "gh (GitHub CLI) is not installed: install it, or pass --no-github for a local hub"
+  [ -n "$ASK_AGAIN" ] || ASK_AGAIN="ade hub new $name$([ "$dir" = "$HOME/hubs" ] || printf ' --dir %s' "$(tilde "$dir")")$([ "$vis" = --public ] && printf ' --public')"
+  if [ -e "$target" ]; then
+    [ -f "$target/.git/ade-hub-new" ] || die 2 "$target already exists; pick another name or --dir"
+    resume=1; echo "Picking up the hub $name where its set-up stopped ($(tilde "$target"))."
+  elif [ "$gh" = 1 ]; then
+    github_ready || exit $?
     mkdir -p "$dir" || die 1 "cannot create $dir"
-    (cd "$dir" && gh repo create "$name" --template "$ADE_HUB_TEMPLATE" "$vis" --clone) || die 1 "gh could not create $name"
+    (cd "$dir" && gh repo create "$name" --template "$ADE_HUB_TEMPLATE" "$vis" --clone) ||
+      die 1 "GitHub did not make the repository $name (the reason is above); pick another name, or run $ASK_AGAIN again"
   else
     mkdir -p "$dir" || die 1 "cannot create $dir"
     git clone -q "$ADE_HUB_TEMPLATE_URL" "$target" || die 1 "could not clone $ADE_HUB_TEMPLATE_URL"
     git -C "$target" remote remove origin 2> /dev/null
   fi
   [ -x "$target/bin/init" ] || die 1 "$target has no bin/init; is $ADE_HUB_TEMPLATE the hub template?"
-  echo "hub $name created in $target"
-  # bin/init needs a persona, the client and the owner: the flags, else asked here
-  if [ -z "$persona" ]; then echo "Personas:"; (cd "$target" && ./bin/init --list) 2> /dev/null | sed 's/^/  /'
-    hub_ask "Persona for this hub (one of the names above):"; persona="$HUB_ANSWER"; fi
-  [ -n "$client" ] || { hub_ask "Client or team this hub works for:"; client="$HUB_ANSWER"; }
-  [ -n "$owner" ] || { hub_ask "Owner (your name, as it should appear in the hub):"; owner="$HUB_ANSWER"; }
-  (cd "$target" && HUB="$target" && export HUB && ./bin/init --persona "$persona" --client "$client" --owner "$owner" --name "$name") ||
-    die 1 "bin/init did not finish: run it again with cd $target && bin/init --persona <p> --client <c> --owner <o> --name $name"
-  is_hub "$target" || die 1 "bin/init wrote no hub.conf: run it again with cd $target && bin/init"
+  [ -d "$target/.git" ] && printf '%s\n' "$name" > "$target/.git/ade-hub-new"
+  [ "$resume" = 1 ] || echo "hub $name created in $(tilde "$target")"
+  # bin/init needs a persona, the client and the owner: the flags, else asked here; the persona from bin/init --list
+  local rows=() n d
+  while IFS="$TAB" read -r n d; do matches "$n" '^[a-z0-9][a-z0-9-]{0,63}$' && rows+=("$n|$d"); done < <(
+    (cd "$target" && ./bin/init --list < /dev/null) 2> /dev/null | no_ctl | awk '{ n = $1; $1 = ""; sub(/^ +/, ""); print n "\t" $0 }')
+  if [ "${#rows[@]}" -gt 0 ]; then
+    v=""; [ -z "$persona" ] || v="$(ask_match "$persona" "${rows[@]%%|*}")"
+    if [ -z "$v" ]; then [ -z "$persona" ] || echo "$persona is not one of the personas below."
+      echo "The kind of teammate this hub's main agent acts as (pick the closest):"
+      ask_choice "Kind of teammate" "" "${rows[@]}"; v="$CHOICE"; fi
+    persona="$v"
+  elif [ -z "$persona" ]; then ask_text "The kind of teammate this hub's main agent acts as:"; persona="$ANSWER"; fi
+  [ -n "$client" ] || { ask_text "Who this hub works for (a client or your team; shown in the hub):"; client="$ANSWER"; }
+  [ -n "$owner" ] || { ask_text "Owner (your name, as it should appear in the hub):"; owner="$ANSWER"; }
+  (cd "$target" && HUB="$target" && export HUB && ./bin/init --persona "$persona" --client "$client" --owner "$owner" --name "$name" < /dev/null) &&
+    is_hub "$target" || die 1 "the hub's own set-up did not finish; run $ASK_AGAIN again to pick up where it stopped"
+  rm -f "$target/.git/ade-hub-new"
   target="$(cd "$target" && pwd -P)"; remember_hub "$target"
-  echo "default hub: $target"; echo "next: ade (what to do next)"
+  echo "default hub: $(tilde "$target")"; [ "${GUIDE_ON:-0}" = 1 ] || echo "next: ade (what to do next)"
 }
 
 # ade with no arguments: what to do next (story A3)
@@ -590,7 +607,13 @@ cmd_home() {
   local hub err
   if ! hub="$(find_hub 2> /dev/null)"; then
     err="$(find_hub 2>&1 > /dev/null)"; printf '%s' "$err" | grep -q "no hub found" || echo "$err" >&2
-    echo 'no hub yet: run `ade hub new <name>`'; return 0
+    guide_header; guide_list   # no hub yet: the guide's steps (A18); at a terminal, the offer to start it
+    if agent_context; then echo "A person runs ade setup at a terminal to set up; an agent cannot answer for you."; return 0; fi
+    if [ -t 0 ] && [ -t 1 ]; then ASK_AGAIN="ade setup"
+      ask_yn "Set up now?" y && { guide 1; exit $?; }
+      echo "Later: run ade setup; it picks up where you are."; return 0
+    fi
+    echo "To set up, run ade setup at a terminal; it asks one step at a time."; return 0
   fi
   echo "hub: $(hub_label "$hub") ($hub)"
   [ -x "$hub/bin/sessions" ] && (HUB="$hub"; export HUB; "$hub/bin/sessions")
@@ -656,10 +679,79 @@ KEY_PROVIDERS="anthropic deepseek glm muse gemini"   # the ones that can be sign
 LIVE_PROVIDERS="anthropic gemini deepseek glm muse"
 LIVE_TASK="Reply with the word READY and nothing else."
 
-ask() {   # ask <prompt>: one answer line into ANSWER; no answer (end of input) stops setup
-  printf '%s ' "$1"; IFS= read -r ANSWER || { echo; die 1 "setup stopped: no answer"; }
-  [ -t 0 ] || echo
+# Asking (story A18): every question ade asks goes through ask_text (free text) or ask_choice (a choice). Answers are
+# data: control characters, escape sequences, a leading - and lines over ASK_MAX characters are asked again.
+# ASK_TTY=1: the prompt and the answer on /dev/tty (reset, restore, installs), else stdout and stdin.
+# End of input: with ASK_EOF=stop (the default) ade stops and says how to come back (ASK_AGAIN, set per command)
+# and exits 1; with ASK_EOF=no the question returns 1. ASK_EMPTY_OK=1: Enter is an answer (a typed-back name).
+# Callers set these with local, so they never reach a child's environment.
+ASK_AGAIN=""; ASK_MAX=200; GUIDE_ON=0
+ask_say() { if [ "${ASK_TTY:-0}" = 1 ]; then printf '%s\n' "$1" > /dev/tty; else printf '%s\n' "$1"; fi; }
+ask_read() {   # <prompt>: one line into ANSWER, spaces around it trimmed; 1 at end of input
+  if [ "${ASK_TTY:-0}" = 1 ]; then printf '%s ' "$1" > /dev/tty; IFS= read -r ANSWER < /dev/tty || { ANSWER=""; return 1; }
+  else printf '%s ' "$1"; IFS= read -r ANSWER || { echo; ANSWER=""; return 1; }; [ -t 0 ] || echo; fi
+  ANSWER="${ANSWER#"${ANSWER%%[! ]*}"}"; ANSWER="${ANSWER%"${ANSWER##*[! ]}"}"
 }
+ask_stop() {   # end of input: stop, saying how to come back (ASK_EOF=stop), or 1
+  [ "${ASK_EOF:-stop}" = stop ] || return 1
+  die 1 "stopped (no answer); to come back, run ${ASK_AGAIN:-the same command again}"
+}
+ask_bad() {   # <answer>: why it is not taken as data; nothing when it is
+  case "$1" in *[[:cntrl:]]*) echo "control characters and escape sequences are not accepted" ;; -*) echo "an answer cannot start with -" ;;
+    *) [ "${#1}" -le "$ASK_MAX" ] || echo "that is over $ASK_MAX characters" ;; esac
+}
+ask_empty() {   # the second empty answer to a question that cannot be skipped: how to leave, once
+  EMPTIES=$((EMPTIES + 1)); [ "$EMPTIES" = 2 ] && ask_say "(to leave, press Ctrl-C; ${ASK_AGAIN:-the same command} picks up where you stopped)"; return 0
+}
+ask_text() {   # <prompt> [default]: free text into ANSWER; empty (with no default) or not data is asked again
+  local why EMPTIES=0
+  while :; do
+    ask_read "$1${2:+ [$2]}" || { ask_stop; return 1; }
+    [ -n "$ANSWER" ] || ANSWER="${2:-}"
+    if [ -z "$ANSWER" ]; then [ "${ASK_EMPTY_OK:-0}" = 1 ] && return 0; why="an answer is needed"; else why="$(ask_bad "$ANSWER")"; fi
+    [ -n "$why" ] || return 0
+    ask_say "$why; type it again"; [ -n "$ANSWER" ] || ask_empty
+  done
+}
+ask_norm() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -d ' _-'; }   # case, spaces, - and _ ignored
+ask_match() {   # <answer> <name>...: the one name the answer means (its number, the name, the name ignoring case,
+  local a="$1" n hit="" k=0 na; shift  # spaces, - and _, or a prefix only one name has); nothing when none or several
+  if matches "$a" '^[0-9]{1,4}$'; then a=$((10#$a)); [ "$a" -ge 1 ] && [ "$a" -le $# ] && { shift $((a - 1)); printf '%s' "$1"; }; return 0; fi
+  for n in "$@"; do [ "$a" = "$n" ] && { printf '%s' "$n"; return 0; }; done
+  a="$(ask_norm "$a")"; [ -n "$a" ] || return 0
+  for n in "$@"; do [ "$a" = "$(ask_norm "$n")" ] && { printf '%s' "$n"; return 0; }; done
+  for n in "$@"; do na="$(ask_norm "$n")"; case "$na" in "$a"*) hit="$n"; k=$((k + 1)) ;; esac; done
+  [ "$k" = 1 ] && printf '%s' "$hit"; return 0
+}
+# ask_choice <prompt> <default name or ""> <name[|description]>...: the chosen name into CHOICE. The choices are
+# numbered (ASK_INLINE=1: a yes/no question, no list); ASK_MULTI=1: several, separated by spaces or commas, into
+# CHOICE as one line (Enter: none, unless a default). Anything else is asked again with one line saying what is accepted.
+ask_choice() {
+  local q="$1" def="$2" c names=() w=0 i=0 why tok hit got EMPTIES=0; shift 2
+  for c in "$@"; do names+=("${c%%|*}"); [ "${#names[$i]}" -le "$w" ] || w="${#names[$i]}"; i=$((i + 1)); done
+  if [ "${ASK_INLINE:-0}" != 1 ]; then i=0
+    for c in "$@"; do i=$((i + 1)); case "$c" in *"|"*) ask_say "$(printf '  %d) %-*s  %s' "$i" "$w" "${c%%|*}" "${c#*|}")" ;; *) ask_say "  $i) $c" ;; esac; done
+    if [ -n "$def" ]; then q="$q [$def]:"; elif [ "${ASK_MULTI:-0}" = 1 ]; then q="$q:"; else q="$q (1-$#):"; fi
+  fi
+  while :; do
+    ask_read "$q" || { ask_stop; return 1; }
+    [ -n "$ANSWER" ] || ANSWER="$def"
+    why="$(ask_bad "$ANSWER")"
+    if [ -n "$why" ]; then ask_say "$why; type it again"; continue; fi
+    if [ "${ASK_MULTI:-0}" = 1 ]; then got=""
+      for tok in $(printf '%s' "$ANSWER" | tr ',' ' '); do hit="$(ask_match "$tok" "${names[@]}")"; [ -n "$hit" ] || { got=-; break; }; got="${got:+$got }$hit"; done
+      [ "$got" != - ] && { CHOICE="$got"; return 0; }
+    else hit=""; [ -z "$ANSWER" ] || hit="$(ask_match "$ANSWER" "${names[@]}")"; [ -n "$hit" ] && { CHOICE="$hit"; return 0; }; fi
+    if [ "${ASK_INLINE:-0}" = 1 ]; then ask_say "accepted: y or n (yes or no)"
+    else ask_say "accepted: a number from 1 to $#, a name from the list (any case) or its start"; fi
+    [ -n "$ANSWER" ] || ask_empty
+  done
+}
+ask_yn() {   # <question> <y|n>: a yes/no question, the default in capitals; 0 = yes
+  local ASK_INLINE=1 d=no hint="[y/N]"; [ "$2" = y ] && { d=yes; hint="[Y/n]"; }
+  ask_choice "$1 $hint" "$d" yes no && [ "$CHOICE" = yes ]
+}
+ask() { ask_text "$1"; }   # ask <prompt>: one answer into ANSWER; end of input stops setup
 ask_secret() {   # ask_secret <prompt>: a hidden answer into SECRET (not echoed, not exported)
   local rc=0
   if [ -t 0 ]; then
@@ -670,7 +762,7 @@ ask_secret() {   # ask_secret <prompt>: a hidden answer into SECRET (not echoed,
   else printf '%s ' "$1"; IFS= read -r SECRET || rc=1; fi
   echo; [ "$rc" = 0 ] || die 1 "setup stopped: no answer"
 }
-yes_no() { ask "$1 [y/N]"; case "$ANSWER" in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac; }
+yes_no() { ask_yn "$1" n; }
 hub_run() { local hub="$1" s="$2"; shift 2; [ -x "$hub/bin/$s" ] || die 2 "this hub has no bin/$s; update it"; ( HUB="$hub"; export HUB; "$hub/bin/$s" "$@" ); }
 
 store_key() {   # store_key <hub> <tool>: hidden prompt, then the hub's bin/keys set <tool> on stdin; 1 = skipped
@@ -715,8 +807,7 @@ sign_in() {
   if [ "$p" = anthropic ]; then
     if [ -z "$how" ]; then
       if claude_signed_in || key_stored "$hub" anthropic; then SIGNED="$SIGNED $p"; return 0; fi
-      ask "Claude Code: sign in with your Claude account (a) or an Anthropic API key (k)? [a/k]"
-      case "$ANSWER" in k|K) how=key ;; *) how=account ;; esac
+      ask_choice "Claude Code: sign in with" account "account|your Claude account" "key|an Anthropic API key"; how="$CHOICE"
     fi
     if [ "$how" = account ]; then
       claude_signed_in || claude auth login || { echo "anthropic: sign-in did not finish"; return 1; }
@@ -724,8 +815,8 @@ sign_in() {
     fi
   fi
   if [ "$p" = gemini ] && command -v "${ADE_GEMINI_CLI:-gemini}" > /dev/null 2>&1; then
-    ask "Gemini: sign in with your Google account in the Gemini CLI (a) or a Gemini API key (k)? [a/k]"
-    case "$ANSWER" in k|K) ;; *) echo "The Gemini CLI opens: pick \"Login with Google\", then leave it (/quit); ade stores nothing."
+    ask_choice "Gemini: sign in with" account "account|your Google account in the Gemini CLI" "key|a Gemini API key"
+    case "$CHOICE" in key) ;; *) echo "The Gemini CLI opens: pick \"Login with Google\", then leave it (/quit); ade stores nothing."
       "${ADE_GEMINI_CLI:-gemini}" || { echo "gemini: sign-in did not finish"; return 1; }; SIGNED="$SIGNED $p"; return 0 ;; esac
   fi
   store_key "$hub" "$p" || { echo "$p: skipped (no key)"; return 1; }
@@ -760,16 +851,12 @@ PY
 setup_top() {   # the everything agent: exactly one; GLM and Muse only after their live check passes
   local hub="$1" p how
   while :; do
-    echo "Your everything agent (the orchestrator, one only; change it later with ade setup --top):"
-    echo "  1) Claude Code with your Claude account (Pro, Max, Team, Enterprise)"
-    echo "  2) Claude Code with an Anthropic API key"
-    echo "  3) DeepSeek"
-    echo "  4) GLM (needs the live check)"
-    echo "  5) Muse (needs the live check)"
-    ask "Pick one [1-5]:"
-    how=""; case "$ANSWER" in
-      1) p=anthropic; how=account ;; 2) p=anthropic; how=key ;; 3) p=deepseek ;; 4) p=glm ;; 5) p=muse ;;
-      *) echo "pick one number from 1 to 5"; continue ;;
+    echo "Your everything agent (the orchestrator) is the one agent you talk to; it hands"
+    echo "work to the others. Pick the AI service it uses (one; later: ade setup --top):"
+    ask_choice "Pick one" "" "claude-account|Claude account in Claude Code (Pro, Max, Team, Enterprise)" \
+      "anthropic-key|Anthropic API key in Claude Code" "deepseek|DeepSeek" "glm|GLM (needs the live check)" "muse|Muse (needs the live check)"
+    how=""; case "$CHOICE" in
+      claude-account) p=anthropic; how=account ;; anthropic-key) p=anthropic; how=key ;; *) p="$CHOICE" ;;
     esac
     sign_in "$hub" "$p" $how || continue
     if live_test "$hub" "$p"; then READY="$READY $p"; conf_set "$hub" HUB_ROOT_PROVIDER "$p"
@@ -785,14 +872,14 @@ setup_top() {   # the everything agent: exactly one; GLM and Muse only after the
 }
 
 setup_focus() {   # focus agents: several; each signed in and live-tested; only ready ones enter the roles
-  local hub="$1" n p allowed="" top
-  echo "Your focus agents (pick any; each is signed in and live-tested):"
-  echo "  1) Claude Code   2) Gemini (Gemini CLI)   3) DeepSeek   4) GLM (needs the live check)   5) Muse (needs the live check)"
-  ask "Numbers separated by spaces (empty for none):"
-  for n in $(printf '%s' "$ANSWER" | tr ',' ' '); do
-    case "$n" in 1) p=anthropic ;; 2) p=gemini ;; 3) p=deepseek ;; 4) p=glm ;; 5) p=muse ;; *) echo "skipped $n (not 1-5)"; continue ;; esac
-    provider_ready "$hub" "$p" || true
-  done
+  local hub="$1" p allowed="" top
+  echo "Your focus agents each do one piece of work. Pick the AI services they may use;"
+  echo "each one is signed in and tried once, so you know it works:"
+  local ASK_MULTI=1
+  ask_choice "Pick any (numbers or names, spaces between; Enter for none)" "" "anthropic|Claude Code" "gemini|Gemini (Gemini CLI)" \
+    "deepseek|DeepSeek" "glm|GLM (needs the live check)" "muse|Muse (needs the live check)"
+  ASK_MULTI=0
+  for p in $CHOICE; do provider_ready "$hub" "$p" || true; done
   top="$(conf_get "$hub" HUB_ROOT_PROVIDER)"
   for p in $top $READY; do case " $allowed " in *" $p "*) ;; *) allowed="${allowed:+$allowed }$p" ;; esac; done
   conf_set "$hub" HUB_PROVIDERS_ALLOWED "$allowed"
@@ -800,12 +887,12 @@ setup_focus() {   # focus agents: several; each signed in and live-tested; only 
     case "$p" in anthropic|gemini) if key_stored "$hub" "$p"; then conn_record "$hub" focus "$p" key; else conn_record "$hub" focus "$p" account; fi ;;
       *) conn_record "$hub" focus "$p" key ;; esac
   done
-  echo "providers in the roles: $allowed (HUB_PROVIDERS_ALLOWED); bin/roles shows which model each role gets"
+  echo "AI services your agents use: $allowed (change it later; ade roles shows it)"
 }
 
 setup_telegram() {
   local hub="$1"
-  yes_no "Do you want to reach your everything agent from Telegram?" || { echo "Telegram skipped (later: ade setup --telegram)"; return 0; }
+  yes_no "Do you want to reach your main agent from Telegram?" || { echo "Telegram skipped (later: ade setup --telegram)"; return 0; }
   echo "1. In Telegram, open @BotFather and send /newbot."
   echo "2. Give the bot a name; BotFather replies with its token."
   echo "3. Paste the token below; it goes only to the hub's key store."
@@ -846,6 +933,201 @@ setup_test() {   # --test [provider|telegram]: re-run live tests; changes nothin
 
 SETUP_PROMPT="Run the ADE setup guide for this hub. Ask me in plain words about my projects and my work first. Then propose a plan and carry it out one step at a time, and ask before each change (wait for my yes): 1) ade init in each project; 2) ade agent add for the specialists each project needs; 3) ade skills add for useful ade-skills plugins; 4) set the role models with bin/models; 5) offer the Telegram channel with bin/chat setup telegram. Say what each step changes before you run it."
 
+# ADE Computer (A18): the image marks itself with this file (.ade/context/hub-interface.md)
+ADE_COMPUTER_MARKER="${ADE_COMPUTER_MARKER:-/etc/ade-computer}"
+in_computer() { [ -f "$ADE_COMPUTER_MARKER" ]; }
+
+# GitHub (A18): a hub needs it. gh's own check and gh's own browser sign-in, on the person's terminal; ade never reads,
+# stores or prints a token or a password (never gh auth token, never --show-token, never --with-token).
+GH_HOST=github.com
+gh_signed_in() { gh auth status --hostname "$GH_HOST" > /dev/null 2>&1 < /dev/null; }
+gh_account() { gh api user --jq .login 2> /dev/null < /dev/null | head -1 | no_ctl | tr -d ' ' | cut -c1-39; }   # the name, or nothing
+# in an ADE Computer gh's output passes through this relay unchanged (stdin stays the terminal), and the one-time
+# code it prints is shown again in block letters, large enough to copy by hand
+IFS= read -r -d '' GH_RELAY <<'PY' || true
+import fcntl, os, re, select, sys, termios
+F = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-", (
+ " ### |#   #|#####|#   #|#   #", "#### |#   #|#### |#   #|#### ", " ####|#    |#    |#    | ####", "#### |#   #|#   #|#   #|#### ",
+ "#####|#    |#### |#    |#####", "#####|#    |#### |#    |#    ", " ####|#    |#  ##|#   #| ####", "#   #|#   #|#####|#   #|#   #",
+ "#####|  #  |  #  |  #  |#####", "#####|   # |   # |#  # | ##  ", "#   #|#  # |###  |#  # |#   #", "#    |#    |#    |#    |#####",
+ "#   #|## ##|# # #|#   #|#   #", "#   #|##  #|# # #|#  ##|#   #", " ### |#   #|#   #|#   #| ### ", "#### |#   #|#### |#    |#    ",
+ " ### |#   #|# # #|#  # | ## #", "#### |#   #|#### |#  # |#   #", " ####|#    | ### |    #|#### ", "#####|  #  |  #  |  #  |  #  ",
+ "#   #|#   #|#   #|#   #| ### ", "#   #|#   #|#   #| # # |  #  ", "#   #|#   #|# # #|## ##|#   #", "#   #| # # |  #  | # # |#   #",
+ "#   #| # # |  #  |  #  |  #  ", "#####|   # |  #  | #   |#####", " ### |#  ##|# # #|##  #| ### ", "  #  | ##  |  #  |  #  | ### ",
+ " ### |#   #|  ## | #   |#####", "#### |    #| ### |    #|#### ", "#   #|#   #|#####|    #|    #", "#####|#    |#### |    #|#### ",
+ " ### |#    |#### |#   #| ### ", "#####|    #|   # |  #  |  #  ", " ### |#   #| ### |#   #| ### ", " ### |#   #| ####|    #| ### ",
+ "     |     |#### |     |     ")))
+def big(c):
+    rows = ["  " + " ".join(F[ch].split("|")[r] for ch in c) for r in range(5)]
+    return ("\nYour one-time code, large:\n\n" + "\n".join(r.rstrip() for r in rows) + "\n\n  " + " ".join(c) + "\n\n").encode()
+m, s = os.openpty()
+try: fcntl.ioctl(s, termios.TIOCSWINSZ, fcntl.ioctl(1, termios.TIOCGWINSZ, b"\0" * 8))
+except OSError: pass
+pid = os.fork()
+if pid == 0:
+    os.close(m); os.dup2(s, 1); os.dup2(s, 2)
+    if s > 2: os.close(s)
+    os.execvp(sys.argv[1], sys.argv[1:])
+os.close(s); seen = set(); tail = b""
+while True:
+    try: d = os.read(m, 4096)
+    except OSError: break
+    if not d: break
+    os.write(1, d); tail = (tail + d)[-256:]
+    for x in re.finditer(rb"code: ([A-Z0-9]{4}-[A-Z0-9]{4})", tail):
+        if x.group(1) not in seen: seen.add(x.group(1)); os.write(1, big(x.group(1).decode()).replace(b"\n", b"\r\n"))
+_, st = os.waitpid(pid, 0)
+sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 1)
+PY
+# github_ready: gh installed (after a yes, from the package manager) and signed in (gh's browser flow), else one line
+# saying how to come back: exit 2 without a terminal or in an agent session, 1 when it did not finish
+github_ready() {
+  local browser=""
+  if ! command -v gh > /dev/null 2>&1; then
+    echo "The GitHub CLI (gh) is not installed; ade installs it with your package manager."
+    tools_install gh || true; hash -r
+    command -v gh > /dev/null 2>&1 || { local rc=1; agent_context || ! [ -t 0 ] && rc=2
+      die "$rc" "your hub needs the GitHub CLI (gh); once it is installed, run $ASK_AGAIN"; }
+  fi
+  gh_signed_in && return 0
+  echo "Your hub needs GitHub: it is a private repository on your GitHub account,"
+  echo "which keeps the hub's memory and lets you restore the hub on another computer."
+  in_computer && echo "The sign-in stays in this computer's home folder; nothing is copied out of it."
+  agent_context && die 2 "a person signs in to GitHub, at a terminal; an agent cannot (refused in a Claude Code session); then run $ASK_AGAIN"
+  { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || die 2 "the GitHub sign-in needs you at a terminal; run $ASK_AGAIN there"
+  echo "This runs GitHub's own sign-in (gh auth login --web): it shows a one-time code"
+  echo "to type at github.com/login/device, on this machine or any other device."
+  echo "ade never asks for a password or a token, and never sees one."
+  if in_computer; then browser=true   # gh opens nothing unless the person asks for this computer's browser
+    [ -n "${DISPLAY:-}" ] && ask_yn "Open the GitHub address in this computer's browser?" y && browser=xdg-open
+    GH_BROWSER="$browser" python3 -I -c "$GH_RELAY" gh auth login --hostname "$GH_HOST" --git-protocol https --web
+  else gh auth login --hostname "$GH_HOST" --git-protocol https --web; fi
+  gh_signed_in || die 1 "the GitHub sign-in did not finish; to try again, run $ASK_AGAIN"
+}
+
+# The guide (A18): ade setup walks from nothing to a working hub. The steps are listed with their state; each step
+# not done says what it is and what it changes, runs, and is checked; done steps are skipped, so ade setup again
+# resumes. Optional steps are offered in a run that did a required step. Step ids: .ade/context/hub-interface.md.
+GUIDE_STEPS="claude-code claude-sign-in github hub project telegram"   # A16 adds its "tools" step after "hub"
+GUIDE_OPTIONAL="telegram"
+guide_title() {
+  case "$1" in claude-code) echo "Claude Code" ;; claude-sign-in) echo "Sign in to Claude" ;; github) echo "Sign in to GitHub" ;;
+    hub) echo "Your hub" ;; project) echo "Your first project" ;; telegram) echo "Telegram (optional)" ;; esac
+}
+guide_hub() { (find_hub) 2> /dev/null; }
+first_project() { local d; for d in "$1"/projects/*/; do [ -d "$d" ] && { basename "$d"; return 0; }; done; return 1; }
+guide_state() {   # <step>: its state in a few words; 0 when it is done (an optional one: when it is on)
+  local hub p a; hub="$(guide_hub)" || hub=""
+  case "$1" in
+    claude-code) command -v claude > /dev/null 2>&1 && { echo installed; return 0; }; echo "not installed" ;;
+    claude-sign-in) command -v claude > /dev/null 2>&1 && claude_signed_in && { echo "signed in (account)"; return 0; }
+      [ -n "$hub" ] && for p in $KEY_PROVIDERS; do key_stored "$hub" "$p" && { echo "signed in (key: $p)"; return 0; }; done
+      echo "not signed in" ;;
+    github) command -v gh > /dev/null 2>&1 || { echo "GitHub CLI not installed"; return 1; }
+      gh_signed_in && { a="$(gh_account)"; echo "signed in${a:+ as $a}"; return 0; }; echo "not signed in" ;;
+    hub) [ -n "$hub" ] || { echo "none yet"; return 1; }
+      [ -n "$(conf_get "$hub" HUB_ROOT_PROVIDER)" ] && { echo "$(hub_label "$hub") ($(tilde "$hub"))"; return 0; }
+      echo "$(hub_label "$hub"): its agents are not chosen yet" ;;
+    project) [ -n "$hub" ] && p="$(first_project "$hub")" && { echo "$p"; return 0; }; echo "none yet" ;;
+    telegram) [ -n "$hub" ] && case " $(conf_get "$hub" HUB_CHANNELS) " in *" telegram "*) echo on; return 0 ;; esac; echo off ;;
+  esac
+  return 1
+}
+guide_header() {
+  local n; n="$(echo $GUIDE_STEPS | wc -w | tr -d ' ')"
+  if in_computer; then echo "Welcome to your ADE Computer. The set-up guide (ade setup), $n steps:"
+  else echo "ADE set-up guide (ade setup): $n steps from nothing to a working hub"; fi
+}
+guide_list() {
+  local id n=0 st mark
+  for id in $GUIDE_STEPS; do n=$((n + 1)); if st="$(guide_state "$id")"; then mark=x; else mark=" "; fi
+    printf '  [%s] %d. %-22s %s\n' "$mark" "$n" "$(guide_title "$id")" "$st" | cut -c1-80; done
+}
+guide_about() {   # <step>: what it is and what it changes, before it runs
+  case "$1" in
+    claude-code) echo "Claude Code is the agent ADE runs. This installs it with its official"
+      echo "installer, after your yes." ;;
+    claude-sign-in) echo "Claude Code works with your Claude account or with an API key. The account"
+      echo "sign-in is Claude Code's own, in your browser; ade stores nothing." ;;
+    hub) echo "Your hub is where ADE keeps its memory: a folder in ~/hubs, saved in a private"
+      echo "repository on your GitHub. ADE sets it up, then you pick its agents." ;;
+    project) echo "ADE opens Claude Code at your hub: it asks about your work and sets up your"
+      echo "first project with you, asking before each change. /exit comes back here." ;;
+    telegram) echo "Optional: a Telegram bot of your own lets you reach your main agent. A yes asks"
+      echo "for the bot's token (hidden) and pairs your Telegram account; no skips it." ;;
+  esac   # github: github_ready says what it is and what it runs
+}
+guide_install_claude() {
+  local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"   # file:// only for tests
+  case "$ADE_CLAUDE_INSTALLER" in https://*) ;; file://*) [ "$proto" != "=https" ] || die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;;
+    *) die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;; esac
+  yes_no "Claude Code is not installed. Install it now? This runs: curl -fsSL $ADE_CLAUDE_INSTALLER | bash" ||
+    die 1 "install Claude Code yourself, then run ade setup again: $CLAUDE_INSTALL_CMD"
+  curl --proto "$proto" --proto-redir "$proto" --tlsv1.2 -fsSL "$ADE_CLAUDE_INSTALLER" | bash || die 1 "the Claude Code installer failed; try: $CLAUDE_INSTALL_CMD"
+  PATH="$HOME/.local/bin:$PATH"; command -v claude > /dev/null 2>&1 || die 1 "claude is still not on PATH; open a new terminal and run ade setup again"
+  claude_update
+}
+guide_new_hub() {   # a hub whose set-up stopped is picked up; else a name, asked until it is a free, valid one
+  local d name=""
+  for d in "$HOME"/hubs/*/; do [ -f "$d.git/ade-hub-new" ] && { name="$(basename "$d")"; break; }; done
+  while [ -z "$name" ]; do
+    ask_text "Name for your hub (lower-case letters, digits and -, e.g. acme-sre):"; name="$ANSWER"
+    if ! matches "$name" '^[a-z0-9][a-z0-9-]{0,63}$'; then ask_say "lower-case letters, digits and - only, at most 64; type it again"; name=""
+    elif [ -e "$HOME/hubs/$name" ]; then ask_say "$(tilde "$HOME/hubs/$name") is taken; type another name"; name=""; fi
+  done
+  (hub_new "$name") || exit $?
+}
+guide_run() {   # <step>: the step itself; it stops ade (exit) when it cannot finish
+  local hub
+  case "$1" in
+    claude-code) guide_install_claude ;;
+    claude-sign-in) ask_choice "How do you use Claude?" account "account|your Claude account (Pro, Max, Team or Enterprise)" \
+        "key|an API key, which you will be asked for at step 4"
+      [ "$CHOICE" = key ] && return 0
+      agent_context && die 2 "a person signs in to Claude; an agent cannot; then run ade setup"
+      claude auth login || die 1 "the Claude sign-in did not finish; to try again, run ade setup" ;;
+    github) github_ready ;;
+    hub) guide_hub > /dev/null || guide_new_hub
+      hub="$(find_hub)" || exit $?
+      [ -n "$(conf_get "$hub" HUB_ROOT_PROVIDER)" ] || { setup_top "$hub"; setup_focus "$hub"; } ;;
+    project) ( cmd_claude -- --permission-mode default "$SETUP_PROMPT" ) ||
+        echo "Claude Code stopped early (exit $?); run ade setup to come back to this step." ;;
+    telegram) hub="$(find_hub)" || exit $?; setup_telegram "$hub" ;;
+  esac
+}
+guide_checked() {   # <step>: one line, after the step, from its state now
+  local st; if st="$(guide_state "$1")"; then
+    case "$1" in claude-code) echo "checked: Claude Code is installed" ;; claude-sign-in) echo "checked: signed in to Claude ${st#signed in }" ;;
+      github) echo "checked: $st to GitHub" | sed 's/^checked: signed in as \(.*\) to GitHub$/checked: signed in to GitHub as \1/' ;;
+      hub) echo "checked: your hub is $st" ;; project) echo "checked: your first project is $st" ;; telegram) echo "checked: Telegram is on" ;; esac
+  else
+    case "$1" in claude-sign-in) echo "checked: your key is asked at step 4, once your hub is made" ;;
+      project) echo "checked: no project yet; ade setup comes back to this step" ;;
+      telegram) echo "checked: Telegram is off" ;; *) echo "checked: $(guide_title "$1"): $st" ;; esac
+  fi
+}
+guide() {   # [1: the list is already shown]: exit 0 at the end, 1 when a step stopped, 2 when refused
+  local id n=0 total did=0 herr left="" hub
+  herr="$( (find_hub) 2>&1 > /dev/null)"
+  if [ -n "$herr" ] && ! printf '%s' "$herr" | grep -q "no hub found"; then echo "$herr" >&2; exit 2; fi
+  ASK_AGAIN="ade setup"; GUIDE_ON=1; total="$(echo $GUIDE_STEPS | wc -w | tr -d ' ')"
+  [ "${1:-0}" = 1 ] || { guide_header; guide_list; }
+  agent_context && die 2 "ade setup asks a person at a terminal; it refuses inside a Claude Code session (an agent cannot answer for you)"
+  setup_tools_steps
+  for id in $GUIDE_STEPS; do n=$((n + 1))
+    guide_state "$id" > /dev/null && continue
+    case " $GUIDE_OPTIONAL " in *" $id "*) [ "$did" = 1 ] || continue ;; *) did=1 ;; esac
+    echo; echo "Step $n of $total: $(guide_title "$id")"; guide_about "$id"
+    guide_run "$id"; guide_checked "$id"
+  done
+  n=0; for id in $GUIDE_STEPS; do n=$((n + 1)); case " $GUIDE_OPTIONAL " in *" $id "*) continue ;; esac
+    guide_state "$id" > /dev/null || { left="$n ($(guide_title "$id"))"; break; }; done
+  echo
+  if [ -n "$left" ]; then echo "Not finished: step $left; run ade setup to pick up there."; return 0; fi
+  hub="$(guide_hub)"; echo "All set: your hub $(hub_label "$hub") is ready ($(tilde "$hub"))."
+  echo "next: ade claude (your everything agent), or ade (what to do next)"
+}
+
 cmd_setup() {
   local mode="${1:-}" hub name
   case "$mode" in
@@ -858,31 +1140,7 @@ cmd_setup() {
     "") ;;
     *) die 2 "usage: ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]" ;;
   esac
-  setup_tools_steps
-  if ! command -v claude > /dev/null 2>&1; then
-    local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"   # file:// only for tests
-    case "$ADE_CLAUDE_INSTALLER" in https://*) ;; file://*) [ "$proto" != "=https" ] || die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;;
-      *) die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;; esac
-    yes_no "Claude Code is not installed. Install it now? This runs: curl -fsSL $ADE_CLAUDE_INSTALLER | bash" ||
-      die 1 "install Claude Code yourself, then run ade setup again: $CLAUDE_INSTALL_CMD"
-    curl --proto "$proto" --proto-redir "$proto" --tlsv1.2 -fsSL "$ADE_CLAUDE_INSTALLER" | bash || die 1 "the Claude Code installer failed; try: $CLAUDE_INSTALL_CMD"
-    PATH="$HOME/.local/bin:$PATH"; command -v claude > /dev/null 2>&1 || die 1 "claude is still not on PATH; open a new terminal and run ade setup again"
-    claude_update
-  fi
-  local herr; herr="$(find_hub 2>&1 > /dev/null)"
-  if [ -n "$herr" ] && ! printf '%s' "$herr" | grep -q "no hub found"; then echo "$herr" >&2; exit 2; fi
-  if ! hub="$(find_hub 2> /dev/null)"; then
-    echo "No hub yet: ade makes one now (ade hub new)."
-    ask "Name for your hub (lower-case letters, digits and -, e.g. acme-sre):"; name="$ANSWER"
-    if yes_no "Create it as a private GitHub repository (needs gh)?"; then (hub_new "$name") || exit $?
-    else (hub_new "$name" --no-github) || exit $?; fi
-    hub="$(find_hub)" || exit $?
-  fi
-  setup_top "$hub"
-  setup_focus "$hub"
-  setup_telegram "$hub"
-  echo "Starting the guided session (ade claude); it asks before each change."
-  cmd_claude -- --permission-mode default "$SETUP_PROMPT"
+  guide
 }
 
 # ade ui / ade dash: a tmux workspace with a tab per agent, on ade's own tmux server (tmux -L ade), so its key table
@@ -1238,17 +1496,16 @@ TAB="$(printf '\t')"
 
 # shq <text>: single-quoted for a shell line the user may copy
 shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
-# confirm <question>: y/yes is yes; anything else, or no answer, is no (ade clean, at a terminal)
-confirm() { printf '%s [y/N] ' "$1"; IFS= read -r ANSWER || ANSWER=""; [ -t 0 ] || echo
-  case "$ANSWER" in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac; }
+# confirm <question>: yes or no (Enter, or no answer, is no); ade clean and ade restore, at a terminal
+confirm() { local ASK_EOF=no; ask_yn "$1" n; }
 # reset and uninstall ask a person at a terminal: answers come from /dev/tty, never a pipe or an agent session
 agent_context() { [ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}${CLAUDE_CODE_SESSION_ID:-}" ]; }
 tty_ready() {
   agent_context && die 2 "ade $1 asks a person at a terminal; it refuses inside a Claude Code session (an agent cannot answer for you); nothing changed"
   { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || die 2 "ade $1 asks a person at a terminal; it refuses piped or missing answers; nothing changed"
 }
-tty_ask() { printf '%s ' "$1" > /dev/tty; IFS= read -r ANSWER < /dev/tty || ANSWER=""; }
-tty_confirm() { tty_ask "$1 [y/N]"; case "$ANSWER" in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac; }
+tty_ask() { local ASK_TTY=1 ASK_EOF=no ASK_EMPTY_OK=1; ask_text "$1" || ANSWER=""; }   # a name typed back; Enter or no answer is ""
+tty_confirm() { local ASK_TTY=1 ASK_EOF=no; ask_yn "$1" n; }
 # known_hubs [extra]: every hub ade knows here, once each (physical paths): the current one, the default, the hub
 # list, the orchestrators' hubs and the extra one
 known_hubs() {
@@ -1871,11 +2128,13 @@ acct_question() {   # <hub> <label> <recorded fp>: 0 once answered (continue, or
   local h="$1" label="$2" rec="$3" cur; cur="$(account_fp "$h")"
   if [ -n "$cur" ]; then echo "This hub was set up with $label; Claude Code here is signed in to another account."
   else echo "This hub was set up with $label; Claude Code here is not signed in to an account."; fi
-  tty_ask "Continue with the current account and reconnect everything (c), or sign in to the recorded one (s)? [c/s]"
-  case "$ANSWER" in
-    c|C) { [ -f "$CONF_DIR/accounts" ] && cat "$CONF_DIR/accounts"; printf '%s\t%s\t%s\tcontinue\n' "$h" "$rec" "$cur"; } | write_conf_file accounts
+  local ASK_TTY=1 ASK_EOF=no; CHOICE=""
+  ask_choice "Continue with the current account, or sign in to the recorded one?" "" "continue|with the current account, and reconnect everything" \
+    "sign-in|to the recorded account" || CHOICE=""
+  case "$CHOICE" in
+    continue) { [ -f "$CONF_DIR/accounts" ] && cat "$CONF_DIR/accounts"; printf '%s\t%s\t%s\tcontinue\n' "$h" "$rec" "$cur"; } | write_conf_file accounts
       echo "continuing with this account; run ade restore to reconnect everything"; return 0 ;;
-    s|S) command -v claude > /dev/null 2>&1 || die 2 "claude is not on PATH; install Claude Code first"
+    sign-in) command -v claude > /dev/null 2>&1 || die 2 "claude is not on PATH; install Claude Code first"
       hub_claude "$h" auth login < /dev/tty || die 1 "the sign-in did not finish"
       [ "$(account_fp "$h")" = "$rec" ] && { echo "signed in to $label"; return 0; }
       die 1 "Claude Code is still signed in to another account than $label" ;;
@@ -2354,7 +2613,7 @@ update_check() {   # before a command: what the cache says (no request here), an
   return 0
 }
 update_banners() {   # one line per component with a newer cached release, once per version (security: every command)
-  local c ver urg min sum seen inst
+  local c ver urg min sum seen inst line
   for c in $COMPONENTS; do
     [ -f "$UPD_DIR/$c.latest" ] || continue
     IFS="$TAB" read -r ver urg min sum < "$UPD_DIR/$c.latest" || [ -n "$ver" ] || continue
@@ -2363,7 +2622,9 @@ update_banners() {   # one line per component with a newer cached release, once 
     [ "$urg" = security ] || [ "$ver" != "$seen" ] || continue
     upd_hub; inst="$(comp_installed "$c" "$UPD_HUB" 2> /dev/null)" || continue
     if ver_gt "$ver" "$inst"; then
-      echo "ade: $c $ver is out (you have $inst)${sum:+: $sum}$([ "$urg" = security ] && echo ' [security update]'); ade update installs it" >&2
+      # one line of at most 80 columns (A18): the versions and the command, never the release's own text
+      line="ade: $c $ver is out (you have $inst)$([ "$urg" = security ] && echo ' [security update]'): run ade update"
+      [ "${#line}" -le 80 ] || line="ade: a newer $c is out: run ade update"; echo "$line" >&2
       [ "$ver" != "$seen" ] && update_telegram "$UPD_HUB" "$c $ver is out (you have $inst)${sum:+: $sum}"
     fi
     echo "$ver" > "$UPD_DIR/$c.seen"
@@ -2382,12 +2643,12 @@ update_auto() {
   [ "$(cat "$UPD_DIR/ade-cli.tried" 2> /dev/null)" = "$ver" ] && return 0
   echo "$ver" > "$UPD_DIR/ade-cli.tried"
   if [ "$(major_of "$ver")" != "$(major_of "$ADE_VERSION")" ] || { [ "$min" != - ] && ver_gt "$min" "$ADE_VERSION"; }; then
-    echo "ade: ade $ver is a major update (or needs $min first); it asks first: run ade update to install it" >&2
+    echo "ade: ade $ver is out (you have $ADE_VERSION); it asks first: run ade update" | cut -c1-80 >&2
     upd_hub; update_telegram "$UPD_HUB" "ade $ver is out (you have $ADE_VERSION); it needs ade update by hand"
     echo "$ver" > "$UPD_DIR/ade-cli.seen"; return 0
   fi
   mkdir "$UPD_DIR/installing" 2> /dev/null || return 0
-  echo "ade: ade $ver is out; installing it in the background (ade update --auto off turns this off)" >&2
+  echo "ade: ade $ver is out (you have $ADE_VERSION); installing it in the background" | cut -c1-80 >&2
   echo "$ver" > "$UPD_DIR/ade-cli.seen"
   ( trap '' HUP INT; self_update 0 "$ver" > "$UPD_DIR/auto.log" 2>&1; echo "exit $?" >> "$UPD_DIR/auto.log"; rmdir "$UPD_DIR/installing" ) < /dev/null > /dev/null 2>&1 &
 }

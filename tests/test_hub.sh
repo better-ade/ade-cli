@@ -58,15 +58,17 @@ refusals_create_nothing() {   # AC4
   assert_eq "$(ls -A "$HOME/hubs/taken")" "" "existing folder untouched"
   nogh="$(no_gh_path)"
   PATH="$nogh" bash "$ADE" hub new fresh1 < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "gh missing"
-  assert_contains "$T/out" "--no-github" "names the way out"
+  assert_contains "$T/out" "your hub needs the GitHub CLI (gh)" "names what is missing (A18: no way around GitHub is offered)"
   [ ! -e "$HOME/hubs/fresh1" ] && [ ! -s "$GH_LOG" ] || fail "gh missing creates nothing"
   [ ! -e "$HOME/.config/ade/hub" ] || fail "no default saved by a refusal"
 }
 
 bare_ade() {   # AC5
-  fresh; mkdir -p "$T/nowhere"
-  out=$(cd "$T/nowhere" && bash "$ADE"); rc=$?; assert_eq "$rc" 0 "no hub exit 0"
-  assert_eq "$out" 'no hub yet: run `ade hub new <name>`' "no-hub hint"
+  fresh; mkdir -p "$T/nowhere" "$T/fakebin"; local c   # fakes: never the host's claude or gh sign-in state
+  for c in claude gh; do printf '#!/bin/bash\nexit 1\n' > "$T/fakebin/$c"; chmod +x "$T/fakebin/$c"; done; export PATH="$T/fakebin:$PATH"
+  out=$(cd "$T/nowhere" && bash "$ADE" < /dev/null); rc=$?; assert_eq "$rc" 0 "no hub exit 0"
+  echo "$out" > "$T/out"; assert_contains "$T/out" "[ ] 4. Your hub" "no hub: the guide's steps (A18)"
+  assert_contains "$T/out" "run ade setup at a terminal" "and the command"
   make_hub "$T/h" h; echo "HUB_NAME=acme" > "$T/h/hub.conf"
   out=$(cd "$T/nowhere" && ADE_HUB="$T/h" bash "$ADE"); rc=$?; assert_eq "$rc" 0 "hub exit 0"
   echo "$out" > "$T/out"
