@@ -8,7 +8,8 @@ setup_fakes() {   # $1 = 1: claude on PATH (default), 0: missing
   if [ "${1:-1}" = 1 ]; then fake_claude "$T/fakebin"; fi
   # a fake gh, signed in (A18: the guide's GitHub step); repo create clones $TPL
   printf '#!/bin/bash\necho "gh $*" >> "$CALLS"\n[ "$1 $2" = "repo create" ] && git clone -q "$TPL" "$3"\n[ "$1 $2" = "api user" ] && echo tester\nexit 0\n' > "$T/fakebin/gh"
-  chmod +x "$T/fakebin/gh"; export PATH="$T/fakebin:$PATH"
+  printf '#!/bin/bash\nexit 0\n' > "$T/fakebin/bun"   # the Telegram step's bun: there, whatever the host has
+  chmod +x "$T/fakebin/gh" "$T/fakebin/bun"; export PATH="$T/fakebin:$PATH"
 }
 fake_claude() {
   cat > "$1/claude" <<'STUB'
@@ -85,7 +86,7 @@ account_signin() {   # AC2
 
 key_only_on_stdin() {   # AC3
   fresh; setup_fakes; setup_hub
-  setup 3 "S3CRET-deepseek-key" "" y "S3CRET-telegram-token" || { cat "$T/out"; fail "setup exit"; }
+  setup 3 "S3CRET-deepseek-key" "" y "S3CRET-telegram-token" later || { cat "$T/out"; fail "setup exit"; }
   assert_contains "$CALLS.keystore" "deepseek=S3CRET-deepseek-key" "the key reached bin/keys set deepseek on stdin"
   assert_contains "$CALLS.keystore" "telegram=S3CRET-telegram-token" "the token reached bin/keys set telegram on stdin"
   hits=$(grep -rl "S3CRET" "$T" | grep -v "calls.keystore$"); assert_eq "$hits" "" "no other file, argv log, env log or output holds a secret"
@@ -119,7 +120,7 @@ guided_session() {   # AC6
   fresh; setup_fakes; setup_hub; setup 1 "" n || fail "exit"
   assert_contains "$T/out" "session pwd:$T/hub" "starts ade claude at the hub"
   assert_contains "$T/out" "arg:--remote-control" "through ade claude"
-  for s in "ade init" "ade agent add" "ade skills add" "bin/models" "bin/chat setup telegram" "ask before each change"; do
+  for s in "ade init" "ade agent add" "ade skills add" "bin/models" "ade setup --telegram" "ask before each change"; do
     assert_contains "$T/out" "$s" "the prompt names: $s"; done
 }
 
@@ -129,8 +130,8 @@ check_changes_nothing() {   # AC7
   before="$(snap)"; bash "$ADE" setup --check < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "check exit"; }
   assert_eq "$(snap)" "$before" "no file changed"
   ! grep -E "auth login|keys set|keys forget|agent |chat setup|^gh" "$CALLS" > /dev/null || { cat "$CALLS"; fail "no writing call"; }
-  for s in "claude code: installed" "sign-in: not signed in" "hub: $T/hub" "projects: 2" "channel: telegram"; do assert_contains "$T/out" "$s" "line: $s"; done
-  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 5 "one line per step"
+  for s in "claude code: installed" "sign-in: not signed in" "hub: $T/hub" "projects: 2" "channel: telegram" "telegram: not finished: install the Telegram plugin (ade setup --telegram)"; do assert_contains "$T/out" "$s" "line: $s"; done
+  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 6 "one line per step"
 }
 
 top_first_only_one() {   # AC8
@@ -161,15 +162,17 @@ no_gpt_or_codex() {   # AC11
   ! grep -qiE "gpt|codex|openai" "$ADE" || fail "not in ade either"
 }
 
-telegram_step() {   # AC12
-  fresh; setup_fakes; setup_hub; setup 1 "" y "tok-123" || { cat "$T/out"; fail "exit"; }
+telegram_step() {   # AC12 (the step itself, one thing at a time to a bot that passed its test: test_telegram.sh)
+  fresh; setup_fakes; setup_hub; setup 1 "" y "tok-123" later || { cat "$T/out"; fail "exit"; }
   assert_eq "$(grep -c "Telegram?" "$T/out")" 1 "asked once"; assert_contains "$T/out" "@BotFather" "explains the bot"
   [ "$(grep -n "focus agents" "$T/out" | head -1 | cut -d: -f1)" -lt "$(grep -n "Telegram?" "$T/out" | cut -d: -f1)" ] || fail "Telegram asked after the providers"
-  assert_contains "$CALLS" "keys set telegram" "token to bin/keys"; assert_contains "$CALLS" "chat setup telegram" "then bin/chat setup"
-  [ "$(grep -n '^keys set telegram' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^chat setup telegram' "$CALLS" | cut -d: -f1)" ] || fail "order"
-  fresh; setup_fakes; setup_hub; setup 1 "" n; ! grep -qE "^(keys set telegram|chat )" "$CALLS" || fail "no skips it"
-  fresh; setup_fakes; setup_hub; printf 'y\ntok\n' | bash "$ADE" setup --telegram > "$T/out" 2>&1 || { cat "$T/out"; fail "--telegram"; }
-  grep -q "^chat setup telegram" "$CALLS" || fail "--telegram runs the step"; assert_not_contains "$CALLS" "agent " "and nothing else"
+  assert_contains "$CALLS" "keys set telegram" "token to bin/keys"; ! grep -q "^chat setup" "$CALLS" || fail "never the hub's list of every step"
+  assert_contains "$CALLS" "claude plugin install telegram@claude-plugins-official --scope user" "then the next step it can do itself"
+  [ "$(grep -n '^keys set telegram' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^claude plugin install' "$CALLS" | cut -d: -f1)" ] || fail "order"
+  assert_contains "$T/out" "Telegram is not finished: install the Telegram plugin, then ade setup --telegram" "and it never ends silently"
+  fresh; setup_fakes; setup_hub; setup 1 "" n; ! grep -qE "^(keys set telegram|chat (setup|start|stop|test)|claude plugin)" "$CALLS" || fail "no skips it"
+  fresh; setup_fakes; setup_hub; printf 'y\ntok\nlater\n' | bash "$ADE" setup --telegram > "$T/out" 2>&1 || { cat "$T/out"; fail "--telegram"; }
+  grep -q "^keys set telegram" "$CALLS" || fail "--telegram runs the step"; assert_not_contains "$CALLS" "agent " "and nothing else"
   assert_not_contains "$T/out" "session pwd" "no session"
 }
 
@@ -276,11 +279,11 @@ deadline = time.time() + 20
 while time.time() < deadline:
     if not pump(): break
     if b"Telegram? [y/N]" in buf and "y" not in sent: os.write(fd, b"y" + bytes([10])); sent.append("y")
-    if b"Bot token (hidden):" in buf and "t" not in sent: os.write(fd, b"PTY-T0KEN-typed" + bytes([10])); sent.append("t")
-    if b"chat ran: setup telegram" in buf: break
+    if b"Bot token (hidden; Enter skips):" in buf and "t" not in sent: os.write(fd, b"PTY-T0KEN-typed" + bytes([10])); sent.append("t")
+    if b"What now?" in buf: os.write(fd, b"later" + bytes([10])); break
 pump(0.5); open(outp, "wb").write(buf); os.waitpid(pid, 0)
 PY
-  assert_contains "$T/pty.out" "Bot token (hidden):" "the prompt was shown"; assert_contains "$CALLS.keystore" "telegram=PTY-T0KEN-typed" "the token was stored"
+  assert_contains "$T/pty.out" "Bot token (hidden; Enter skips):" "the prompt was shown"; assert_contains "$CALLS.keystore" "telegram=PTY-T0KEN-typed" "the token was stored"
   assert_not_contains "$T/pty.out" "PTY-T0KEN-typed" "the token never shows on the terminal"
 }
 
@@ -331,7 +334,7 @@ live_go_on() {   # go on without the test: chosen, not tested, in no focus role;
   assert_eq "$(conf HUB_PROVIDERS_ALLOWED)" "" "in no focus role (A5)"; grep -q '"provider": "anthropic"' "$T/hub/.ade/connections.json" || fail "the choice is in the record"
   assert_eq "$(grep -c 'go-on' "$T/out")" 1 "a focus agent is never offered it"; assert_contains "$T/out" "leave this service out" "it is left out instead"
   bash "$ADE" setup --check > "$T/out" 2>&1; assert_contains "$T/out" "hub: $T/hub (anthropic: not tested; ade setup --test)" "--check says not tested"
-  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 5 "still one line per step"
+  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 6 "still one line per step"
   bash "$ADE" setup --test < /dev/null > "$T/out" 2>&1; assert_eq "$?" 1 "--test tries it, and it still fails"; assert_eq "$(conf HUB_PROVIDERS_UNTESTED)" anthropic "so it stays"
   rm "$CALLS.fail.anthropic"; bash "$ADE" setup --test < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "--test"; }
   assert_contains "$T/out" "anthropic: tested now; your focus agents may use it" "a pass is recorded"
@@ -378,17 +381,13 @@ key_store_fails() {   # A18b: bin/keys set fails: enter it again, or stop
   echo "keys: the store is locked" > "$CALLS.keysfail"; printf '3\nk\n2\n' | bash "$ADE" setup --top > "$T/out" 2>&1; assert_eq "$?" 1 "stop"
   assert_eq "$(tail -1 "$T/out")" "ade: stopped; to come back, run the same command again" "how to come back"
 }
-telegram_fails() {   # A18b, step 6: the token again, try again, skip, stop
-  fresh; setup_fakes; setup_hub; printf 'chat: pairing timed out\nx\nx\n' > "$CALLS.chatfail"
-  printf '%s\n' y tok-1 token tok-2 "" skip | bash "$ADE" setup --telegram > "$T/out" 2>&1 || { cat "$T/out"; fail "skip is not an error"; }
-  assert_contains "$T/out" "The Telegram set-up did not finish (the hub's bin/chat setup telegram, exit 1)" "said"
-  for s in "  1) token  enter the token again" "  2) retry  try again" "  3) skip   skip Telegram" "  4) stop   stop here" "What now? [retry]:"; do assert_contains "$T/out" "$s" "$s"; done
-  assert_contains "$CALLS.keystore" "telegram=tok-2" "the token again"; assert_eq "$(grep -c '^chat setup telegram' "$CALLS")" 3 "token, then Enter tried again"
-  assert_contains "$T/out" "Telegram skipped (later: ade setup --telegram)" "then skipped"
-  echo x > "$CALLS.chatfail"; printf '%s\n' y tok-3 stop | bash "$ADE" setup --telegram > "$T/out" 2>&1; assert_eq "$?" 1 "stop"
-  echo "keys: locked" > "$CALLS.keysfail"; printf '%s\n' y tok-4 "" tok-5 | bash "$ADE" setup --telegram > "$T/out" 2>&1 || { cat "$T/out"; fail "token stored the second time"; }
-  assert_contains "$T/out" "The Telegram token was not stored" "a token bin/keys refuses"; assert_contains "$CALLS.keystore" "telegram=tok-5" "entered again"
-  assert_contains "$T/out" "chat ran: setup telegram" "then the set-up"
+telegram_fails() {   # A18b, step 6: a token the key store refuses; the steps after it: test_telegram.sh
+  fresh; setup_fakes; setup_hub
+  echo "keys: locked" > "$CALLS.keysfail"; printf '%s\n' y tok-4 "" tok-5 later | bash "$ADE" setup --telegram > "$T/out" 2>&1 || { cat "$T/out"; fail "token stored the second time"; }
+  assert_contains "$T/out" "The token was not stored: keys: locked" "a token bin/keys refuses"; assert_contains "$CALLS.keystore" "telegram=tok-5" "entered again"
+  for s in "  1) token  enter the token again" "  2) later  finish Telegram later" "  3) stop   stop here" "What now? [token]:"; do assert_contains "$T/out" "$s" "$s"; done
+  echo "keys: locked" > "$CALLS.keysfail"; printf '%s\n' y tok-6 stop | bash "$ADE" setup --telegram > "$T/out" 2>&1; assert_eq "$?" 1 "stop"
+  assert_eq "$(tail -1 "$T/out")" "ade: stopped; to come back, run ade setup --telegram" "how to come back"
 }
 
 ALL="live_limit live_not_signed_in live_other_error live_go_on live_hostile sign_in_fails key_store_fails telegram_fails live_test_temp_safety exported_names_cleared ready_whole_line top_keeps_allowed failed_asks_key_again guided_default_mode other_hub_errors_pass reasons_scrubbed gemini_account hidden_on_a_pty installer_asks_first account_signin key_only_on_stdin glm_needs_live_check hub_when_missing guided_session check_changes_nothing top_first_only_one focus_multi_live_tests no_gpt_or_codex telegram_step test_reruns"

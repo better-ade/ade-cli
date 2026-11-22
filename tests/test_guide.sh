@@ -57,7 +57,7 @@ case "${1:-} ${2:-}" in
 esac
 STUB
   printf '#!/bin/bash\necho "xdg-open $*" >> "$CALLS"\n' > "$F/xdg-open"
-  printf '#!/bin/bash\n. "$FT/fails.sh"; echo "brew $*" >> "$CALLS"; fails brew.fail && exit 1\n[ "$1 $2" = "install gh" ] && cp "$FT/gh.real" "$FT/fakebin/gh"\nexit 0\n' > "$F/brew"
+  printf '#!/bin/bash\n. "$FT/fails.sh"; echo "brew $*" >> "$CALLS"; fails brew.fail && exit 1\n[ "$1 $2" = "install gh" ] && cp "$FT/gh.real" "$FT/fakebin/gh"\n[ "$1 $2" = "install gitleaks" ] && cp "$FT/fakebin/tmux" "$FT/fakebin/gitleaks"\nexit 0\n' > "$F/brew"
   printf '#!/bin/bash\nif [ $# -eq 0 ] || [ "$1" = -s ]; then echo Darwin; else exec "%s" "$@"; fi\n' "$(command -v uname)" > "$F/uname"
   local c; for c in tmux yazi bat glow pdftotext pdftoppm chafa code gitleaks; do printf '#!/bin/bash\nexit 0\n' > "$F/$c"; done   # the other tools: there
   chmod +x "$F"/*; cp "$F/gh" "$T/gh.real"; cp "$F/claude" "$T/claude.fake"
@@ -467,7 +467,15 @@ guide_first_save() {   # A18b: the hub as bin/init rendered it is committed and 
   assert_contains "$T/out" "does not commit without it. Later (install gitleaks first): cd ~/hubs/s5 && bin/sync --yes && git push" "with the command"
   assert_not_contains "$CALLS" "sync --yes" "and nothing is committed without it"; [ -n "$(git -C "$HOME/hubs/s5" status --porcelain)" ] || fail "left as it was"
 }
+guide_tools_then_first_save() {   # gitleaks is a required tool: once the tools step installed it, the first save runs
+  fresh; fakes; signed_in claude gh; rm "$F/gitleaks"
+  G "y\nacme\ntech-lead\nAcme\nSam\n" setup
+  assert_contains "$T/out" "missing tools ade needs: gitleaks" "the tools step names it"; assert_contains "$CALLS" "brew install gitleaks" "and installs it after a yes"
+  [ "$(grep -n '^brew install gitleaks' "$CALLS" | cut -d: -f1)" -lt "$(grep -n '^sync --yes' "$CALLS" | cut -d: -f1)" ] || { cat "$CALLS"; fail "before the hub is saved"; }
+  assert_contains "$CALLS" "sync --yes gitleaks=yes" "so the first save runs, with the secret scan"; assert_contains "$T/out" "synced: " "and says so"
+  assert_not_contains "$T/out" "Not saved yet" "it is not skipped"; assert_eq "$(git -C "$HOME/hubs/acme" status --porcelain)" "" "nothing is left uncommitted"
+}
 
-ALL="guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
+ALL="guide_tools_then_first_save guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
