@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.3
 - The guide, when a step fails (A18b): one plain line of at most 80 columns says what went wrong (never another
   tool's raw text), a `details:` line says where the rest is, and a numbered question offers what fits, with a
   default; `stop`, the end of input and Ctrl-C leave with the line on how to come back. A live test that fails says a
