@@ -20,7 +20,8 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 
 - `ade setup` writes two keys (A5), each one line, shell-quoted, replaced in place: `HUB_ROOT_PROVIDER` (the everything
   agent's provider: `anthropic`, `deepseek`, `glm` or `muse`) and `HUB_PROVIDERS_ALLOWED` (the top provider plus every
-  focus provider whose live test passed). It reads `HUB_PROVIDERS_ALLOWED` for `ade setup --test`.
+  focus provider whose live test passed). It reads `HUB_PROVIDERS_ALLOWED` for `ade setup --test`. A18b adds
+  `HUB_PROVIDERS_UNTESTED` (below).
 
 ## `ade setup` and the hub (A5)
 - Provider ids: `anthropic`, `gemini`, `deepseek`, `glm`, `muse`. GPT and Codex are never offered. Gemini is a focus
@@ -208,6 +209,32 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - Every question ade asks goes through `ask_text` or `ask_choice` (A18); `CHOICE` is never inherited.
 - `ade setup` with no flags (the guide) refuses inside an agent session (exit 2); `--check`, `--test`, `--top`,
   `--telegram` and `--tools` keep their own rules.
+
+## When a guide step fails (A18b)
+- One function, `failed <kind> <line> [details] [default] [note]`, and one table, `FAILS` (`kind|default|choice=words;...`),
+  in `ade`: a plain line (ASCII, no control character, key-shaped text hidden, at most 80 columns), a `details:` line,
+  the numbered choices, the answer in `CHOICE`. `stop` and the end of input exit 1, Ctrl-C exits 130, each with
+  `ade: stopped...; to come back, run <command>`. A new step adds its row and calls `failed`.
+- The hub's first version (`ade hub new`, after `bin/init` and after the hub is saved in `~/.config/ade`): the hub's
+  `bin/sync --yes`, run with `HUB` set and no input, only when `gitleaks` is on PATH and the hub's `core.hooksPath`
+  is `.githooks` (`bin/init` sets it); else two lines with the command for later and no commit. `bin/sync --yes`
+  does not push a commit an earlier run made, so after it `ade` runs `git push -q` when `@{u}..HEAD` is not empty.
+  Never `--force`. No `bin/sync` in the hub: nothing is done. Kind `first-save`.
+- Kinds: `live-top-account`, `live-top-key`, `live-top-check` (GLM, Muse), `live-focus-account`, `live-focus-key`,
+  `install` (Claude Code, `gh`), `sign-in` (Claude, Gemini), `gh-sign-in`, `repo-taken`, `repo-auth`, `repo-create`,
+  `hub-init`, `session`, `telegram`, `key-store`.
+- `~/.config/ade/last-failure` (0600): the output of the last `gh repo create` or `bin/init` that failed, control
+  characters removed and key-shaped text hidden. Both run with no input and their output captured (shown when they
+  work). Tools that own the terminal (sign-ins, installers, the session, `bin/chat setup`) keep their own lines.
+- `hub.conf` `HUB_PROVIDERS_UNTESTED` (written by `ade setup`, read only by `ade`): the everything agent's provider
+  when it was chosen without a passed live test ("go on without the test"), else empty or absent. While it is set,
+  that provider is `HUB_ROOT_PROVIDER` but is left out of `HUB_PROVIDERS_ALLOWED`, so the rule that only a tested
+  provider enters a role (A5) holds; a pass in `ade setup --test`, `ade setup --top` or the focus step empties it and
+  adds the provider to `HUB_PROVIDERS_ALLOWED`. GLM and Muse, and every focus provider, are never offered it.
+  Known limit: the hub reads an empty `HUB_PROVIDERS_ALLOWED` as `anthropic`, so an untested `anthropic` everything
+  agent with no other provider is still usable by the hub's focus agents; `ade` cannot say otherwise in that list.
+- The live test's failure line: the hub's `agent: live test of <p>:<m> failed: <why>; details: <file>`. `ade` shows the
+  file when it exists, its folder when the hub hid the name, else `ade setup --test <p>`.
 
 ## Writes into a checkout (0.2.1)
 - Every file `ade` writes inside a project or hub folder (`.ade/connections.json`, `.ade/method-version`, the files

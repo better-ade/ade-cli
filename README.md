@@ -126,6 +126,14 @@ the providers below), your first project (the guided session), then Telegram (op
 skipped. The chart shows the provider and Telegram steps. `ade setup` with no flags refuses inside an agent
 session (a person answers it); `--check`, `--test`, `--top`, `--telegram` and `--tools` keep their own rules.
 
+When a step fails (a live test, an install, a sign-in, `gh repo create`, the hub's `bin/init`, the guided session,
+Telegram, a key that was not stored) the guide says what went wrong in one plain line, says where the details are,
+and asks what to do with numbered choices: for a live test, sign in with a different Claude account (or enter the
+key again), try again, use another AI service, or go on without the test. An everything agent chosen without its
+test shows as "not tested" in `ade setup --check` until `ade setup --test` passes; focus agents always need the test.
+Once the hub is set up, `ade hub new` saves its first version with the hub's own `bin/sync --yes` (a commit under
+your git identity, after the hub's secret scan, then a push), so GitHub shows the hub's own README.
+
 ```mermaid
 flowchart TD
   start(["ade setup"]) --> cc{"Claude Code<br/>installed?"}
