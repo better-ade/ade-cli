@@ -206,6 +206,8 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   <name>` with that folder picks up there, and the guide's hub step picks up the first one under `~/hubs`. `bin/init`
   gets every answer as a flag, with stdin closed. `--no-github` stays for tests and scripts; no message offers it.
 - Every question ade asks goes through `ask_text` or `ask_choice` (A18); `CHOICE` is never inherited.
+- `ade setup` with no flags (the guide) refuses inside an agent session (exit 2); `--check`, `--test`, `--top`,
+  `--telegram` and `--tools` keep their own rules.
 
 ## Writes into a checkout (0.2.1)
 - Every file `ade` writes inside a project or hub folder (`.ade/connections.json`, `.ade/method-version`, the files

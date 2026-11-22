@@ -589,10 +589,11 @@ hub_new() {
   if [ "${#rows[@]}" -gt 0 ]; then
     v=""; [ -z "$persona" ] || v="$(ask_match "$persona" "${rows[@]%%|*}")"
     if [ -z "$v" ]; then [ -z "$persona" ] || echo "$persona is not one of the personas below."
-      echo "Personas:"; ask_choice "Persona for this hub" "" "${rows[@]}"; v="$CHOICE"; fi
+      echo "The kind of teammate this hub's main agent acts as (pick the closest):"
+      ask_choice "Kind of teammate" "" "${rows[@]}"; v="$CHOICE"; fi
     persona="$v"
-  elif [ -z "$persona" ]; then ask_text "Persona for this hub:"; persona="$ANSWER"; fi
-  [ -n "$client" ] || { ask_text "Client or team this hub works for:"; client="$ANSWER"; }
+  elif [ -z "$persona" ]; then ask_text "The kind of teammate this hub's main agent acts as:"; persona="$ANSWER"; fi
+  [ -n "$client" ] || { ask_text "Who this hub works for (a client or your team; shown in the hub):"; client="$ANSWER"; }
   [ -n "$owner" ] || { ask_text "Owner (your name, as it should appear in the hub):"; owner="$ANSWER"; }
   (cd "$target" && HUB="$target" && export HUB && ./bin/init --persona "$persona" --client "$client" --owner "$owner" --name "$name" < /dev/null) &&
     is_hub "$target" || die 1 "the hub's own set-up did not finish; run $ASK_AGAIN again to pick up where it stopped"
@@ -699,14 +700,17 @@ ask_bad() {   # <answer>: why it is not taken as data; nothing when it is
   case "$1" in *[[:cntrl:]]*) echo "control characters and escape sequences are not accepted" ;; -*) echo "an answer cannot start with -" ;;
     *) [ "${#1}" -le "$ASK_MAX" ] || echo "that is over $ASK_MAX characters" ;; esac
 }
+ask_empty() {   # the second empty answer to a question that cannot be skipped: how to leave, once
+  EMPTIES=$((EMPTIES + 1)); [ "$EMPTIES" = 2 ] && ask_say "(to leave, press Ctrl-C; ${ASK_AGAIN:-the same command} picks up where you stopped)"; return 0
+}
 ask_text() {   # <prompt> [default]: free text into ANSWER; empty (with no default) or not data is asked again
-  local why
+  local why EMPTIES=0
   while :; do
     ask_read "$1${2:+ [$2]}" || { ask_stop; return 1; }
     [ -n "$ANSWER" ] || ANSWER="${2:-}"
     if [ -z "$ANSWER" ]; then [ "${ASK_EMPTY_OK:-0}" = 1 ] && return 0; why="an answer is needed"; else why="$(ask_bad "$ANSWER")"; fi
     [ -n "$why" ] || return 0
-    ask_say "$why; type it again"
+    ask_say "$why; type it again"; [ -n "$ANSWER" ] || ask_empty
   done
 }
 ask_norm() { printf '%s' "$1" | tr 'A-Z' 'a-z' | tr -d ' _-'; }   # case, spaces, - and _ ignored
@@ -723,7 +727,7 @@ ask_match() {   # <answer> <name>...: the one name the answer means (its number,
 # numbered (ASK_INLINE=1: a yes/no question, no list); ASK_MULTI=1: several, separated by spaces or commas, into
 # CHOICE as one line (Enter: none, unless a default). Anything else is asked again with one line saying what is accepted.
 ask_choice() {
-  local q="$1" def="$2" c names=() w=0 i=0 why tok hit got; shift 2
+  local q="$1" def="$2" c names=() w=0 i=0 why tok hit got EMPTIES=0; shift 2
   for c in "$@"; do names+=("${c%%|*}"); [ "${#names[$i]}" -le "$w" ] || w="${#names[$i]}"; i=$((i + 1)); done
   if [ "${ASK_INLINE:-0}" != 1 ]; then i=0
     for c in "$@"; do i=$((i + 1)); case "$c" in *"|"*) ask_say "$(printf '  %d) %-*s  %s' "$i" "$w" "${c%%|*}" "${c#*|}")" ;; *) ask_say "  $i) $c" ;; esac; done
@@ -740,6 +744,7 @@ ask_choice() {
     else hit=""; [ -z "$ANSWER" ] || hit="$(ask_match "$ANSWER" "${names[@]}")"; [ -n "$hit" ] && { CHOICE="$hit"; return 0; }; fi
     if [ "${ASK_INLINE:-0}" = 1 ]; then ask_say "accepted: y or n (yes or no)"
     else ask_say "accepted: a number from 1 to $#, a name from the list (any case) or its start"; fi
+    [ -n "$ANSWER" ] || ask_empty
   done
 }
 ask_yn() {   # <question> <y|n>: a yes/no question, the default in capitals; 0 = yes
@@ -846,7 +851,8 @@ PY
 setup_top() {   # the everything agent: exactly one; GLM and Muse only after their live check passes
   local hub="$1" p how
   while :; do
-    echo "Your everything agent (the orchestrator; one only, later: ade setup --top):"
+    echo "Your everything agent (the orchestrator) is the one agent you talk to; it hands"
+    echo "work to the others. Pick the AI service it uses (one; later: ade setup --top):"
     ask_choice "Pick one" "" "claude-account|Claude account in Claude Code (Pro, Max, Team, Enterprise)" \
       "anthropic-key|Anthropic API key in Claude Code" "deepseek|DeepSeek" "glm|GLM (needs the live check)" "muse|Muse (needs the live check)"
     how=""; case "$CHOICE" in
@@ -867,7 +873,8 @@ setup_top() {   # the everything agent: exactly one; GLM and Muse only after the
 
 setup_focus() {   # focus agents: several; each signed in and live-tested; only ready ones enter the roles
   local hub="$1" p allowed="" top
-  echo "Your focus agents (pick any; each is signed in and live-tested):"
+  echo "Your focus agents each do one piece of work. Pick the AI services they may use;"
+  echo "each one is signed in and tried once, so you know it works:"
   local ASK_MULTI=1
   ask_choice "Pick any (numbers or names, spaces between; Enter for none)" "" "anthropic|Claude Code" "gemini|Gemini (Gemini CLI)" \
     "deepseek|DeepSeek" "glm|GLM (needs the live check)" "muse|Muse (needs the live check)"
@@ -880,12 +887,12 @@ setup_focus() {   # focus agents: several; each signed in and live-tested; only 
     case "$p" in anthropic|gemini) if key_stored "$hub" "$p"; then conn_record "$hub" focus "$p" key; else conn_record "$hub" focus "$p" account; fi ;;
       *) conn_record "$hub" focus "$p" key ;; esac
   done
-  echo "providers in the roles: $allowed (bin/roles shows each role's model)"
+  echo "AI services your agents use: $allowed (change it later; ade roles shows it)"
 }
 
 setup_telegram() {
   local hub="$1"
-  yes_no "Do you want to reach your everything agent from Telegram?" || { echo "Telegram skipped (later: ade setup --telegram)"; return 0; }
+  yes_no "Do you want to reach your main agent from Telegram?" || { echo "Telegram skipped (later: ade setup --telegram)"; return 0; }
   echo "1. In Telegram, open @BotFather and send /newbot."
   echo "2. Give the bot a name; BotFather replies with its token."
   echo "3. Paste the token below; it goes only to the hub's key store."
@@ -1042,11 +1049,11 @@ guide_about() {   # <step>: what it is and what it changes, before it runs
       echo "installer, after your yes." ;;
     claude-sign-in) echo "Claude Code works with your Claude account or with an API key. The account"
       echo "sign-in is Claude Code's own, in your browser; ade stores nothing." ;;
-    hub) echo "Your hub is where ADE keeps its memory: a folder in ~/hubs and its own private"
-      echo "GitHub repository, made from the ADE template. Then you pick its agents." ;;
+    hub) echo "Your hub is where ADE keeps its memory: a folder in ~/hubs, saved in a private"
+      echo "repository on your GitHub. ADE sets it up, then you pick its agents." ;;
     project) echo "ADE opens Claude Code at your hub: it asks about your work and sets up your"
       echo "first project with you, asking before each change. /exit comes back here." ;;
-    telegram) echo "Optional: a Telegram bot of your own reaches your everything agent. A yes asks"
+    telegram) echo "Optional: a Telegram bot of your own lets you reach your main agent. A yes asks"
       echo "for the bot's token (hidden) and pairs your Telegram account; no skips it." ;;
   esac   # github: github_ready says what it is and what it runs
 }
@@ -1075,7 +1082,7 @@ guide_run() {   # <step>: the step itself; it stops ade (exit) when it cannot fi
   case "$1" in
     claude-code) guide_install_claude ;;
     claude-sign-in) ask_choice "How do you use Claude?" account "account|your Claude account (Pro, Max, Team or Enterprise)" \
-        "key|an API key (Anthropic, DeepSeek, GLM or Muse), asked at step 4"
+        "key|an API key, which you will be asked for at step 4"
       [ "$CHOICE" = key ] && return 0
       agent_context && die 2 "a person signs in to Claude; an agent cannot; then run ade setup"
       claude auth login || die 1 "the Claude sign-in did not finish; to try again, run ade setup" ;;
@@ -1083,7 +1090,8 @@ guide_run() {   # <step>: the step itself; it stops ade (exit) when it cannot fi
     hub) guide_hub > /dev/null || guide_new_hub
       hub="$(find_hub)" || exit $?
       [ -n "$(conf_get "$hub" HUB_ROOT_PROVIDER)" ] || { setup_top "$hub"; setup_focus "$hub"; } ;;
-    project) ( cmd_claude -- --permission-mode default "$SETUP_PROMPT" ) || true ;;
+    project) ( cmd_claude -- --permission-mode default "$SETUP_PROMPT" ) ||
+        echo "Claude Code stopped early (exit $?); run ade setup to come back to this step." ;;
     telegram) hub="$(find_hub)" || exit $?; setup_telegram "$hub" ;;
   esac
 }

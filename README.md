@@ -123,7 +123,8 @@ says "this hub has no bin/&lt;cmd&gt;; update it" and exits 2.
 One command from nothing to a working hub and a guided first session. Every step asks first. Since A18 the steps
 are listed with their state and run in this order: Claude Code, sign in to Claude, sign in to GitHub, your hub (with
 the providers below), your first project (the guided session), then Telegram (optional); a step already done is
-skipped. The chart shows the provider and Telegram steps.
+skipped. The chart shows the provider and Telegram steps. `ade setup` with no flags refuses inside an agent
+session (a person answers it); `--check`, `--test`, `--top`, `--telegram` and `--tools` keep their own rules.
 
 ```mermaid
 flowchart TD

@@ -33,7 +33,8 @@ echo "claude $*" >> "$CALLS"
 case "${1:-} ${2:-}" in
   "auth status") [ -f "$FT/claude.in" ] ;;
   "auth login") [ -f "$FT/claude.fail" ] && exit 1; touch "$FT/claude.in" ;;
-  *) echo "(the guided Claude Code session runs here)"; [ -z "${MAKE_PROJECT:-}" ] || mkdir -p "projects/$MAKE_PROJECT" ;;
+  *) echo "(the guided Claude Code session runs here)"; [ -z "${SESSION_EXIT:-}" ] || exit "$SESSION_EXIT"
+    [ -z "${MAKE_PROJECT:-}" ] || mkdir -p "projects/$MAKE_PROJECT" ;;
 esac
 STUB
   cat > "$F/gh" <<'STUB'
@@ -54,7 +55,7 @@ STUB
   printf '#!/bin/bash\necho "brew $*" >> "$CALLS"\n[ "$1 $2" = "install gh" ] && cp "$FT/gh.real" "$FT/fakebin/gh"\nexit 0\n' > "$F/brew"
   printf '#!/bin/bash\nif [ $# -eq 0 ] || [ "$1" = -s ]; then echo Darwin; else exec "%s" "$@"; fi\n' "$(command -v uname)" > "$F/uname"
   local c; for c in tmux yazi bat glow pdftotext pdftoppm chafa; do printf '#!/bin/bash\nexit 0\n' > "$F/$c"; done   # the other tools: there
-  chmod +x "$F"/*; cp "$F/gh" "$T/gh.real"
+  chmod +x "$F"/*; cp "$F/gh" "$T/gh.real"; cp "$F/claude" "$T/claude.fake"
   make_template; export ADE_HUB_TEMPLATE_URL="$T/template"; unset DISPLAY ADE_COMPUTER_MARKER
   mkdir -p "$T/cwd"
 }
@@ -100,6 +101,7 @@ while time.time() < end:
 sys.stdout.write(out.decode("utf-8", "replace").replace("\r", ""))
 _, st = os.waitpid(pid, 0); sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 1)' "$k" env PATH="$F:$T/sys" COLUMNS=80 LINES=24 "$BASH" "$ADE" "$@") > "$T/out" 2>&1
 }
+fakes_claude_to() { cp "$T/claude.fake" "$1"; chmod +x "$1"; }   # the fake claude, where an installer puts it
 signed_in() { local w; for w in "$@"; do touch "$T/$w.in"; done; }
 last_line() { grep -v '^[[:space:]]*$' "$T/out" | tail -1; }
 
@@ -259,6 +261,66 @@ guide_hostile() {   # AC9
   assert_contains "$T/out" "control characters" "says why"; assert_contains "$CALLS" "repo create acme" "then the good one"
 }
 
-ALL="guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
+guide_empty_hint() {   # review 3: the second empty answer to a question that cannot be skipped says how to leave
+  fresh; fakes; signed_in claude gh
+  G "\n\n" hub new x1; assert_eq "$(grep -c 'to leave, press Ctrl-C; ade hub new x1 picks up where you stopped' "$T/out")" 1 "once, on a choice"
+  [ "$(grep -n 'Ctrl-C' "$T/out" | cut -d: -f1)" -gt "$(grep -n 'accepted:' "$T/out" | head -1 | cut -d: -f1)" ] || fail "not at the first refusal"
+  G "tech-lead\n\n" hub new x2; assert_not_contains "$T/out" "Ctrl-C" "one empty answer: no hint"
+  G "tech-lead\n\n\n\n" hub new x3; assert_eq "$(grep -c 'Ctrl-C' "$T/out")" 1 "once, on free text"
+  fresh; fakes; signed_in gh; G "\n\n" setup; assert_contains "$CALLS" "claude auth login" "Enter took the default"
+  assert_not_contains "$T/out" "Ctrl-C" "a default is never a refusal; one empty name is not a second"
+}
+
+guide_session_fails() {   # review 4: a guided session that exits non-zero is said, then the guide ends as not finished
+  fresh; fakes; signed_in claude gh
+  A hub new acme --persona tech-lead --client Acme --owner Sam < /dev/null || { cat "$T/out"; fail "hub"; }
+  echo "HUB_ROOT_PROVIDER=anthropic" >> "$HOME/hubs/acme/hub.conf"
+  SESSION_EXIT=1 G "n\n" setup; rc=$?
+  assert_contains "$T/out" "Claude Code stopped early (exit 1); run ade setup to come back to this step." "said in one line"
+  assert_contains "$T/out" "checked: no project yet" "then checked"
+  assert_contains "$T/out" "Not finished: step 5 (Your first project); run ade setup to pick up there." "and the ending"
+  assert_eq "$rc" 0 "the guide ran to its end"
+  G "n\n" setup; assert_not_contains "$T/out" "stopped early" "a session that exits 0 is not"
+}
+
+hub_new_resume_flags() {   # review 6: the resume line names --dir and --public, and running it again picks up
+  fresh; fakes; signed_in claude gh; touch "$T/init.fail"; mkdir -p "$T/elsewhere"
+  G "tech-lead\nAcme\nSam\n" hub new pub --public --dir "$T/elsewhere"; assert_eq "$?" 1 "bin/init failed"
+  assert_eq "$(last_line)" "ade: the hub's own set-up did not finish; run ade hub new pub --dir $T/elsewhere --public again to pick up where it stopped" "the whole command"
+  assert_contains "$CALLS" "repo create pub --template better-ade/ade-brain --public --clone" "public"
+  rm "$T/init.fail"; G "tech-lead\nAcme\nSam\n" hub new pub --public --dir "$T/elsewhere" || { cat "$T/out"; fail "picks up"; }
+  assert_contains "$T/out" "Picking up the hub pub where its set-up stopped" "says so"; assert_eq "$(grep -c 'repo create pub' "$CALLS")" 1 "one repository"
+  [ ! -e "$T/elsewhere/pub/.git/ade-hub-new" ] && [ -f "$T/elsewhere/pub/hub.conf" ] || fail "finished, marker gone"
+  touch "$T/init.fail"; G "tech-lead\nAcme\nSam\n" hub new home1 --dir "$HOME/work"
+  assert_contains "$T/out" "run ade hub new home1 --dir ~/work again" "a folder in the home is written with ~"
+  rm "$T/init.fail"; mkdir -p "$T/cwd/hubs"; G "tech-lead\nAcme\nSam\n" hub new rel1 --dir hubs; [ -f "$T/cwd/hubs/rel1/hub.conf" ] || fail "a relative --dir"
+  G "" hub new rel1 --dir hubs; assert_eq "$?" 2 "a finished hub is not picked up"
+}
+
+guide_computer_relay() {   # review 6: the relay passes gh's exit code and output, and opens nothing without a yes
+  fresh; fakes; signed_in claude; touch "$T/ade-computer" "$T/gh.fail"; export ADE_COMPUTER_MARKER="$T/ade-computer" DISPLAY=:0
+  G "n\n" setup; rc=$?; assert_eq "$rc" 1 "gh's failure comes through the relay"
+  assert_contains "$T/out" "error: authentication timed out" "gh's own output passes through"
+  assert_contains "$T/out" "Your one-time code, large:" "the code is still shown large"
+  assert_eq "$(last_line)" "ade: the GitHub sign-in did not finish; to try again, run ade setup" "ade's line last"
+  assert_contains "$CALLS" "gh env GH_BROWSER=true" "no: the browser stays closed"; assert_not_contains "$CALLS" "xdg-open" "nothing opened"
+  rm "$T/gh.fail"; unset ADE_COMPUTER_MARKER; G "" setup; assert_not_contains "$CALLS" "GH_BROWSER=xdg" "outside a computer ade sets no browser"
+  [ "$(grep -c '^gh env GH_BROWSER' "$CALLS")" = 1 ] || fail "and none at all outside one"
+  assert_not_contains "$T/out" "large:" "nor the large code"
+}
+
+guide_installs_claude() {   # review 6: step 1 with Claude Code missing, through the fake installer
+  fresh; fakes; local real; rm "$F/claude"; real="$T/claude.real"; mkdir -p "$T/inst"
+  printf '#!/bin/bash\necho installer-ran >> "$CALLS"; mkdir -p "$HOME/.local/bin"; cp "%s" "$HOME/.local/bin/claude"\n' "$real" > "$T/inst/install.sh"
+  fakes_claude_to "$real"; export ADE_CLAUDE_INSTALLER="file://$T/inst/install.sh" ADE_TEST_ALLOW_FILE_URLS=1
+  G "n\n" setup; assert_eq "$?" 1 "no: stops"; assert_contains "$T/out" "Step 1 of 6: Claude Code" "the first step"
+  assert_contains "$T/out" "curl -fsSL https://claude.ai/install.sh | bash" "names the manual command"; assert_not_contains "$CALLS" installer-ran "nothing ran"
+  G "y\n" setup; assert_contains "$CALLS" installer-ran "a yes runs the installer"
+  assert_contains "$T/out" "checked: Claude Code is installed" "then checked"; assert_contains "$T/out" "Step 2 of 6" "and on to the next"
+  export ADE_CLAUDE_INSTALLER="http://example.invalid/install.sh"; rm -rf "$HOME/.local/bin"
+  G "y\n" setup; assert_eq "$?" 1 "a non-https installer"; assert_contains "$T/out" "must be an https URL" "is refused"
+}
+
+ALL="guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

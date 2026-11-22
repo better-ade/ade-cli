@@ -22,3 +22,7 @@
   is not a persona is asked again. `.git/ade-hub-new` marks a clone whose `bin/init` has not finished; running the
   same command again (or the guide's hub step) picks it up without a second `gh repo create`.
 - The update banner is built to fit 80 columns and drops the release summary (Telegram keeps it).
+- Fix round (review of PR #43): the display text says each term in plain words (no command, flag or key renamed);
+  the second refused empty answer at a question that cannot be skipped adds one hint (`ask_empty`: Ctrl-C leaves, the
+  command in `ASK_AGAIN` picks up); a guided session that exits non-zero is said in one line and the guide still ends
+  at "Not finished: step 5"; plain `ade setup` refuses inside an agent session, its flags keep their own rules.

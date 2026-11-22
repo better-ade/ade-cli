@@ -5,7 +5,8 @@
 step "install from this checkout"; bash "$REPO/install.sh" "$W/prefix" || fail "install"
 export PATH="$W/prefix/bin:$PATH"; fake_claude
 [ "$(ade version)" = "ade $(cat "$REPO/VERSION")" ] || fail "version"
-step "ade with no hub"; ade | grep -q "no hub yet" || fail "first-run hint"
+step "ade with no hub: the guide's steps and the command (A18)"; ade < /dev/null > "$W/home.out" || fail "ade alone"
+grep -q "Your hub  *none yet" "$W/home.out" && grep -q "run ade setup at a terminal" "$W/home.out" || { cat "$W/home.out"; fail "first-run hint"; }
 step "ade hub new --no-github (real ade-brain template)"
 ade hub new e2e --no-github --dir "$W/hubs" --persona devops-sre --client Example --owner owner1 < /dev/null || fail "hub new"
 [ -f "$W/hubs/e2e/hub.conf" ] || fail "hub.conf"; [ "$(cat "$HOME/.config/ade/hub")" = "$W/hubs/e2e" ] || fail "default hub"
