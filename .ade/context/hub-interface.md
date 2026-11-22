@@ -184,3 +184,13 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `git python3 tmux gh bat poppler-utils chafa`; yazi and glow are not in apt and are not downloaded (their release
   pages are named). Installs run only after one yes at a terminal: `brew install <pkgs>`, `[sudo] apt-get install -y
   <pkgs>`; never in an agent session; never a script piped to a shell. V2's `ade server install` uses the apt list.
+
+## Writes into a checkout (0.2.1)
+- Every file `ade` writes inside a project or hub folder (`.ade/connections.json`, `.ade/method-version`, the files
+  `ade init` copies, the project's and the hub's `.claude/settings.json`, `hub.conf`) goes through `ade_write` in
+  `ADE_PY_WRITE` (run by `write_py`): a `mkstemp` temp file in the same folder, fsync, `os.replace`; a target that is
+  not a regular file, or a folder on the way (`.ade`, `.claude`, and for `ade init` every folder of the path) that is
+  a link, is refused with one line and exit 1. Writers that read first hold `ade_hold`: `flock` on the folder itself
+  (no lock file is left in the project) until they exit. `hub.conf` is checked without its folder, the hub root,
+  which may be a link the owner made.
+- Fetches of the pinned repositories run with `GIT_TERMINAL_PROMPT=0` and `-c credential.helper=`.
