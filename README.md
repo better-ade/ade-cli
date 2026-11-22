@@ -33,9 +33,10 @@ Inside a hub (a copy of [ade-brain](https://github.com/better-ade/ade-brain)) it
 the hub stays the single source of truth and `ade` stays thin. Inside a project it sets up the ADE method, specialist
 agents and skills from their own repos, at pinned versions, and never overwrites a file you already have.
 
-> **Status:** version `0.1.0`. Only story [A1](docs/stories/A1-ade-command.md) is built: the hub commands, `init`,
-> `agent list|add`, `skills add`, `open`, `version` and `help`. Everything else on this page is marked **planned** with
-> the story that will build it.
+> **Status:** version `0.2.0`. Built: the hub and project commands (A1), orchestrators (A2), `hub new` (A3),
+> `ade claude` (A4), `ade setup` (A5), `ade ui` (A6), skills (A7), `clean`, `reset` and `uninstall` (A9), `restore`
+> (A10), `update` and update notices (A11, A12), and the file viewer (A15). Not built yet: keys and the clipboard
+> ([A13](docs/stories/A13-keys-and-clipboard.md)) and the vault ([A14](docs/stories/A14-ade-vault.md)).
 
 ## Install
 
@@ -49,7 +50,7 @@ git clone https://github.com/better-ade/ade-cli && cd ade-cli && ./install.sh
 `PATH`. Pass a prefix to install somewhere else: `./install.sh /usr/local`. Re-run it after a `git pull` to upgrade.
 
 Or in one line ([A3](docs/stories/A3-hub-new-and-first-run.md)): the tagged release that main's `VERSION` names, never
-main itself (`ADE_CLI_REF=v0.1.0` picks another release).
+main itself (`ADE_CLI_REF=v0.1.0` picks another release by its tag).
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh | bash
@@ -59,7 +60,7 @@ curl -fsSL https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh 
 
 ```bash
 ade help                         # every command, one line each
-ade version                      # ade 0.1.0
+ade version                      # ade 0.2.0
 
 # In a project (any git repo); no hub needed
 ade init                         # copy ade-method at its pinned tag; lists what it kept
@@ -74,7 +75,7 @@ ade status                       # the hub's sessions (bin/sessions)
 ade work projects/api --role builder   # start or resume a focus agent (bin/work)
 ```
 
-`ade hub new my-hub` creates the hub for you ([A3](docs/stories/A3-hub-new-and-first-run.md)); **planned:**
+`ade hub new my-hub` creates the hub for you ([A3](docs/stories/A3-hub-new-and-first-run.md));
 `ade setup` does sign-in, providers, Telegram and a guided first session in one go
 ([A5](docs/stories/A5-ade-setup.md)).
 
@@ -83,7 +84,7 @@ ade work projects/api --role builder   # start or resume a focus agent (bin/work
 ```mermaid
 flowchart LR
   you(["You"]) --> ade["ade"]
-  tg(["Telegram"]) <-->|"channel (planned A2, A5)"| orch
+  tg(["Telegram"]) <-->|"channel (A2, A5)"| orch
 
   subgraph hub["Hub (a copy of ade-brain)"]
     bin["bin/ scripts<br/>work · sessions · dispatch · chat · keys · models · roles · doctor"]
@@ -115,7 +116,7 @@ flowchart LR
 current one with `bin/lib.sh` and `hub.conf`, then the path in `~/.config/ade/hub`. When the hub lacks a script, `ade`
 says "this hub has no bin/&lt;cmd&gt;; update it" and exits 2.
 
-## `ade setup` (planned, A5)
+## `ade setup` (A5)
 
 One command from nothing to a working hub and a guided first session. Every step asks first.
 
@@ -236,7 +237,7 @@ or tool. A hub command exits with whatever the hub's script returns.
 ## Providers
 
 Everything runs through Claude Code, except Gemini for focus agents, which runs through Gemini CLI. Choosing them is
-part of `ade setup` (planned, A5); the hub's `bin/keys`, `bin/models` and `bin/roles` do the work.
+part of `ade setup` (A5); the hub's `bin/keys`, `bin/models` and `bin/roles` do the work.
 
 | Provider | Runs through | Everything agent (exactly one) | Focus agents (any number) |
 |---|---|:---:|:---:|
@@ -257,12 +258,12 @@ In plain words:
   environment of any program, in a log, or in a file in your repo. On macOS it lives in the Keychain. With a Claude
   account, Claude Code's own login is used and `ade` stores nothing.
 - **It asks before it changes things.** `ade init` and `ade agent add` never overwrite a file; they list what they kept.
-  The planned `ade setup` asks before installing Claude Code, and its guided session asks before each step. New hubs
-  are private unless you ask for public (planned, A3).
-- **Only you can talk to it on Telegram.** The planned Telegram channel pairs your own Telegram account and switches on
+  `ade setup` asks before installing Claude Code, and its guided session asks before each step. New hubs are private
+  unless you ask for public (A3).
+- **Only you can talk to it on Telegram.** The Telegram channel pairs your own Telegram account and switches on
   an allowlist before it sends its first test message (A5, done by the hub's `bin/chat`). The bot token is treated like
   a key.
-- **No skipped permissions.** Agents run with Claude Code's normal permission checks. The planned `ade claude` refuses
+- **No skipped permissions.** Agents run with Claude Code's normal permission checks. `ade claude` refuses
   `--dangerously-skip-permissions` anywhere in its arguments (A4).
 - **Viewing only reads.** `ade files`, `ade view` and the link picker never edit, move or delete. A path outside the
   hub and its project checkouts, or a link that leads out of them, opens only after you say yes at the terminal (an
