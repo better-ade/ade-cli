@@ -117,8 +117,8 @@ check_changes_nothing() {   # AC7
   before="$(snap)"; bash "$ADE" setup --check < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "check exit"; }
   assert_eq "$(snap)" "$before" "no file changed"
   ! grep -E "auth login|keys set|keys forget|agent |chat setup|^gh" "$CALLS" > /dev/null || { cat "$CALLS"; fail "no writing call"; }
-  for s in "claude code: installed" "sign-in: not signed in" "hub: $T/hub" "projects: 2" "channel: telegram"; do assert_contains "$T/out" "$s" "line: $s"; done
-  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 5 "one line per step"
+  for s in "claude code: installed" "sign-in: not signed in" "secrets: ade-secrets" "hub: $T/hub" "projects: 2" "channel: telegram"; do assert_contains "$T/out" "$s" "line: $s"; done
+  assert_eq "$(grep -vc '^secrets: ' "$T/out")" 5 "one line per step (the secrets step: A13's test_key.sh)"
 }
 
 top_first_only_one() {   # AC8

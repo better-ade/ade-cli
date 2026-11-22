@@ -40,6 +40,7 @@ table() {
     agent) echo "R|agent add X" ;;
     skills) echo "R|skills add X"; echo "R|skills enable X"; echo "R|skills disable X"; echo "S|skills search X" ;;
     clean) echo "R|clean X" ;;
+    key) echo "R|key set X"; echo "R|key set X --clipboard"; echo "R|key copy X"; echo "R|key copy X --for 5"; echo "R|key forget X" ;;
     update) echo "R|update X" ;;
     restore) echo "R|restore X"; echo "S|restore --label X" ;;
     reset) echo "R|reset X"; echo "R|reset --hub X"; echo "R|reset --keys --hub X" ;;

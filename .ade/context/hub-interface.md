@@ -184,3 +184,23 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `git python3 tmux gh bat poppler-utils chafa`; yazi and glow are not in apt and are not downloaded (their release
   pages are named). Installs run only after one yes at a terminal: `brew install <pkgs>`, `[sudo] apt-get install -y
   <pkgs>`; never in an agent session; never a script piped to a shell. V2's `ade server install` uses the apt list.
+
+## `ade key` and ade-secrets (A13)
+- The contract is better-ade/ade-secrets `docs/contract.md` v1 (ade-secrets v0.3.0). `ade key list | status`, `set
+  <name> [--clipboard]`, `copy <name> [--for N]`, `forget <name>` run `ade-secrets <same words>` with the terminal
+  attached; nothing captured or piped; its exit code unchanged (0 ok, 1 failed, 2 usage or no store, 3 refused, 4 no
+  clipboard, 5 locked), with one plain line from `ade` for 3, 4 and 5. Names `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
+- Refused before ade-secrets runs (exit 3): no terminal, or any of `CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_PID
+  CLAUDE_CODE_SESSION_ID CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_PROJECT_DIR CLAUDE_PLUGIN_ROOT CLAUDE_CODE_EXECPATH
+  CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT` set. ade-secrets missing: exit 2.
+- The store: `ade` only reads it (`ade-secrets store`, exit 2 = none recorded) and passes the person's pick as
+  `ADE_SECRETS_STORE` to the first `set`; it never runs `ade-secrets store <name>`.
+- A delegating hub (ade-brain H2): `bin/secret` has a line starting `# >>> ade-secrets delegation`, ade-secrets is on
+  `PATH`, `HUB_SECRETS` is not `builtin`. `ade setup` and `ade restore` then run `ade-secrets set <name> [--clipboard]
+  --helper --kind api-key --used-by hub`, `<name>` = the third column of the tool's row in `bin/keys` (else the tool).
+- Doctor: the rules of ade-secrets' `docs/claude-settings.json` (`permissions.deny` and `permissions.ask`) are expected
+  in the hub's `.claude/settings.json`.
+- Install: `ADE_SECRETS_REF` (default `v0.3.0`) and its
+  `https://github.com/better-ade/ade-secrets/releases/download/<tag>/release.json`, which must name a sha256 for
+  `ade-secrets` and `vault.sh`. v0.3.0 names none, so nothing is installed yet (needed: `assets: bin/ade-secrets
+  lib/vault.sh` in ade-secrets' release.yml).

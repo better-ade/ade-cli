@@ -39,6 +39,7 @@ Hubs:
   dash        ade dash [--once]: the fleet panel (agents, tickets, last events)
   setup       ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]: tools, sign in, providers, Telegram, hub, guided session
   claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root; with a folder, ade work <folder>
+  key         ade key list | set <name> [--clipboard] | copy <name> [--for N] | forget <name> | status: keys in ade-secrets, never shown
   hub         ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]
               | ade hub list | ade hub use <path>
   (none)      ade alone: the hub, its sessions and what to do next
@@ -624,6 +625,7 @@ hub_run() { local hub="$1" s="$2"; shift 2; [ -x "$hub/bin/$s" ] || die 2 "this 
 
 store_key() {   # store_key <hub> <tool>: hidden prompt, then the hub's bin/keys set <tool> on stdin; 1 = skipped
   local hub="$1" tool="$2"
+  if hub_delegates "$hub"; then hub_key_set "$hub" "$tool" "the $tool key" || return 1; record_key "$hub" "$tool"; echo "$tool key stored in ade-secrets"; return 0; fi   # A13
   ask_secret "Paste the $tool key (hidden; empty skips):"
   [ -n "$SECRET" ] || { SECRET=""; return 1; }
   printf '%s\n' "$SECRET" | hub_run "$hub" keys set "$tool" > /dev/null; local rc=$?
@@ -757,10 +759,13 @@ setup_telegram() {
   echo "1. In Telegram, open @BotFather and send /newbot."
   echo "2. Give the bot a name; BotFather replies with its token."
   echo "3. Paste the token below; it goes only to the hub's key store."
+  if hub_delegates "$hub"; then hub_key_set "$hub" telegram "the bot token" || { echo "Telegram skipped (no token)"; return 0; }   # A13
+  else
   ask_secret "Bot token (hidden):"
   [ -n "$SECRET" ] || { echo "Telegram skipped (no token)"; return 0; }
   printf '%s\n' "$SECRET" | hub_run "$hub" keys set telegram > /dev/null; local rc=$?; SECRET=""
   [ "$rc" = 0 ] || die 1 "bin/keys could not store the Telegram token"
+  fi
   record_key "$hub" telegram
   hub_run "$hub" chat setup telegram || return $?
   record_channel "$hub" telegram; record_services "$hub"
@@ -775,6 +780,7 @@ setup_check() {   # one line per step; reads only
     [ -n "$hub" ] && for p in $KEY_PROVIDERS; do key_stored "$hub" "$p" && keys="${keys:+$keys, }$p"; done
     if [ -n "$keys" ]; then echo "sign-in: signed in (key: $keys)"; else echo "sign-in: not signed in"; fi
   fi
+  secrets_report "$hub"
   if [ -z "$hub" ]; then echo "hub: none (ade hub new <name>)"; echo "projects: none"; echo "channel: none"; return 0; fi
   echo "hub: $hub"
   for d in "$hub"/projects/*/; do [ -d "$d" ] && n=$((n + 1)); done; echo "projects: $n"
@@ -2004,13 +2010,18 @@ EOF
         confirm "Install the plugin $n at $data$where, from the marketplace $pm ($(repo_url "$prepo"))?" &&
           restore_plugin "$hub" "$dir" "${n%@*}" "$pm" "$data" "$prepo" ;;
       channel) if confirm "Restore $n (its bot token at a hidden prompt, then pairing this device again)?"; then
+          if hub_delegates "$hub"; then   # A13: ade-secrets takes the token in this terminal
+            if ! hub_key_set "$hub" telegram "the bot token for ${det:-the bot}"; then RESULT=skipped
+            elif hub_run "$hub" chat setup telegram --repair; then RESULT=ready; record_key "$hub" telegram
+            else RESULT="failed (bin/chat setup telegram --repair)"; fi
+          else
           ask_secret "Bot token for ${det:-the bot} (hidden):"
           if [ -z "$SECRET" ]; then RESULT=skipped
           else printf '%s\n' "$SECRET" | hub_run "$hub" keys set telegram > /dev/null; local rc=$?; SECRET=""
             if [ "$rc" != 0 ]; then RESULT="failed (bin/keys could not store the token)"
             elif hub_run "$hub" chat setup telegram --repair; then RESULT=ready; record_key "$hub" telegram
             else RESULT="failed (bin/chat setup telegram --repair)"; fi
-          fi; fi ;;
+          fi; fi; fi ;;
       service) svc="$svc $n"; continue ;;
     esac
     echo "$k $n$where: $RESULT"
@@ -2578,12 +2589,14 @@ setup_tools() {   # [required|extras]: ade setup --tools; what is missing, after
   local req ext
   req="$(tools_missing $REQUIRED_TOOLS)"; ext="$(tools_missing $EXTRA_TOOLS)"
   case "${1:-}" in required) ext="" ;; extras) req="" ;; esac
-  [ -n "$req$ext" ] || { echo "tools: everything ade uses is installed"; return 0; }
+  if [ -z "$req$ext" ]; then echo "tools: everything ade uses is installed"; [ -n "${1:-}" ] || secrets_install || true; return 0; fi   # A13: then ade-secrets
   [ -n "$req" ] && echo "missing tools ade needs: $req"
   [ -n "$ext" ] && echo "missing viewer extras (ade works without them): $ext"
   case " $ext " in *" yazi "*) echo "  ade files uses yazi only with ADE_FILES=yazi: $YAZI_WARNING." ;; esac
   # shellcheck disable=SC2086  # tool names, one word each
-  tools_install $req $ext
+  tools_install $req $ext; local rc=$?
+  [ -n "${1:-}" ] || secrets_install || true   # A13: after the tools, its own question
+  return "$rc"
 }
 setup_tools_steps() {   # the first steps of ade setup: the required tools, then the viewer extras as one yes/no
   local req ext
@@ -2594,6 +2607,7 @@ setup_tools_steps() {   # the first steps of ade setup: the required tools, then
   [ -n "$ext" ] && { echo "The viewer extras (ade files and ade view work without them): $ext"
     case " $ext " in *" yazi "*) echo "  ade files uses yazi only with ADE_FILES=yazi: $YAZI_WARNING." ;; esac
     tools_install $ext || true; }
+  secrets_install || true   # A13
   return 0
 }
 
@@ -2974,6 +2988,140 @@ PY
   ADE_ROOTS="$ROOTS" ADE_SELF="$(ade_self)" ADE_BASH="$BASH" ADE_TMP_ROOT="$TMP_ROOT" python3 -I -c "$src" "$@"
 }
 
+# --- ade key (story A13): the local key store, through ade-secrets (its docs/contract.md, v1) ---
+# ade holds no secret code: every key command runs ade-secrets with the person's terminal attached and captures none
+# of its output; a value is never read, held, logged or printed here. Names follow the contract's rule.
+ADE_SECRETS_REF="${ADE_SECRETS_REF:-v0.3.0}"
+SECRETS_FILES="ade-secrets vault.sh"   # what an install takes from the release (bin/ade-secrets, lib/vault.sh)
+SECRETS_SESSION_VARS="CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_BRIDGE_SESSION_ID
+  CLAUDE_PROJECT_DIR CLAUDE_PLUGIN_ROOT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT"
+SECRETS_MARKER="# >>> ade-secrets delegation"   # the first line of the contract's block in a hub's bin/secret (H2)
+KEY_USAGE="usage: ade key list | set <name> [--clipboard] | copy <name> [--for N] | forget <name> | status"
+KEY_NAME_RX='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
+key_name_ok() { local LC_ALL=C; [[ $1 =~ $KEY_NAME_RX ]]; }
+key_name_check() { key_name_ok "$1" || die 2 "a key name is letters, digits, '.', '_' or '-' (up to 64), starting with a letter or digit"; }
+secrets_session_var() { local v; for v in $SECRETS_SESSION_VARS; do [ -n "${!v+x}" ] && { echo "$v"; return 0; }; done; return 1; }
+secrets_tty() { { [ -t 0 ] && : < /dev/tty; } 2> /dev/null; }
+key_guard() {   # <what>: before ade-secrets is called: it is installed, no agent session, a person at a terminal
+  command -v ade-secrets > /dev/null 2>&1 || die 2 "ade-secrets is not installed; get it with: ade setup --tools"
+  local v; v="$(secrets_session_var)" && die 3 "ade $1 runs only in your own terminal, not inside an agent session ($v is set); nothing ran"
+  secrets_tty || die 3 "ade $1 runs only in your own terminal (there is no terminal here); nothing ran"
+}
+KEY_STORE=""   # the store the person picked for ade-secrets' first set (ADE_SECRETS_STORE for that one call)
+secrets_run() {   # <ade-secrets args>: the terminal attached, nothing captured; its exit code, one plain line for 3, 4, 5
+  local rc=0
+  if [ -n "$KEY_STORE" ]; then ADE_SECRETS_STORE="$KEY_STORE" ade-secrets "$@" || rc=$?; else ade-secrets "$@" || rc=$?; fi
+  case "$rc" in
+    3) echo "ade: ade-secrets refused: run this in your own terminal, not inside an agent session" >&2 ;;
+    4) echo "ade: no clipboard here (over SSH or without a display); type the key at the hidden prompt instead" >&2 ;;
+    5) echo "ade: the store is locked (the age passphrase was not accepted); try again" >&2 ;;
+  esac
+  return "$rc"
+}
+key_store_pick() {   # before a set: with no store recorded, the person picks one and ade-secrets records it (never ade)
+  KEY_STORE=""; [ -z "${ADE_SECRETS_STORE:-}" ] || return 0
+  local rc=0 o; ade-secrets store > /dev/null 2>&1 || rc=$?
+  [ "$rc" = 2 ] || return 0   # 2: no store recorded yet (anything else: ade-secrets says why at the set itself)
+  if on_macos; then o="keychain pass age"; echo "ade-secrets has no store yet: 1) the macOS Keychain (default)  2) pass  3) age"
+  else o="pass age"; echo "ade-secrets has no store yet: 1) pass (default)  2) age"; fi
+  echo "ade-secrets records the one you pick with this first key; later only ade-secrets store <name> changes it."
+  tty_ask "Which store? [1]"
+  case "$ANSWER" in ""|1) KEY_STORE="${o%% *}" ;; 2) KEY_STORE="$(echo "$o" | cut -d' ' -f2)" ;; 3) on_macos && KEY_STORE=age ;;
+    keychain|pass|age) case " $o " in *" $ANSWER "*) KEY_STORE="$ANSWER" ;; esac ;; esac
+  [ -n "$KEY_STORE" ] || die 2 "pick one of the numbers shown; nothing was stored"
+}
+cmd_key() {
+  local sub="${1:-}" name clip="" secs=""; [ $# -gt 0 ] && shift
+  case "$sub" in
+    list|status) [ $# -eq 0 ] || die 2 "$KEY_USAGE"; key_guard "key $sub"; secrets_run "$sub"; exit $? ;;
+    forget) [ $# -eq 1 ] || die 2 "$KEY_USAGE"; key_name_check "$1"; key_guard "key forget"; secrets_run forget "$1"; exit $? ;;
+    set) { [ $# -ge 1 ] && [ $# -le 2 ]; } || die 2 "$KEY_USAGE"; name="$1"; key_name_check "$name"
+      if [ $# -eq 2 ]; then [ "$2" = --clipboard ] || die 2 "$KEY_USAGE"; clip=--clipboard; fi
+      key_guard "key set"; key_store_pick
+      if [ -n "$clip" ]; then secrets_run set "$name" --clipboard; else secrets_run set "$name"; fi; exit $? ;;
+    copy) { [ $# -eq 1 ] || { [ $# -eq 3 ] && [ "$2" = --for ]; }; } || die 2 "$KEY_USAGE"; name="$1"; key_name_check "$name"
+      if [ $# -eq 3 ]; then secs="$3"; matches "$secs" '^[0-9]{1,4}$' || die 2 "--for takes seconds, 1 to 3600"; fi
+      key_guard "key copy"
+      if [ -n "$secs" ]; then secrets_run copy "$name" --for "$secs"; else secrets_run copy "$name"; fi; exit $? ;;
+    *) die 2 "$KEY_USAGE" ;;
+  esac
+}
+# the hub's side (ade-brain H2): a hub delegates when its bin/secret carries the contract's block and the block's own
+# condition holds (ade-secrets on PATH, HUB_SECRETS not builtin)
+hub_delegates() { [ "${HUB_SECRETS:-}" != builtin ] && command -v ade-secrets > /dev/null 2>&1 && [ -f "$1/bin/secret" ] && grep -q "^$SECRETS_MARKER" "$1/bin/secret"; }
+hub_key_name() {   # <hub> <tool>: the name the hub keeps that tool's key under (bin/keys' third column), else the tool
+  local n; n="$(hub_run "$1" keys 2> /dev/null | awk -v t="$2" '$1 == t && NF >= 3 { print $3; exit }')"
+  if [ -n "$n" ] && key_name_ok "$n"; then echo "$n"; else echo "$2"; fi
+}
+hub_key_set() {   # <hub> <tool> <what>: ade key set for a delegating hub, as its bin/secret --set does; 1 = skipped or failed
+  local name how rc=0; name="$(hub_key_name "$1" "$2")"
+  key_guard setup
+  ask "Store $3 in ade-secrets: at a hidden prompt (p), from the clipboard (c), or skip (s)? [P/c/s]"; how="$ANSWER"
+  case "$how" in s|S) return 1 ;; esac
+  key_store_pick
+  case "$how" in c|C) secrets_run set "$name" --clipboard --helper --kind api-key --used-by hub || rc=$? ;;
+    *) secrets_run set "$name" --helper --kind api-key --used-by hub || rc=$? ;; esac
+  [ "$rc" = 0 ] || { echo "$2: not stored (ade-secrets exit $rc)"; return 1; }
+}
+# ade setup and ade setup --tools: ade-secrets at its pinned tag, after a yes at a terminal, every file it would install
+# checked against that release's release.json. A release that lists no sha256 for one of them installs nothing.
+secrets_install() {
+  command -v ade-secrets > /dev/null 2>&1 && return 0
+  local tag="$ADE_SECRETS_REF" tmp f out missing=""
+  echo "ade-secrets (the local key store ade key and ade vault run) is not installed."
+  matches "$tag" '^v[0-9]+\.[0-9]+\.[0-9]+$' || { echo "ADE_SECRETS_REF must be a release tag vX.Y.Z; nothing installed"; return 1; }
+  if secrets_session_var > /dev/null; then echo "ade installs nothing from an agent session; run ade setup --tools in your own terminal"; return 1; fi
+  secrets_tty || { echo "to install it, run ade setup --tools at a terminal"; return 1; }
+  tty_confirm "Install ade-secrets $tag now (each file checked against its release.json)?" || { echo "ade-secrets not installed (later: ade setup --tools)"; return 1; }
+  tmp="$(mk_tmp)" || { echo "no temp folder; nothing installed"; return 1; }
+  if ! dl "$ADE_RELEASES_BASE/better-ade/ade-secrets/releases/download/$tag/release.json" "$tmp/release.json"; then
+    rm_tmp "$tmp"; echo "there is no release.json for ade-secrets $tag; nothing installed"; return 1; fi
+  if ! out="$(manifest_py "$tmp/release.json" ade-secrets "${tag#v}")"; then
+    rm_tmp "$tmp"; echo "the release.json of ade-secrets $tag is not valid ($out); nothing installed"; return 1; fi
+  for f in $SECRETS_FILES; do manifest_py "$tmp/release.json" ade-secrets "${tag#v}" "$f" > /dev/null || missing="$missing $f"; done
+  rm_tmp "$tmp"
+  if [ -n "$missing" ]; then
+    echo "the release.json of ade-secrets $tag names no sha256 for:$missing, so nothing is installed (ade installs only files it can check)."
+    echo "  ade-secrets needs a release whose release.json lists bin/ade-secrets and lib/vault.sh (release.yml: assets: bin/ade-secrets lib/vault.sh)."
+    return 1
+  fi
+  echo "ade-secrets $tag lists its files, but this ade does not install them yet (a later ade does); nothing installed"; return 1
+}
+SECRETS_RULES="deny	Read(~/.ade-secrets/**)
+deny	Bash(security find-generic-password*)
+deny	Bash(security dump-keychain*)
+deny	Bash(pass show*)
+deny	Bash(pbpaste*)
+ask	Bash(ade-secrets *)"   # ade-secrets' docs/claude-settings.json, which H2 merges into the hub's settings
+secrets_rules_missing() {   # <settings.json>: the rules above it lacks, one per line (all of them when it is unreadable)
+  python3 -I -c 'import json, sys
+try: p = json.load(open(sys.argv[1])).get("permissions", {})
+except Exception: p = {}
+for l in sys.argv[2].splitlines():
+    k, r = l.split("\t", 1)
+    if not isinstance(p, dict) or r not in (p.get(k) if isinstance(p.get(k), list) else []): print(r)' "$1" "$SECRETS_RULES"
+}
+secrets_store_line() {   # what ade-secrets store says, as a store name (it refuses outside a terminal or in a session)
+  local out rc=0
+  if secrets_session_var > /dev/null || ! secrets_tty; then echo "unknown here (run ade doctor in your own terminal)"; return 0; fi
+  out="$(ade-secrets store 2> /dev/null)" || rc=$?
+  if [ "$rc" = 2 ]; then echo "none chosen yet (the first ade key set asks)"; return 0; fi
+  out="${out#store: }"; out="${out%% *}"
+  case "$rc:$out" in 0:keychain|0:pass|0:age) echo "$out" ;; *) echo "unknown (ade-secrets store exit $rc)" ;; esac
+}
+secrets_report() {   # [hub]: ade doctor and ade setup --check; names only, never a value
+  local hub="${1:-}" v miss
+  if ! command -v ade-secrets > /dev/null 2>&1; then
+    echo "secrets: ade-secrets is not installed (ade setup --tools)${hub:+; the hub uses its built-in store}"; return 0; fi
+  v="$(ade-secrets version 2> /dev/null < /dev/null | head -1 | no_ctl)"; matches "$v" '^[0-9]+\.[0-9]+\.[0-9]+$' || v="(version unknown)"
+  echo "secrets: ade-secrets $v, store $(secrets_store_line)"
+  [ -n "$hub" ] || return 0
+  if [ "${HUB_SECRETS:-}" = builtin ]; then echo "secrets: HUB_SECRETS=builtin keeps the hub on its built-in store (unset it to use ade-secrets)"
+  elif ! hub_delegates "$hub"; then echo "secrets: the hub still uses its built-in store (its bin/secret does not hand over to ade-secrets); update it: ade update"; fi
+  miss="$(secrets_rules_missing "$hub/.claude/settings.json" | tr '\n' ' ')"
+  [ -z "$miss" ] || echo "secrets: the hub's .claude/settings.json lacks the ade-secrets permission rules (${miss% }); update the hub: ade update"
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -2994,8 +3142,9 @@ case "$cmd" in
       h="$(find_hub)" || exit $?; hub_run "$h" chat "$@" || exit $?; record_channel "$h" "$2"; exit 0; fi
     run_hub chat "$@" ;;
   dispatch|notify|method|keys|models|roles|sync|context) run_hub "$cmd" "$@" ;;
-  doctor) tools_report; run_hub doctor "$@" ;;
+  doctor) tools_report; secrets_report "$( (find_hub) 2> /dev/null)"; run_hub doctor "$@" ;;
   files) cmd_files "$@" ;;
+  key) cmd_key "$@" ;;
   view) cmd_view "$@" ;;
   ui) cmd_ui "$@" ;;
   dash) cmd_dash "$@" ;;
