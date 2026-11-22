@@ -295,6 +295,8 @@ hub_new_resume_flags() {   # review 6: the resume line names --dir and --public,
   assert_contains "$T/out" "run ade hub new home1 --dir ~/work again" "a folder in the home is written with ~"
   rm "$T/init.fail"; mkdir -p "$T/cwd/hubs"; G "tech-lead\nAcme\nSam\n" hub new rel1 --dir hubs; [ -f "$T/cwd/hubs/rel1/hub.conf" ] || fail "a relative --dir"
   G "" hub new rel1 --dir hubs; assert_eq "$?" 2 "a finished hub is not picked up"
+  A hub new rel2 --bogus; assert_eq "$?" 2 "an unknown flag"; assert_contains "$T/out" "usage: ade hub new <name>" "is answered with the usage"
+  A setup --bogus; assert_eq "$?" 2 "an unknown setup flag"; assert_contains "$T/out" "usage: ade setup [--check" "is answered with the usage"
 }
 
 guide_computer_relay() {   # review 6: the relay passes gh's exit code and output, and opens nothing without a yes

@@ -944,7 +944,7 @@ gh_signed_in() { gh auth status --hostname "$GH_HOST" > /dev/null 2>&1 < /dev/nu
 gh_account() { gh api user --jq .login 2> /dev/null < /dev/null | head -1 | no_ctl | tr -d ' ' | cut -c1-39; }   # the name, or nothing
 # in an ADE Computer gh's output passes through this relay unchanged (stdin stays the terminal), and the one-time
 # code it prints is shown again in block letters, large enough to copy by hand
-GH_RELAY='
+IFS= read -r -d '' GH_RELAY <<'PY' || true
 import fcntl, os, re, select, sys, termios
 F = dict(zip("ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-", (
  " ### |#   #|#####|#   #|#   #", "#### |#   #|#### |#   #|#### ", " ####|#    |#    |#    | ####", "#### |#   #|#   #|#   #|#### ",
@@ -978,7 +978,7 @@ while True:
         if x.group(1) not in seen: seen.add(x.group(1)); os.write(1, big(x.group(1).decode()).replace(b"\n", b"\r\n"))
 _, st = os.waitpid(pid, 0)
 sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 1)
-'
+PY
 # github_ready: gh installed (after a yes, from the package manager) and signed in (gh's browser flow), else one line
 # saying how to come back: exit 2 without a terminal or in an agent session, 1 when it did not finish
 github_ready() {
