@@ -51,7 +51,7 @@ sed "s/^ADE_VERSION=\"\"/ADE_VERSION=\"$version\"/" "$script" > "$prefix/bin/ade
 chmod +x "$prefix/bin/ade.tmp" && mv "$prefix/bin/ade.tmp" "$prefix/bin/ade"
 echo "installed ade $version to $prefix/bin/ade"
 case ":$PATH:" in *":$prefix/bin:"*) ;; *) echo "add $prefix/bin to your PATH (in ~/.zshrc or ~/.bashrc: export PATH=\"$prefix/bin:\$PATH\")" ;; esac
-# A15: the tools ade needs (git, python3, tmux, gh). The new ade checks them; a missing one is installed (Homebrew or
+# A15: the tools ade needs (git, python3, tmux, gh, gitleaks). The new ade checks them; a missing one is installed (Homebrew or
 # apt) only after a yes typed at this terminal; piped or without a terminal it only names them.
 if [ -t 1 ] && { : < /dev/tty; } 2> /dev/null; then ADE_NO_UPDATE_CHECK=1 "$prefix/bin/ade" setup --tools required < /dev/tty || true
 else ADE_NO_UPDATE_CHECK=1 "$prefix/bin/ade" setup --tools required < /dev/null | grep -v '^tools: everything' || true; fi
