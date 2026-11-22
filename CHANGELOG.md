@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.2.1
+- Security: ade could write outside a repository through a symbolic link committed in it. Who is affected: anyone who
+  ran `ade` in a repository they did not write themselves (a clone of someone else's project, a customer's repository).
+  The record and settings writes (`.ade/connections.json`, the project's and the hub's `.claude/settings.json`,
+  `hub.conf`) wrote a fixed-name temp file (`<file>.ade-tmp`) and renamed it; a repository that committed that temp
+  name as a link, for example `.ade/connections.json.ade-tmp -> ../../../.zshrc`, had the person's `~/.zshrc` replaced
+  with JSON by a command that records a connection (`ade skills add`, `ade init`, `ade agent add`, `ade setup`,
+  `ade restore --label`), and the record itself became that link. `ade init` also wrote through a committed link
+  (dangling or not) or a linked `.ade` folder. Now every such write makes its temp file with O_EXCL in the same folder,
+  fsyncs and renames it, refuses (one line, nothing written) a target that is a link or not a regular file and a
+  `.ade` or `.claude` folder that is a link, and holds a lock on the folder around read, check and write, so two runs
+  at once no longer lose an entry. The fetch of the pinned repositories never prompts for a password nor reaches a git
+  credential helper. Check a repository you ran ade in for committed links under `.ade/` and `.claude/` if in doubt.
+
 ## 0.2.0
 - `ade files [<folder>]`, `ade view <path[:line[:col]]>` and `ade ui` keys `prefix e` (files) and `prefix l` (the file
   paths and URLs in this pane, opened in `ade view` at their line or in the browser) (A15): a read-only explorer with
