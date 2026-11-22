@@ -9,7 +9,7 @@ farm() {   # $T/sys: the system's commands without the ones faked here; this tes
   python3 - "$T/sys" "$(command -v python3)" "$(command -v git)" <<'PY'
 import os, sys
 d = sys.argv[1]; os.makedirs(d, exist_ok=True)
-skip = set("claude gh brew apt-get apt sudo uname open xdg-open tmux yazi bat batcat glow pdftotext pdftoppm chafa "
+skip = set("gitleaks claude gh brew apt-get apt sudo uname open xdg-open tmux yazi bat batcat glow pdftotext pdftoppm chafa "
            "security pass gpg pbcopy xclip xsel wl-copy".split())
 for name, target in (("python3", sys.argv[2]), ("git", sys.argv[3])):
     os.symlink(target, os.path.join(d, name))
@@ -59,7 +59,7 @@ STUB
   printf '#!/bin/bash\necho "xdg-open $*" >> "$CALLS"\n' > "$F/xdg-open"
   printf '#!/bin/bash\n. "$FT/fails.sh"; echo "brew $*" >> "$CALLS"; fails brew.fail && exit 1\n[ "$1 $2" = "install gh" ] && cp "$FT/gh.real" "$FT/fakebin/gh"\nexit 0\n' > "$F/brew"
   printf '#!/bin/bash\nif [ $# -eq 0 ] || [ "$1" = -s ]; then echo Darwin; else exec "%s" "$@"; fi\n' "$(command -v uname)" > "$F/uname"
-  local c; for c in tmux yazi bat glow pdftotext pdftoppm chafa; do printf '#!/bin/bash\nexit 0\n' > "$F/$c"; done   # the other tools: there
+  local c; for c in tmux yazi bat glow pdftotext pdftoppm chafa gitleaks; do printf '#!/bin/bash\nexit 0\n' > "$F/$c"; done   # the other tools: there
   chmod +x "$F"/*; cp "$F/gh" "$T/gh.real"; cp "$F/claude" "$T/claude.fake"
   make_template; export ADE_HUB_TEMPLATE_URL="$T/template"; unset DISPLAY ADE_COMPUTER_MARKER
   mkdir -p "$T/cwd"
@@ -77,8 +77,22 @@ printf 'init' >> "$FT/init.log"; printf ' [%s]' "$@" >> "$FT/init.log"; echo >> 
 if [ -f "$FT/init.fail" ]; then echo "init: the persona files are missing" >&2; exit 1; fi
 . "$FT/fails.sh"; fails init.failn && exit 1
 n=""; while [ $# -gt 0 ]; do [ "$1" = --name ] && n="$2"; shift; done; printf 'HUB_NAME=%s\n' "$n" > hub.conf
+printf '# %s: the hub\n' "$n" > README.md; mkdir -p projects journal; echo first > journal/day.md; git config core.hooksPath .githooks   # rendered
 STUB
+  echo "# ade-brain, the template" > "$d/README.md"
   printf '#!/bin/bash\ncat > /dev/null; if [ -f "$FT/agent.fail" ]; then cat "$FT/agent.fail" >&2; exit 1; fi; echo READY\n' > "$d/bin/agent"
+  # bin/sync --yes as the hub's does it: commit what changed (the pre-commit hook path is the hub's), then push when
+  # there is a remote; $FT/sync.fail: one failure per line, before the commit; $FT/push.fail: the same, after it
+  cat > "$d/bin/sync" <<'STUB'
+#!/bin/bash
+. "$FT/fails.sh"; echo "sync $* gitleaks=$(command -v gitleaks > /dev/null && echo yes)" >> "$CALLS"
+fails sync.fail && exit 1
+git add -A; if git diff --cached --quiet; then echo "nothing to sync"; exit 0; fi
+git commit -qm "sync 2026-11-22" || exit 1
+if git remote get-url origin > /dev/null 2>&1; then if fails push.fail; then exit 1; fi; git push -q || { echo "push failed" >&2; exit 1; }; fi
+echo "synced: $(git log -1 --pretty='%h %s')"
+STUB
+  git -C "$d" config receive.denyCurrentBranch ignore   # the fake GitHub: pushes to it are taken
   printf '#!/bin/bash\n[ "${1:-}" = set ] && cat > /dev/null; exit 0\n' > "$d/bin/keys"
   printf '#!/bin/bash\nexit 0\n' > "$d/bin/chat"; printf '#!/bin/bash\necho "NAME FOLDER"\n' > "$d/bin/sessions"
   chmod +x "$d/bin/"*; commit_tag "$d" template
@@ -244,7 +258,7 @@ guide_in_computer() {   # AC7
 guide_happy_path() {   # AC8
   fresh; fakes; export MAKE_PROJECT=web
   talk "\n\nacme\nstaff software engineer\nAcme\nSam\n1\n\nn\n"; rc=$?
-  sed -e "s#$T#<T>#g" -e 's/ready ([0-9]*s)/ready (Ns)/' "$T/out" > "$T/screen"
+  sed -e "s#$T#<T>#g" -e 's/ready ([0-9]*s)/ready (Ns)/' -e 's/^synced: [0-9a-f]* /synced: <commit> /' "$T/out" > "$T/screen"
   if [ "${UPDATE_GOLDEN:-}" = 1 ]; then cp "$T/screen" "$REPO/tests/golden/guide-80.txt"; echo "golden guide-80 updated" >&2; fi
   diff -u "$REPO/tests/golden/guide-80.txt" "$T/screen" || fail "the first run matches tests/golden/guide-80.txt"
   assert_eq "$rc" 0 "a working hub"
@@ -425,6 +439,35 @@ guide_live_test_fails() {   # the owner's case: the Claude account is at its lim
   G "" setup; grep -E '\[x\] 4\. Your hub +acme \(~/hubs/acme\); anthropic not tested' "$T/out" > /dev/null || { cat "$T/out"; fail "and in the list"; }
 }
 
-ALL="guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
+guide_first_save() {   # A18b: the hub as bin/init rendered it is committed and pushed, the hub's own way (bin/sync --yes)
+  fresh; fakes; signed_in claude gh; local h="$HOME/hubs/s1" tpl="$T/template" before b; b="$(git -C "$T/template" symbolic-ref --short HEAD)"
+  G "tech-lead\nAcme\nSam\n" hub new s1 || { cat "$T/out"; fail "hub new"; }
+  assert_contains "$T/out" "Saving the hub's first version to your private GitHub repository (bin/sync):" "said before it happens"
+  assert_contains "$T/out" "synced: " "bin/sync's own line"; assert_contains "$CALLS" "sync --yes gitleaks=yes" "the hub's own way, with its secret scan"
+  assert_eq "$(git -C "$tpl" show "$b:README.md")" "# s1: the hub" "GitHub shows the hub's README, not the template's"
+  for f in hub.conf journal/day.md; do git -C "$tpl" cat-file -e "$b:$f" || fail "the first commit holds $f"; done
+  assert_eq "$(git -C "$h" status --porcelain)" "" "nothing is left uncommitted"
+  assert_eq "$(git -C "$h" log -1 --format='%an <%ae> / %cn <%ce>')" "t <t@t> / t <t@t>" "the person's own git identity"
+  ! git -C "$h" log -1 --format=%B | grep -qiE "co-authored|generated|claude|anthropic" || fail "no AI attribution in the commit"
+  ! grep -qE "push.*(-f|--force)" "$ADE" || fail "ade never force-pushes"
+  before="$(git -C "$tpl" rev-parse "$b")"; A hub new local2 --no-github --persona tech-lead --client c --owner o < /dev/null || { cat "$T/out"; fail "--no-github"; }
+  assert_contains "$T/out" "Saving the hub's first version (a commit here; no GitHub, so nothing is pushed):" "said"
+  assert_eq "$(git -C "$HOME/hubs/local2" status --porcelain)" "" "committed"; assert_eq "$(git -C "$tpl" rev-parse "$b")" "$before" "nothing pushed with --no-github"
+  echo "error: failed to push some refs" > "$T/push.fail"; G "tech-lead\nAcme\nSam\n\n" hub new s2 || { cat "$T/out"; fail "try again"; }
+  assert_contains "$T/out" "The hub's first version was not saved: error: failed to push some refs" "a failed push, in one line"
+  for s in "details: ~/.config/ade/last-failure" "  1) retry  try again" "  2) go-on  go on (save it later, with the command shown)" "  3) stop   stop here" "What now? [retry]:"; do assert_contains "$T/out" "$s" "$s"; done
+  assert_eq "$(git -C "$tpl" show "$b:README.md")" "# s2: the hub" "try again pushed the commit that was made"; wide
+  echo x > "$T/push.fail"; G "tech-lead\nAcme\nSam\ngo-on\n" hub new s3; assert_eq "$?" 0 "go on: the hub is made"
+  assert_contains "$T/out" "Going on; to save it later: cd ~/hubs/s3 && bin/sync --yes && git push" "with the command for later"
+  [ -n "$(git -C "$HOME/hubs/s3" rev-list '@{u}..HEAD')" ] || fail "the commit is kept, to push later"; assert_eq "$(cat "$HOME/.config/ade/hub")" "$HOME/hubs/s3" "the hub is saved in ade"
+  echo "fatal: unable to auto-detect email address; Please tell me who you are" > "$T/sync.fail"; G "tech-lead\nAcme\nSam\nstop\n" hub new s4; stopped $? "ade hub new s4"
+  assert_contains "$T/out" "git has no name and email yet: git config --global user.name and user.email" "no git identity: said plainly"
+  rm "$F/gitleaks"; : > "$CALLS"; G "tech-lead\nAcme\nSam\n" hub new s5 || { cat "$T/out"; fail "no gitleaks is not an error"; }
+  assert_contains "$T/out" "Not saved yet: the hub's secret scan (gitleaks) is not set up here, and ade" "no secret scan: said"
+  assert_contains "$T/out" "does not commit without it. Later (install gitleaks first): cd ~/hubs/s5 && bin/sync --yes && git push" "with the command"
+  assert_not_contains "$CALLS" "sync --yes" "and nothing is committed without it"; [ -n "$(git -C "$HOME/hubs/s5" status --porcelain)" ] || fail "left as it was"
+}
+
+ALL="guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

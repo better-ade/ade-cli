@@ -13,6 +13,11 @@
   `gh repo create` (a taken name asks for another; a half-made clone is removed), the hub's `bin/init`, an early end
   of the guided session, the Telegram set-up and a key that `bin/keys` did not store. `gh repo create` and `bin/init`
   no longer print their errors on the screen: they are kept in `~/.config/ade/last-failure`.
+- `ade hub new` (and the guide's hub step) saves the hub's first version: once `bin/init` has rendered the hub, its
+  own `bin/sync --yes` commits it (your git identity, the hub's secret scan) and pushes it, so the repository on
+  GitHub shows the hub's README and not the template's. Never without the secret scan (no gitleaks: one line with
+  the command for later), never a forced push; with `--no-github` it is a commit and no push. A failure asks: try
+  again, go on (the command is shown), stop.
 
 ## 0.2.2
 - The guided first run (A18): `ade` with no hub lists the steps with their state and, at a terminal, asks

@@ -16,6 +16,13 @@
 - `gh repo create` and `bin/init` ask nothing, so their output is captured (`run_logged`): shown when they work, kept
   in `~/.config/ade/last-failure` when they fail. A folder a failed `gh repo create` left behind is removed (it was
   not there before the try); a failed `bin/init` keeps the clone and its `.git/ade-hub-new` mark, as before.
+- The hub's first version (owner, the same evening: the hub's repository still showed the template's README):
+  `hub_first_save` runs the hub's own `bin/sync --yes` after `bin/init`. `bin/sync --yes` only warns when gitleaks
+  is missing, so `ade` checks for gitleaks and the hooks path itself and does not commit without them. Two things
+  belong to ade-brain and are not changed here: `bin/sync` does not list `hub.conf`, so it stays untracked; and a hub
+  made by `bin/init` without `ade` is still left uncommitted (the first save would sit better at the end of
+  `bin/init`). gitleaks is not among the tools `ade setup --tools` installs, so on a new machine the first save is
+  skipped with its line until gitleaks is there.
 - Ctrl-C at the question: an INT trap for the length of the question prints the line and exits 130 (checked on bash
   3.2 and 5). Elsewhere Ctrl-C is as before.
 - Left out, on purpose: refusals that are not failures (an agent session, no terminal, a non-https installer, a

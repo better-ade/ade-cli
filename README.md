@@ -131,6 +131,8 @@ Telegram, a key that was not stored) the guide says what went wrong in one plain
 and asks what to do with numbered choices: for a live test, sign in with a different Claude account (or enter the
 key again), try again, use another AI service, or go on without the test. An everything agent chosen without its
 test shows as "not tested" in `ade setup --check` until `ade setup --test` passes; focus agents always need the test.
+Once the hub is set up, `ade hub new` saves its first version with the hub's own `bin/sync --yes` (a commit under
+your git identity, after the hub's secret scan, then a push), so GitHub shows the hub's own README.
 
 ```mermaid
 flowchart TD

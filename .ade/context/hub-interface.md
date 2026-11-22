@@ -215,6 +215,11 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   in `ade`: a plain line (ASCII, no control character, key-shaped text hidden, at most 80 columns), a `details:` line,
   the numbered choices, the answer in `CHOICE`. `stop` and the end of input exit 1, Ctrl-C exits 130, each with
   `ade: stopped...; to come back, run <command>`. A new step adds its row and calls `failed`.
+- The hub's first version (`ade hub new`, after `bin/init` and after the hub is saved in `~/.config/ade`): the hub's
+  `bin/sync --yes`, run with `HUB` set and no input, only when `gitleaks` is on PATH and the hub's `core.hooksPath`
+  is `.githooks` (`bin/init` sets it); else two lines with the command for later and no commit. `bin/sync --yes`
+  does not push a commit an earlier run made, so after it `ade` runs `git push -q` when `@{u}..HEAD` is not empty.
+  Never `--force`. No `bin/sync` in the hub: nothing is done. Kind `first-save`.
 - Kinds: `live-top-account`, `live-top-key`, `live-top-check` (GLM, Muse), `live-focus-account`, `live-focus-key`,
   `install` (Claude Code, `gh`), `sign-in` (Claude, Gemini), `gh-sign-in`, `repo-taken`, `repo-auth`, `repo-create`,
   `hub-init`, `session`, `telegram`, `key-store`.

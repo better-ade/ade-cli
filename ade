@@ -551,6 +551,28 @@ cmd_hub() {
 # has not finished is marked (.git/ade-hub-new, never committed), so ade hub new <name> again picks up there (A18).
 # shellcheck disable=SC2088  # a literal ~ for the person to read
 tilde() { case "$1" in "$HOME") printf '~' ;; "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
+# hub_first_save <hub> <gh 0|1> <--private|--public>: the hub as bin/init rendered it (its own README, hub.conf's
+# neighbours, the first folders) is committed and pushed the hub's own way, bin/sync --yes: hub files only, the
+# person's git identity, the hub's pre-commit secret scan. Never without that scan (gitleaks, and the hooks path
+# bin/init sets), never a forced push; with --no-github there is no remote and so no push. A push that failed after
+# the commit is finished with a plain git push. A hub without bin/sync is left as it is.
+hub_first_save() {
+  local hub="$1" why later; later="cd $(tilde "$1") && bin/sync --yes && git push"
+  [ -x "$hub/bin/sync" ] || return 0
+  if ! command -v gitleaks > /dev/null 2>&1 || [ "$(git -C "$hub" config core.hooksPath)" != .githooks ]; then
+    echo "Not saved yet: the hub's secret scan (gitleaks) is not set up here, and ade"
+    echo "does not commit without it. Later (install gitleaks first): $later"; return 0
+  fi
+  if [ "$2" = 1 ]; then echo "Saving the hub's first version to your ${3#--} GitHub repository (bin/sync):"
+  else echo "Saving the hub's first version (a commit here; no GitHub, so nothing is pushed):"; fi
+  until run_logged "$hub" env HUB="$hub" ./bin/sync --yes &&
+    { [ -z "$(git -C "$hub" rev-list '@{u}..HEAD' 2> /dev/null)" ] || run_logged "$hub" git push -q; }; do
+    why="The hub's first version was not saved: $FAIL_LINE"
+    case "$FAIL_TEXT" in *"tell me who you are"*|*"user.email"*|*"user.name"*) why="git has no name and email yet: git config --global user.name and user.email" ;; esac
+    failed first-save "$why" "$FAIL_FILE"
+    [ "$CHOICE" = retry ] || { echo "Going on; to save it later: $later"; return 0; }
+  done
+}
 hub_again() { printf 'ade hub new %s' "$1"; [ "$2" = "$HOME/hubs" ] || printf ' --dir %s' "$(tilde "$2")"; [ "$3" != --public ] || printf ' --public'; }   # <name> <dir> <vis>
 hub_new() {
   local name="${1:-}" vis=--private dir="$HOME/hubs" gh=1 target persona="" client="" owner="" resume=0 v why kind own=0; [ $# -gt 0 ] && shift
@@ -612,6 +634,7 @@ hub_new() {
   done
   rm -f "$target/.git/ade-hub-new"
   target="$(cd "$target" && pwd -P)"; remember_hub "$target"
+  hub_first_save "$target" "$gh" "$vis"
   echo "default hub: $(tilde "$target")"; [ "${GUIDE_ON:-0}" = 1 ] || echo "next: ade (what to do next)"
 }
 
@@ -795,6 +818,7 @@ repo-taken|name|name=pick another name;retry=try again;stop=stop here
 repo-auth|sign-in|sign-in=sign in to GitHub again;retry=try again;stop=stop here
 repo-create|retry|retry=try again;name=pick another name;stop=stop here
 hub-init|retry|retry=try again from where it stopped;stop=stop here
+first-save|retry|retry=try again;go-on=go on (save it later, with the command shown);stop=stop here
 session|go-on|again=start it again;go-on=go on (this step stays not done);stop=stop here
 telegram|retry|token=enter the token again;retry=try again;skip=skip Telegram;stop=stop here
 key-store|key|key=enter it again;stop=stop here
