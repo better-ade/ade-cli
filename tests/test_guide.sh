@@ -9,7 +9,7 @@ farm() {   # $T/sys: the system's commands without the ones faked here; this tes
   python3 - "$T/sys" "$(command -v python3)" "$(command -v git)" <<'PY'
 import os, sys
 d = sys.argv[1]; os.makedirs(d, exist_ok=True)
-skip = set("gitleaks claude gh brew apt-get apt sudo uname open xdg-open tmux yazi bat batcat glow pdftotext pdftoppm chafa "
+skip = set("gitleaks claude gh brew apt-get apt sudo uname open xdg-open tmux yazi bat batcat glow pdftotext pdftoppm chafa code "
            "security pass gpg pbcopy xclip xsel wl-copy".split())
 for name, target in (("python3", sys.argv[2]), ("git", sys.argv[3])):
     os.symlink(target, os.path.join(d, name))
@@ -59,7 +59,7 @@ STUB
   printf '#!/bin/bash\necho "xdg-open $*" >> "$CALLS"\n' > "$F/xdg-open"
   printf '#!/bin/bash\n. "$FT/fails.sh"; echo "brew $*" >> "$CALLS"; fails brew.fail && exit 1\n[ "$1 $2" = "install gh" ] && cp "$FT/gh.real" "$FT/fakebin/gh"\nexit 0\n' > "$F/brew"
   printf '#!/bin/bash\nif [ $# -eq 0 ] || [ "$1" = -s ]; then echo Darwin; else exec "%s" "$@"; fi\n' "$(command -v uname)" > "$F/uname"
-  local c; for c in tmux yazi bat glow pdftotext pdftoppm chafa gitleaks; do printf '#!/bin/bash\nexit 0\n' > "$F/$c"; done   # the other tools: there
+  local c; for c in tmux yazi bat glow pdftotext pdftoppm chafa code gitleaks; do printf '#!/bin/bash\nexit 0\n' > "$F/$c"; done   # the other tools: there
   chmod +x "$F"/*; cp "$F/gh" "$T/gh.real"; cp "$F/claude" "$T/claude.fake"
   make_template; export ADE_HUB_TEMPLATE_URL="$T/template"; unset DISPLAY ADE_COMPUTER_MARKER
   mkdir -p "$T/cwd"

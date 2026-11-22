@@ -45,7 +45,9 @@ Hubs:
 
 Files (read-only; a path outside the hub and its projects asks first):
   files       ade files [<folder>]: explore the hub and its projects, with name search and preview (ADE_FILES=yazi: yazi, neither read-only nor held to the hub)
-  view        ade view <path[:line[:col]]>: code at the line, Markdown, images and PDFs; o open, f reveal, y copy the path
+  view        ade view [--code] <path[:line[:col]]>: code at the line, Markdown, images and PDFs; o open, f reveal, y copy the path,
+              c (or --code) open it in Visual Studio Code at that line and column. ADE_VIEWER=code: code and text files open in
+              Visual Studio Code by default; images, PDFs and Markdown keep the built-in viewer
 
 Housekeeping (each lists what it would do first; nothing of yours is deleted):
   clean       ade clean [--yes]: stale locks, old markers, cursors and temp folders, dead ade tmux sessions, clean merged worktrees
@@ -1521,6 +1523,7 @@ UI_KEYS="  prefix n   new agent: pick a folder, then a role
   prefix f   show or hide the fleet sidebar (ade dash)
   prefix e   files: explore and view the hub and its projects
   prefix l   links: open a file path or URL shown in this pane
+             in files and links, c: open in Visual Studio Code
   prefix ?   this help
   prefix 0-9, Left, Right   switch tabs
   prefix d   detach (agents keep running)"
@@ -2871,7 +2874,7 @@ update_badge() {   # the number of components with a newer release, for ade ui's
 # reaches the screen, and a path reaches a tool after "--", or absolute for the ones without it (xdg-open).
 # The tools ade installs (Homebrew or apt, after a yes): .ade/context/hub-interface.md.
 FILES_USAGE="usage: ade files [<folder>]"
-VIEW_USAGE="usage: ade view <path[:line[:col]]>"
+VIEW_USAGE="usage: ade view [--code] <path[:line[:col]]>"
 ROOTS=""
 files_roots() {   # [folder]: physical paths of the hub, its checkouts and that folder's git project, one per line
   local hub f c b top
@@ -2905,7 +2908,7 @@ files_confirm() {
 files_target() {
   local out w
   out="$(files_py where "$1" "$2")" || exit 2
-  IFS="$US" read -r FT_PATH FT_LINE w FT_REAL FT_SHOWN FT_SHOWN_REAL <<EOF
+  IFS="$US" read -r FT_PATH FT_LINE w FT_REAL FT_SHOWN FT_SHOWN_REAL FT_COL <<EOF
 $out
 EOF
   [ "$w" != missing ] || die 2 "no such file or folder: $FT_SHOWN"
@@ -2946,14 +2949,18 @@ files_explore() {
 }
 
 cmd_view() {
-  local cwd="" arg="" n=0
+  local cwd="" arg="" n=0 code=0
   while [ $# -gt 0 ]; do case "$1" in
+    --code) code=1; shift ;;
     --cwd) [ $# -ge 2 ] && [ -n "$2" ] && [ -d "$2" ] || die 2 "$VIEW_USAGE (--cwd needs a folder)"; cwd="$(cd -- "$2" && pwd)"; shift 2 ;;
     --) shift; [ $# -eq 1 ] || die 2 "$VIEW_USAGE"; arg="$1"; n=$((n + 1)); shift ;;
     *) arg="$1"; n=$((n + 1)); shift ;;
   esac; done
   [ "$n" = 1 ] && [ -n "$arg" ] || die 2 "$VIEW_USAGE"
   ROOTS="$(files_roots "${cwd:-.}")"; files_target "$arg" "${cwd:-$PWD}"
+  # Visual Studio Code: asked for (--code), or the default for code and text files at a terminal (ADE_VIEWER=code)
+  [ "$code" = 1 ] || { [ "${ADE_VIEWER:-}" = code ] && [ "$FT_KIND" = text ] && [ -t 1 ] && code=1; }
+  if [ "$code" = 1 ]; then view_code "$FT_LINE" "$FT_COL" && return 0; echo "ade: $CODE_WHY; the built-in viewer instead" >&2; fi
   case "$FT_KIND" in
     dir) files_explore "$FT_PATH" ;;
     text|markdown) view_text ;;
@@ -2986,21 +2993,48 @@ view_text() {
   rm_tmp "$VIEW_TMP"; trap - HUP TERM INT; return $rc
 }
 
+# code_bin: Visual Studio Code's command (code) as an absolute path, found once (CODE_BIN). Never a copy that lies
+# inside the hub or a project being viewed, or a link from there: a repository must not choose the program ade runs.
+CODE_BIN=""; CODE_WHY=""
+code_bin() {
+  local c w; [ -z "$CODE_BIN" ] || return 0
+  c="$(command -v code 2> /dev/null)"
+  case "$c" in /*) ;; *) CODE_WHY="Visual Studio Code (the code command) is not installed; ade setup --tools installs it"; return 1 ;; esac
+  w="$(files_py where "$c" / | awk -F "$US" '{ print $3 }')"
+  [ "$w" = out ] || { CODE_WHY="the code command on PATH is inside the hub or project being viewed, so ade does not run it"; return 1; }
+  CODE_BIN="$c"
+}
+# view_code <line> <col>: FT_PATH (files_target checked it) in Visual Studio Code: a folder as a folder, a file at its
+# line and column (code --goto <path>:<line>:<col>; the path is absolute and one argument, never a shell string).
+# 1 = not opened, CODE_WHY says why (no code command, one inside the project, over SSH with no display)
+view_code() {
+  local l="${1:-0}" c="${2:-0}"; [ "$l" -gt 0 ] || l=1; [ "$c" -gt 0 ] || c=1
+  if on_ssh && [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && [ "${TERM_PROGRAM:-}" != vscode ]; then
+    CODE_WHY="over SSH with no display, Visual Studio Code cannot open here"; return 1; fi
+  code_bin || return 1
+  if [ "$FT_KIND" = dir ]; then "$CODE_BIN" "$FT_PATH"; else "$CODE_BIN" --goto "$FT_PATH:$l:$c"; fi || { CODE_WHY="Visual Studio Code did not open it (code failed)"; return 1; }
+}
 # files_act open|reveal|copy|url <absolute path, or an http(s) URL>: the default app (never a program), the file
-# manager, the clipboard, the browser; over SSH the path and a copy command instead
+# manager, the clipboard, the browser; over SSH the path and a copy command instead.
+# files_act code <absolute path> [line [col]]: Visual Studio Code (view_code); any regular file or folder
+ACT_USAGE="usage: ade files --act open|reveal|copy|url <path> | --act code <path> [line [col]]"
 files_act() {
-  [ $# -eq 2 ] || die 2 "usage: ade files --act open|reveal|copy|url <path>"
+  [ $# -eq 2 ] || { [ "${1:-}" = code ] && [ $# -ge 3 ] && [ $# -le 4 ] && matches "$3" '^[0-9]{1,9}$' && matches "${4:-0}" '^[0-9]{1,9}$'; } || die 2 "$ACT_USAGE"
   local act="$1" p="$2" shown
   case "$act" in
     url)   # plain printable ASCII only: no space, control, bidi or zero-width character can hide where it goes
       case "$p" in http://?*|https://?*) ;; *) die 2 "not a web link (http or https)" ;; esac
       [ -z "$(printf '%s' "$p" | LC_ALL=C tr -d '!-~')" ] || die 2 "a web link must be plain ASCII (no spaces, control, bidi or zero-width characters); nothing opened"
       FT_PATH="$p"; FT_SHOWN="$p" ;;
-    open|reveal|copy) case "$p" in /*) ;; *) die 2 "not an absolute path" ;; esac
+    open|reveal|copy|code) case "$p" in /*) ;; *) die 2 "not an absolute path" ;; esac
       ROOTS="$(files_roots .)"; files_target "$p" / ;;
-    *) die 2 "usage: ade files --act open|reveal|copy|url <path>" ;;
+    *) die 2 "$ACT_USAGE" ;;
   esac
   shown="$FT_SHOWN"
+  if [ "$act" = code ]; then
+    if view_code "${3:-0}" "${4:-0}"; then echo "opened in Visual Studio Code: $shown"; else echo "$CODE_WHY; the path: $shown"; fi
+    return 0
+  fi
   if on_ssh; then
     echo "over SSH: $shown"
     [ "$act" = url ] || echo "to copy it to this computer: scp -s $(shq "$(uname -n 2> /dev/null || echo host):$FT_REAL") ."
@@ -3032,7 +3066,7 @@ clip_copy() {   # <path>: onto the clipboard on stdin (pbcopy, wl-copy, xclip, x
 # the tools ade uses: the required ones (checked by install.sh and ade setup) and the viewer extras (one step in ade
 # setup); ade setup --tools installs what is missing with Homebrew (macOS) or apt (Ubuntu), after a yes at a terminal
 REQUIRED_TOOLS="git python3 tmux gh"
-EXTRA_TOOLS="yazi bat glow poppler chafa"
+EXTRA_TOOLS="yazi bat glow poppler chafa code"
 tool_bin() { local c; for c in "$1" $([ "$1" = bat ] && echo batcat); do command -v "$c" 2> /dev/null && return 0; done; return 1; }   # Ubuntu names bat batcat
 tool_present() { case "$1" in poppler) command -v pdftotext && command -v pdftoppm ;; *) tool_bin "$1" ;; esac > /dev/null 2>&1; }
 tools_missing() { local t out=""; for t in "$@"; do tool_present "$t" || out="${out:+$out }$t"; done; echo "$out"; }
@@ -3042,10 +3076,10 @@ tool_what() {
     tmux) echo "required: ade ui" ;; gh) echo "required: ade hub new on GitHub" ;;
     yazi) echo "extra: ade files with ADE_FILES=yazi; not read-only" ;; bat) echo "extra: syntax colours in ade view, else less -N" ;;
     glow) echo "extra: Markdown rendered in ade view, else plain text" ;; poppler) echo "extra: PDF pages in ade view (pdftotext, pdftoppm)" ;;
-    chafa) echo "extra: images on more terminals" ;;
+    chafa) echo "extra: images on more terminals" ;; code) echo "extra: Visual Studio Code, for c in ade files and ade view" ;;
   esac
 }
-tool_pkg() { case "$1:$2" in brew:python3) echo python ;; apt:poppler) echo poppler-utils ;; apt:yazi|apt:glow) ;; *) echo "$2" ;; esac; }   # <brew|apt> <tool>
+tool_pkg() { case "$1:$2" in brew:python3) echo python ;; brew:code) echo visual-studio-code ;; apt:poppler) echo poppler-utils ;; apt:yazi|apt:glow|apt:code) ;; *) echo "$2" ;; esac; }   # <brew|apt> <tool>
 tools_report() {   # ade doctor: each tool, installed or missing
   local t; echo "ade tools:"
   for t in $REQUIRED_TOOLS $EXTRA_TOOLS; do
@@ -3062,7 +3096,9 @@ tools_install() {   # <tool>...: one question at a terminal, then brew install o
     return 1
   fi
   for t in "$@"; do p="$(tool_pkg "$m" "$t")"
-    if [ -n "$p" ]; then pkgs="${pkgs:+$pkgs }$p"; else echo "$t: not in apt; get it from https://github.com/$( [ "$t" = yazi ] && echo sxyazi/yazi || echo charmbracelet/glow)/releases (ade works without it)"; fi
+    if [ -n "$p" ]; then pkgs="${pkgs:+$pkgs }$p"
+    elif [ "$t" = code ]; then echo "code: Visual Studio Code is not in apt; get it from https://code.visualstudio.com/download (ade adds no repository; ade works without it)"
+    else echo "$t: not in apt; get it from https://github.com/$( [ "$t" = yazi ] && echo sxyazi/yazi || echo charmbracelet/glow)/releases (ade works without it)"; fi
   done
   [ -n "$pkgs" ] || return 1
   if [ "$m" = brew ]; then cmd="brew install $pkgs"; elif [ "$(id -u)" = 0 ]; then cmd="apt-get install -y $pkgs"; else cmd="sudo apt-get install -y $pkgs"; fi
@@ -3247,7 +3283,7 @@ def act(t, a, p):   # o f y through ade files --act (its checks, its tools); the
     t.raw()
     msg = [l for l in r.stdout.decode("utf-8", "replace").splitlines() if l.strip()]
     return shown(" · ".join(msg[-2:])) if msg else ""
-ACTS = {"o": "open", "f": "reveal", "y": "copy"}
+ACTS = {"o": "open", "f": "reveal", "y": "copy", "c": "code"}   # c: Visual Studio Code
 
 def label(name, p):
     s = shown(name)
@@ -3301,7 +3337,7 @@ def explore(start):
             ln = ("\x1b[7m" + left + "\x1b[0m") if j == sel and j < len(items) else left
             if i < len(pv): ln += " │ " + pv[i][:cols - lw - 2]
             out.append(ln.rstrip() + "\r\n")
-        out.append((msg or "j/k move · Enter open · h up · / search · o open · f reveal · y copy path · q quit")[:cols])
+        out.append((msg or "j/k · Enter open · h up · / search · o app · c code · f reveal · y copy · q quit")[:cols])
         sys.stdout.write("".join(out)); sys.stdout.flush()
     def enter(d, came=None):
         nonlocal cur, ents, sel, top, res, msg
@@ -3380,7 +3416,7 @@ def show(k, p, prog):   # a PDF (pages, n/p, g, /), an image or a binary file, w
                 if k == "pdf": sys.stdout.write("".join(shown(l.expandtabs(4))[:cols] + "\r\n" for l in pages[i].splitlines()[:rows - 3]))
                 elif k == "image": sys.stdout.write("image: %s, %s (o to open)\r\n" % (dims(p), human(n)))
                 else: sys.stdout.write("%s file: %s (o opens it in its app, f shows it in its folder)\r\n" % (k, human(n)))
-            keys = ("n next · p previous · g go to page · / search · " if k == "pdf" else "") + "o open · f reveal · y copy path · q quit"
+            keys = ("n next · p previous · g go to page · / search · " if k == "pdf" else "") + "o open · c code · f reveal · y copy path · q quit"
             sys.stdout.write("\x1b[%d;1H\x1b[K%s" % (rows, (msg or keys)[:cols])); sys.stdout.flush(); msg = ""
             c = t.key()
             if c in ("q", "quit", "esc"): break
@@ -3440,24 +3476,25 @@ def pick(pane, cwd):
     while True:
         print("Paths and links in this pane (a file opens in ade view, a link in your browser):")
         for i, (k, d) in enumerate(items, 1): print("  %2d  %s" % (i, shown(d)))
-        try: s = input("Open which? (a number; Enter closes) ").strip()
+        try: s = input("Open which? (a number; a number then c: in Visual Studio Code; Enter closes) ").strip()
         except EOFError: return 0
         if not s: return 0
-        if not s.isdigit() or not 1 <= int(s) <= len(items): print("no such number: %s" % shown(s)); continue
-        k, d = items[int(s) - 1]
-        subprocess.call(ADE + (["files", "--act", "url", d] if k == "url" else ["view", "--cwd", cwd, "--", d]))
+        m = re.fullmatch(r"(\d{1,4}) ?([cC]?)", s)
+        if not m or not 1 <= int(m.group(1)) <= len(items): print("no such number: %s" % shown(s)); continue
+        k, d = items[int(m.group(1)) - 1]
+        subprocess.call(ADE + (["files", "--act", "url", d] if k == "url" else ["view", "--cwd", cwd] + (["--code"] if m.group(2) else []) + ["--", d]))
 
 try:
     if op == "where":
         arg, cwd = A[0], A[1] or os.getcwd()
         def absp(a): return os.path.normpath(os.path.join(cwd, os.path.expanduser(a) if a == "~" or a.startswith("~/") else a))
-        p, line = absp(arg), 0
+        p, line, col = absp(arg), 0, 0
         if not os.path.lexists(p):
-            m = re.fullmatch(r"(.+?):(\d{1,9})(?::\d{1,9})?", arg)
-            if m and os.path.lexists(absp(m.group(1))): p, line = absp(m.group(1)), int(m.group(2))
+            m = re.fullmatch(r"(.+?):(\d{1,9})(?::(\d{1,9}))?", arg)
+            if m and os.path.lexists(absp(m.group(1))): p, line, col = absp(m.group(1)), int(m.group(2)), int(m.group(3) or 0)
         if "\n" in p or "\x1f" in p: sys.exit("ade: a name with a line break is not supported: %s" % shown(p))
         w, real = where(p) if os.path.lexists(p) else ("missing", p)
-        fields = (os.fsencode(p), str(line).encode(), w.encode(), os.fsencode(real), shown(p).encode(), shown(real).encode())
+        fields = (os.fsencode(p), str(line).encode(), w.encode(), os.fsencode(real), shown(p).encode(), shown(real).encode(), str(col).encode())
         sys.stdout.buffer.write(b"\x1f".join(fields) + b"\n")   # the names as bytes, as they are on disk
     elif op == "kind":
         p = A[0]; k = kind(p); ctl = "0"

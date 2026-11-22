@@ -180,7 +180,15 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `$TMPDIR/ade.*` folder and runs `ade ui --links <folder>` in a popup; that folder is removed after.
 - `~/.config/ade/hints`: one tool name per line, each missing viewer tool's hint shown once (the one file A15 writes
   outside ade's temp folders).
-- Tools: required `git python3 tmux gh`; extras `yazi bat glow poppler chafa` (bat may be `batcat`; poppler =
+- Visual Studio Code: `ade files --act code <absolute path> [line [col]]` (the key `c`), `ade view --code`, and
+  `ADE_VIEWER=code` (text files, at a terminal) run `<code> --goto <path>:<line>:<col>` (line and column default 1;
+  always both, so a name ending in `:5` stays the name) or `<code> <folder>`. `<code>` is `command -v code`, an
+  absolute path outside the roots (by its real path too), found once per run. Over SSH it runs only with `DISPLAY`
+  or `WAYLAND_DISPLAY` set or in Visual Studio Code's own terminal (`TERM_PROGRAM=vscode`). `ade view`'s `where`
+  line ends with the column (`FT_COL`). The link picker takes `<number>c`.
+- Tools: required `git python3 tmux gh`; extras `yazi bat glow poppler chafa code` (code = Visual Studio Code:
+  Homebrew `visual-studio-code`, not in apt, named with https://code.visualstudio.com/download, no repository added)
+  (bat may be `batcat`; poppler =
   `pdftotext` and `pdftoppm`). Homebrew packages: `git python tmux gh yazi bat glow poppler chafa`. apt (Ubuntu 24.04):
   `git python3 tmux gh bat poppler-utils chafa`; yazi and glow are not in apt and are not downloaded (their release
   pages are named). Installs run only after one yes at a terminal: `brew install <pkgs>`, `[sudo] apt-get install -y

@@ -29,7 +29,7 @@ orchestrator ready
      │                                                                                                          │
      │                                                                                                          │
      │                                                                                                          │
-     │j/k move · Enter open · h up · / search · o open · f reveal · y copy path · q quit                        │
+     │j/k · Enter open · h up · / search · o app · c code · f reveal · y copy · q quit                          │
      └──────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 
 
