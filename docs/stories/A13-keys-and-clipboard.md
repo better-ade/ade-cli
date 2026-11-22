@@ -1,38 +1,37 @@
-# A13: `ade key`: the local key store, with the clipboard as the only way in and out
+# A13: `ade key`, the local key store, through ade-secrets
 
-Status: Ready for development (2026-11-21). Risk: high (secrets). Depends on A1; the hub's bin/keys and bin/secret
-(Keychain on macOS; pass or the 0600 file store on Linux, V1). Owner's intent (2026-11-21): a local store for sensitive
-keys, and the clipboard to move a key from the store to the command that needs it.
-Verification command: `bash tests/run.sh`.
+Status: Ready for development (2026-11-22; rewritten). Risk: high (secrets). Depends on A1, on ade-secrets v0.3.0 and
+on ade-brain H2 (the hub's `bin/secret` delegating to ade-secrets). Owner's intent (2026-11-21): a local store for
+sensitive keys, and the clipboard to move a key from the store to the command that needs it. Owner, 2026-11-22:
+"ok le'ts build A13, a14, a16" and "a17". Verification command: `bash tests/run.sh`.
+
+## What changed since this story was first written
+The store, the clipboard handling (concealed, cleared when unchanged) and the terminal-only rules were built in their
+own repo, **ade-secrets** (released v0.3.0), so that no secret code runs inside `ade` or an agent session. This story
+is now thin: `ade key` runs `ade-secrets`. Nothing here reads, holds or prints a value. The contract is ade-secrets'
+`docs/contract.md`; where this story and it differ, the contract wins: stop and say so.
 
 ## Goal
 ```
-ade key list                         names, where each is used, stored or missing; never a value
-ade key set <name> --clipboard       read the value from the clipboard into the store, then clear the clipboard
-ade key copy <name> [--for N]        put the value on the clipboard, cleared after N seconds (default 20)
+ade key list                         names and where each is used; never a value
+ade key set <name> [--clipboard]     hidden prompt, or from the clipboard (then cleared)
+ade key copy <name> [--for N]        to the clipboard, cleared after N seconds if unchanged
 ade key forget <name>
+ade key status
 ```
-- Values never appear on screen, in argv, in the environment, in a log, or in shell history. They move store →
-  clipboard (pbcopy / `wl-copy` / `xclip`) by stdin, and clipboard → store (pbpaste / `wl-paste` / `xclip -o`) by stdin
-  into `bin/keys set` / `bin/secret --set`.
-- **Auto-clear:** a detached timer clears the clipboard after N seconds only if it still holds that value (compared by
-  hash, never stored).
-- **Concealed on macOS:** the value is written with the `org.nspasteboard.ConcealedType` marker (through a tiny
-  python3/osascript helper), so clipboard managers skip it and Universal Clipboard does not sync it.
-- **Owner only:** `copy` refuses without a TTY; the hub's permission rules gain `ask` for `Bash(*ade key copy*)` and
-  `Bash(*bin/secret --get*)`-style reads, so an agent's attempt needs the owner's yes. Agents never read the clipboard
-  for a key.
-- **Remote:** over SSH without a local clipboard, `copy` refuses and explains (no OSC 52, no printing).
-- `ade setup` (A5) and `ade restore` (A10) offer `--clipboard` as the alternative to the hidden prompt.
 
-## Acceptance criteria (`tests/test_key.sh`; fake clipboard tools that record stdin and argv; fake bin/keys)
-| AC | Criterion |
-|---|---|
-| 1 | `list` shows names and states only; a test scans its output for the fixture values |
-| 2 | `set --clipboard` passes the value to `bin/keys set` on stdin only, then clears the clipboard |
-| 3 | `copy` writes the value to the clipboard on stdin only; it is in no argv, env, log or file (fakes record all) |
-| 4 | The clear runs after N seconds and leaves the clipboard alone when it changed in the meantime |
-| 5 | On macOS the concealed marker is set (the helper is called with it) |
-| 6 | `copy` refuses without a TTY and over SSH without a local clipboard, never printing the value |
-| 7 | The hub settings template asks before `ade key copy` and secret reads (permission rules present) |
-| 8 | `setup` and `restore` accept `--clipboard` for every key they ask for |
+## Acceptance criteria (`tests/test_key.sh`; a fake `ade-secrets` that records its arguments and standard input)
+| AC | Criterion | Test |
+|---|---|---|
+| 1 | Each `ade key` command runs the matching `ade-secrets` command with the person's terminal attached; `ade` captures none of its output and passes names as data (the contract's name rule; a name starting with `-` is refused before anything runs) | `key_delegates` |
+| 2 | `ade-secrets`' exit codes come through unchanged, and `ade` adds one plain line for 3 (run this in your own terminal), 4 (no clipboard here) and 5 (the store is locked) | `key_exit_codes` |
+| 3 | Without a terminal, and inside an agent session, every `ade key` command is refused before `ade-secrets` is called | `key_terminal_only` |
+| 4 | `ade setup` (and `ade setup --tools`) installs ade-secrets at a pinned tag (`ADE_SECRETS_REF`), after a yes, checking each installed file against that release's `release.json`; if that release does not list a file `ade` would install, nothing is installed and the story stops for a release change in ade-secrets | `key_install_pinned` |
+| 5 | With ade-secrets missing, `ade key` prints one line saying how to get it and exits 2 | `key_missing_tool` |
+| 6 | `ade` never sets or changes the store by itself: the first `ade key set` asks which store to use (Keychain on macOS by default; `pass` or `age` on Linux) and lets ade-secrets record it | `key_store_choice` |
+| 7 | `ade setup --check` and `ade doctor` print `secrets: ade-secrets <version>, store <name>`, or say the hub still uses its built-in store or lacks the permission rules H2 ships, with what to run; never a value | `key_doctor` |
+| 8 | `ade setup` and `ade restore` use `ade key set <name>` for every key they ask for when the hub delegates (H2), offering `--clipboard`; otherwise they keep today's `bin/keys set` path | `key_setup_restore` |
+| 9 | The hostile-input table gains `ade key` (names with spaces, newlines, control characters, `..`, a leading `-`, 65 characters) | `key_hostile` |
+
+## Out of scope
+Any store, clipboard or encryption code in `ade`. Moving keys from the hub's old store (the person re-enters them).

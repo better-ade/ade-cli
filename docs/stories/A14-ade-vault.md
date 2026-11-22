@@ -1,37 +1,19 @@
-# A14: `ade vault`: a local password manager in the terminal
+# A14: `ade vault`, the terminal vault, through ade-secrets
 
-Status: Ready for development (2026-11-21). Risk: high (secrets). Depends on A13 (ade key, clipboard), A10 (connections
-record). Owner's intent (2026-11-21): "an interface on the terminal to put a key in", "like a local 1Password".
-Verification command: `bash tests/run.sh`.
+Status: Ready for development (2026-11-22; rewritten). Risk: high (secrets). Depends on A13. Owner's intent
+(2026-11-21): "an interface on the terminal to put a key in", "like a local 1Password". Verification command:
+`bash tests/run.sh`.
 
-## Goal
-`ade vault` opens a full-screen terminal interface over the hub's key store (Keychain on macOS; on Linux the file
-store, now encrypted):
-- **List and search** keys: name, kind (API key, bot token, password, OAuth sign-in), used by (from
-  `.ade/connections.json`), last rotated; values are never shown in the list.
-- **Add:** paste from the clipboard (then cleared), a hidden prompt, or generate a strong random secret (length and
-  alphabet chosen per kind).
-- **Copy** (↵): to the clipboard, concealed, cleared after 20 s (A13).
-- **Rotate:** store the new value, run that provider's live test (A5), keep the old value only until the new one
-  passes, then drop it; journal "rotated <name>" (never the value).
-- **Reveal:** off by default (`HUB_VAULT_REVEAL=1` enables); asks to confirm, shows the value for 10 s, then clears the
-  screen region.
-- **Edit notes**, **delete** (typing the name), and **reminders** for keys older than the rotation age
-  (`HUB_VAULT_ROTATE_DAYS`, default 90; `ade` mentions due keys once a week).
-- **Lock:** macOS relies on the Keychain (login unlock); on Linux values are encrypted with `age` and a passphrase,
-  unlocked per session through a short-lived agent and auto-locked after 5 idle minutes; `ade vault lock` locks now.
-- **Owner only:** needs a TTY; the hub's permission rules ask before any vault command run by an agent.
-- Metadata (kind, notes, rotated dates) lives in the hub's state folder, never in the repo; names stay in
-  `.ade/connections.json` (A10).
+## What changed since this story was first written
+The vault itself (list and search, add, copy, rotate behind a live test, notes, typed-name delete, reminders, lock,
+an opt-in timed reveal) is built in **ade-secrets** v0.3.0 as `ade-secrets vault`. This story only opens it from
+`ade`. Nothing here draws, reads or holds a value.
 
-## Acceptance criteria (`tests/test_vault.sh`, driven through tmux send-keys and capture-pane; fake stores)
-| AC | Criterion |
-|---|---|
-| 1 | The list shows names, kinds, used-by and age, and no fixture value appears anywhere on screen (capture scan) |
-| 2 | Add by clipboard, hidden prompt and generate each store the value through stdin only; generate meets the length and alphabet rules |
-| 3 | Copy puts the value on the clipboard (A13 path) and nothing else; reveal is impossible unless enabled, and then times out |
-| 4 | Rotate keeps the old value when the live test fails, drops it when it passes, and journals without the value |
-| 5 | Delete requires typing the name |
-| 6 | On Linux the file store is age-encrypted; a locked vault refuses copy and reveal until unlocked; it auto-locks after the idle time |
-| 7 | Due-rotation reminders appear in the list and once a week in `ade` |
-| 8 | Without a TTY the vault refuses; the settings template asks before vault commands from agents |
+## Acceptance criteria (`tests/test_vault.sh`; a fake `ade-secrets`)
+| AC | Criterion | Test |
+|---|---|---|
+| 1 | `ade vault` runs `ade-secrets vault` with the person's terminal attached; `ade vault lock` and `ade vault unlock` run the matching commands; exit codes come through | `vault_delegates` |
+| 2 | Without a terminal, and inside an agent session, `ade vault` is refused before `ade-secrets` is called | `vault_terminal_only` |
+| 3 | In `ade ui`, one key opens the vault in a popup that closes when the vault exits; `ade` never captures that popup's contents (no screen capture of it, nothing of it in `ade dash` or a log), and the help popup lists the key | `vault_popup` |
+| 4 | `ade` alone mentions keys due for rotation at most once a week, by name only, when ade-secrets offers a names-only way to ask; if it does not, the reminder is left out and the story says what ade-secrets would need | `vault_reminder` |
+| 5 | README, the help text and CHANGELOG describe `ade key` and `ade vault` in plain words, and say the Owner check in ade-secrets' contract should be done before a real key is stored | `vault_docs` |
