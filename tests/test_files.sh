@@ -11,7 +11,7 @@ farm() {   # $T/sys: the system's commands without the ones this story fakes; th
   python3 - "$T/sys" "$(command -v python3)" "$(command -v git)" <<'PY'
 import os, sys
 d = sys.argv[1]; os.makedirs(d, exist_ok=True)
-skip = set("code bat batcat less glow yazi pdftotext pdftoppm pdfinfo chafa open xdg-open pbcopy wl-copy xclip xsel tmux gh "
+skip = set("code bat batcat less glow yazi pdftotext pdftoppm pdfinfo chafa open xdg-open pbcopy wl-copy xclip xsel tmux gh gitleaks "
            "brew apt-get apt sudo uname".split())
 for name, target in (("python3", sys.argv[2]), ("git", sys.argv[3])):
     os.symlink(target, os.path.join(d, name))
@@ -325,7 +325,7 @@ read_only() {   # AC7
 tools_doctor() {   # AC8: ade doctor lists every tool
   fresh; files_fixture; mkfake bat; printf '#!/bin/bash\necho "hub doctor $*"\n' > "$H/bin/doctor"; chmod +x "$H/bin/doctor"
   A doctor x > "$T/out" 2>&1 || { cat "$T/out"; fail "doctor exit"; }
-  for s in "git      installed" "python3  installed" "tmux     missing (required" "gh       missing (required" "yazi     missing (extra" \
+  for s in "git      installed" "python3  installed" "tmux     missing (required" "gh       missing (required" "gitleaks missing (required" "yazi     missing (extra" \
     "bat      installed" "glow     missing (extra" "poppler  missing (extra" "chafa    missing (extra" "code     missing (extra: Visual Studio Code" "ade setup --tools installs what is missing" "hub doctor x"; do
     assert_contains "$T/out" "$s" "doctor: $s"; done
 }
@@ -333,8 +333,8 @@ tools_doctor() {   # AC8: ade doctor lists every tool
 tools_setup_installs_missing() {   # AC8: ade setup --tools, after a yes at a terminal, only what is missing
   fresh; files_fixture; mkfake bat; mkfake brew
   FAKE_OS=Darwin P "y\r" setup --tools > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
-  assert_eq "$(cat "$CALLS")" "brew install tmux gh yazi glow poppler chafa visual-studio-code" "brew, only the missing ones (bat is here); Visual Studio Code as its cask"
-  assert_contains "$T/screen" "This runs: brew install tmux gh yazi glow poppler chafa visual-studio-code" "the question shows the command"
+  assert_eq "$(cat "$CALLS")" "brew install tmux gh gitleaks yazi glow poppler chafa visual-studio-code" "brew, only the missing ones (bat is here); Visual Studio Code as its cask"
+  assert_contains "$T/screen" "This runs: brew install tmux gh gitleaks yazi glow poppler chafa visual-studio-code" "the question shows the command"
   assert_contains "$T/screen" "yazi only with ADE_FILES=yazi: yazi is neither read-only nor held to the hub" "and what yazi is"
   : > "$CALLS"; FAKE_OS=Darwin P "n\r" setup --tools > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "" "no: nothing installed"
   A setup --tools < /dev/null > "$T/out" 2>&1; assert_eq "$(cat "$CALLS")" "" "no terminal: nothing installed"; assert_contains "$T/out" "run at a terminal: brew install" "says how"
@@ -345,11 +345,11 @@ tools_setup_installs_missing() {   # AC8: ade setup --tools, after a yes at a te
   assert_not_contains "$CALLS" "brew" "apt on Linux"; assert_contains "$T/screen" "yazi: not in apt" "yazi named"; assert_contains "$T/screen" "glow: not in apt" "glow named"
   assert_contains "$T/screen" "code: Visual Studio Code is not in apt; get it from https://code.visualstudio.com/download (ade adds no repository" "Visual Studio Code: Microsoft's page, no repository added"
   assert_not_contains "$CALLS" "packages.microsoft.com" "no repository"
-  mkfake brew 'exit 1'; FAKE_OS=Darwin P "y\r" setup --tools 2>&1 | plain > "$T/screen"; assert_contains "$T/screen" "brew install tmux gh" "a failed install"
+  mkfake brew 'exit 1'; FAKE_OS=Darwin P "y\r" setup --tools 2>&1 | plain > "$T/screen"; assert_contains "$T/screen" "brew install tmux gh gitleaks" "a failed install"
   assert_contains "$T/screen" "failed (exit 1)" "is said"
   rm "$F/brew"; : > "$CALLS"; FAKE_OS=Darwin P "y\r" setup --tools 2>&1 | plain > "$T/screen"
   assert_contains "$T/screen" "Homebrew is not installed (https://brew.sh)" "no Homebrew: says so"; assert_eq "$(cat "$CALLS")" "" "and runs nothing"
-  for c in tmux gh yazi glow pdftotext pdftoppm chafa code; do mkfake "$c"; done; : > "$CALLS"
+  for c in tmux gh gitleaks yazi glow pdftotext pdftoppm chafa code; do mkfake "$c"; done; : > "$CALLS"
   A setup --tools > "$T/out" 2>&1; assert_contains "$T/out" "everything ade uses is installed" "nothing missing"; assert_eq "$(cat "$CALLS")" "" "nothing run"
   A setup --tools bogus > /dev/null 2>&1; assert_eq "$?" 2 "usage"
 }
@@ -357,14 +357,14 @@ tools_setup_installs_missing() {   # AC8: ade setup --tools, after a yes at a te
 tools_in_setup_and_installer() {   # AC8: ade setup's first steps and the one-line installer
   fresh; files_fixture; mkfake bat; mkfake brew
   FAKE_OS=Darwin P "y\ry\r" setup > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
-  assert_eq "$(sed -n 1p "$CALLS")" "brew install tmux gh" "setup: the required tools, after a yes"
+  assert_eq "$(sed -n 1p "$CALLS")" "brew install tmux gh gitleaks" "setup: the required tools, after a yes"
   assert_eq "$(sed -n 2p "$CALLS")" "brew install yazi glow poppler chafa visual-studio-code" "then the extras, as one step"
   assert_contains "$T/screen" "viewer extras" "the extras step is named"
   assert_contains "$T/screen" "yazi is neither read-only nor held to the hub and its projects" "and it says what yazi is"
   : > "$CALLS"; FAKE_OS=Darwin pty_run "y\r" env PATH="$F:$T/sys" "$BASH" "$REPO/install.sh" "$T/prefix" > "$T/raw" 2>&1
-  assert_contains "$T/raw" "installed ade" "the installer ran"; assert_eq "$(cat "$CALLS")" "brew install tmux gh" "the installer: required tools after a yes"
+  assert_contains "$T/raw" "installed ade" "the installer ran"; assert_eq "$(cat "$CALLS")" "brew install tmux gh gitleaks" "the installer: required tools after a yes"
   : > "$CALLS"; PATH="$F:$T/sys" "$BASH" "$REPO/install.sh" "$T/prefix" > "$T/out" 2>&1 < /dev/null
-  assert_eq "$(cat "$CALLS")" "" "piped, no terminal: nothing installed"; assert_contains "$T/out" "missing tools ade needs: tmux gh" "but named"
+  assert_eq "$(cat "$CALLS")" "" "piped, no terminal: nothing installed"; assert_contains "$T/out" "missing tools ade needs: tmux gh gitleaks" "but named"
 }
 
 # Visual Studio Code: c in the explorer, the viewer and the link picker, ade view --code, ADE_VIEWER=code. The fake

@@ -1,6 +1,20 @@
 # Changelog
 
 ## Unreleased
+- The guide's Telegram step finishes, one step at a time. The token is asked once (the hub's own prompt no longer
+  shows as a second one). Then `ade` does each step it can, said before and checked after: bun (after a yes, as
+  `ade setup --tools` installs), the Telegram plugin (`claude plugin install ... --scope user`), the hub's test
+  message (`bin/chat test`), `HUB_CHAT=telegram` and `bin/schedule install`. The three steps only you can do
+  (start the session in a second terminal window, `/telegram:access pair <code>`, `/telegram:access policy
+  allowlist`) are shown alone, with the exact text to type, waited for and checked with the hub's `bin/chat status`.
+  It ends in one of two lines: "Telegram is working" (the bot passed its test and its session runs), or "Telegram
+  is not finished" with the one thing left; `ade setup --telegram` resumes there and shows nothing already done.
+  `ade`, `ade setup --check` and the guide's list show Telegram as `on`, `not finished` or `off`. The hub's list of
+  seven manual steps (`bin/chat setup telegram`) is no longer printed by `ade setup`.
+- `gitleaks` is a required tool: `ade setup --tools`, the guide's tools step and `install.sh` install it with the
+  others (Homebrew or apt), so the hub's first save is no longer skipped on a new machine. A failed install is said
+  in one plain line taken from the installer's message (Homebrew's outdated Command Line Tools; a tap that is not
+  trusted yet); `ade` never runs `brew trust`, a system update or an installer from the network itself.
 - Focus work opens a tab, never a new window. `ade work <folder>` opens the agent as a tab of the hub's `ade ui`
   session; when that session is not there, `ade` makes it (detached, tab 0 the orchestrator's place) and says in one
   line where the tab is (`ade ui` shows it). When your main agent already runs outside tmux, tab 0 only keeps its

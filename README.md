@@ -146,7 +146,7 @@ flowchart TD
   result -->|"failed (reason shown) or skipped"| out["Left out of every role"]
   roles --> tgq{"Reach the everything agent<br/>from Telegram?"}
   out --> tgq
-  tgq -->|"yes"| tg["Bot token at a hidden prompt → bin/keys<br/>bin/chat setup telegram: pair, allowlist on, test message"]
+  tgq -->|"yes"| tg["Bot token at a hidden prompt → bin/keys<br/>then one step at a time: bun, the plugin, pair, allowlist,<br/>the hub's test, the background session"]
   tgq -->|"no (later: ade setup --telegram)"| hub
   tg --> hub{"A hub?"}
   hub -->|"no"| new["ade hub new (A3)"]
@@ -240,7 +240,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade restore [--check] [--label <name>]` | Compare `.ade/connections.json` (names only, committed) with this machine and walk each gap with a yes: the Claude account, keys (hidden prompt, live test), plugins, Telegram (token, re-pair), services | **built** (A10) |
 | `ade files [<folder>]` | A directory explorer over the hub and its projects: name search (`/`), live preview, `o` open in the default app, `f` reveal in Finder (or the Linux file manager), `y` copy the path; a built-in browser (bash + python3), read-only and held to the hub's folders; `ADE_FILES=yazi` uses yazi instead, which yazi is neither read-only nor held to the hub and its projects (it deletes, renames, moves, runs commands and walks anywhere without asking) | **built** (A15) |
 | `ade view <path[:line[:col]]>` | Code at the line (`bat`, else `less -N`), Markdown (`glow`, else plain), images (chafa or the terminal's protocol on iTerm2, WezTerm, kitty, Ghostty; else its size), PDFs (page images on a graphics terminal, else `pdftotext` text; `n`/`p` page, `g` go to, `/` search); `o`, `f`, `y`, `c`; `--code` and `ADE_VIEWER=code` open Visual Studio Code | **built** (A15) |
-| `ade setup --tools [required\|extras]` | Install what is missing (git, python3, tmux, gh; the viewer extras yazi, bat, glow, poppler, chafa and Visual Studio Code) with Homebrew or apt, after one yes at a terminal; `ade doctor` lists each tool | **built** (A15) |
+| `ade setup --tools [required\|extras]` | Install what is missing (git, python3, tmux, gh, gitleaks; the viewer extras yazi, bat, glow, poppler, chafa and Visual Studio Code) with Homebrew or apt, after one yes at a terminal; `ade doctor` lists each tool | **built** (A15) |
 | `ade update [--check \| --rollback \| --auto on\|off]` | ade itself (download, sha256 against the release's `release.json`, checked in a temp folder, the old one kept as `.ade.prev`, one rename; `--rollback` swaps them back), the hub (`git pull --ff-only`, `bin/method sync`), ade-skills plugins, Claude Code, `ade ui` reloaded in place; nothing is stopped; one notify line | **built** (A11) |
 
 Exit codes: `0` success, `1` a failure while working (a fetch or a copy), `2` a usage problem or a missing hub, script

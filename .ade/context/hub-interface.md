@@ -33,7 +33,8 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   with key-shaped strings and Telegram bot tokens hidden, is the reason. It runs with provider key and backend
   variables (`ANTHROPIC_*`, `CLAUDE_CODE_OAUTH_TOKEN`, `DEEPSEEK_API_KEY`, `GEMINI_API_KEY`, ...) unset.
   `ade` makes and removes the folder (never a checkout) and sets `AGENT_TIMEOUT=120`.
-- `bin/chat setup telegram` (after the token is stored) and `bin/chat test telegram` (`ade setup --test telegram`).
+- `bin/chat test telegram` (`ade setup --test telegram`, and the guide's Telegram step, below). `ade setup` never
+  runs `bin/chat setup telegram` (the hub's list of every step).
 - Claude Code: `claude auth status` (exit 0 = signed in with an account) and `claude auth login`.
 
 ## `ade ui` and `ade dash` and the hub (A6)
@@ -199,11 +200,11 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   absolute path outside the roots (by its real path too), found once per run. Over SSH it runs only with `DISPLAY`
   or `WAYLAND_DISPLAY` set or in Visual Studio Code's own terminal (`TERM_PROGRAM=vscode`). `ade view`'s `where`
   line ends with the column (`FT_COL`). The link picker takes `<number>c`.
-- Tools: required `git python3 tmux gh`; extras `yazi bat glow poppler chafa code` (code = Visual Studio Code:
+- Tools: required `git python3 tmux gh gitleaks`; extras `yazi bat glow poppler chafa code` (code = Visual Studio Code:
   Homebrew `visual-studio-code`, not in apt, named with https://code.visualstudio.com/download, no repository added)
   (bat may be `batcat`; poppler =
-  `pdftotext` and `pdftoppm`). Homebrew packages: `git python tmux gh yazi bat glow poppler chafa`. apt (Ubuntu 24.04):
-  `git python3 tmux gh bat poppler-utils chafa`; yazi and glow are not in apt and are not downloaded (their release
+  `pdftotext` and `pdftoppm`). Homebrew packages: `git python tmux gh gitleaks yazi bat glow poppler chafa`. apt (Ubuntu 24.04):
+  `git python3 tmux gh gitleaks bat poppler-utils chafa`; yazi and glow are not in apt and are not downloaded (their release
   pages are named). Installs run only after one yes at a terminal: `brew install <pkgs>`, `[sudo] apt-get install -y
   <pkgs>`; never in an agent session; never a script piped to a shell. V2's `ade server install` uses the apt list.
 
@@ -243,7 +244,7 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   Never `--force`. No `bin/sync` in the hub: nothing is done. Kind `first-save`.
 - Kinds: `live-top-account`, `live-top-key`, `live-top-check` (GLM, Muse), `live-focus-account`, `live-focus-key`,
   `install` (Claude Code, `gh`), `sign-in` (Claude, Gemini), `gh-sign-in`, `repo-taken`, `repo-auth`, `repo-create`,
-  `hub-init`, `session`, `telegram`, `key-store`.
+  `hub-init`, `session`, `key-store`, and Telegram's `tg-token`, `tg-bun`, `tg-step`, `tg-wait`.
 - `~/.config/ade/last-failure` (0600): the output of the last `gh repo create` or `bin/init` that failed, control
   characters removed and key-shaped text hidden. Both run with no input and their output captured (shown when they
   work). Tools that own the terminal (sign-ins, installers, the session, `bin/chat setup`) keep their own lines.
@@ -256,6 +257,28 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   agent with no other provider is still usable by the hub's focus agents; `ade` cannot say otherwise in that list.
 - The live test's failure line: the hub's `agent: live test of <p>:<m> failed: <why>; details: <file>`. `ade` shows the
   file when it exists, its folder when the hub hid the name, else `ade setup --test <p>`.
+
+## The guide's Telegram step (`ade setup --telegram`, step 6 of `ade setup`)
+- What is left is read from the state alone, in this order (`tg_left` in `ade`): `token` (`bin/keys` lists `telegram`
+  as stored), `bun` (on PATH or `~/.bun/bin/bun`), `plugin` (`telegram@claude-plugins-official` in Claude Code's
+  `installed_plugins.json`), `start`, `pair`, `allowlist` (from `bin/chat status`), `test` (`HUB_CHAT=telegram` in
+  `hub.conf`, which `ade` writes once `bin/chat test telegram` exits 0), `service` (`bin/chat status` says running).
+  Shown as `on` (nothing left), `not finished: <what to do>` or `off` (no token and no `HUB_CHAT=telegram`) by
+  `ade` alone, `ade setup --check` (`telegram:` line) and the guide's list.
+- `bin/chat status` as `ade` reads it: the first line holds `running` (`running, channel not connected` does not
+  count as running) or `stopped`, at its start or after `<name>: `; a line `telegram: policy <name>, groups: <n>`
+  (else not paired). The policy `allowlist` is the lock. `ade` cannot tell a paired owner from a pending pairing
+  code in that line; the hub's test settles it.
+- What `ade` runs: `bin/keys set telegram` (the token on stdin, the hub's own prompt and "stored" line not shown),
+  `brew install bun` after a yes (apt has no bun: `https://bun.sh` is named), `claude plugin install
+  telegram@claude-plugins-official --scope user`, `bin/chat stop` (the test is refused while the session runs),
+  `bin/chat test telegram`, `hub.conf` `HUB_CHAT=telegram`, `bin/schedule install`, then `bin/chat status` for up to
+  `ADE_TG_WAIT` seconds (default 30). What only a person does, shown one at a time and checked with `bin/chat status`:
+  `bin/chat start` in a second terminal window (the hub starts a first, unpaired session only at a terminal), and
+  `/telegram:access pair <code>` and `/telegram:access policy allowlist` inside that Claude Code session.
+- Tools: required `git python3 tmux gh gitleaks` (gitleaks: Homebrew `gitleaks`, apt `gitleaks` on Ubuntu 24.04). A
+  failed install is said in one line from the installer's message (`install_why`): Homebrew's outdated Command Line
+  Tools, a tap that is not trusted; `ade` never runs `brew trust`, a system update or an installer from the network.
 
 ## Writes into a checkout (0.2.1)
 - Every file `ade` writes inside a project or hub folder (`.ade/connections.json`, `.ade/method-version`, the files

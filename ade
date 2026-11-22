@@ -675,7 +675,7 @@ home_ready() { command -v claude > /dev/null 2>&1 && [ -n "$(conf_get "$1" HUB_R
 # in_ui: inside ade's own tmux server (tab 0 carries ADE_UI_SESSION; every pane carries TMUX with its socket)
 in_ui() { [ -n "${ADE_UI_SESSION:-}" ] && return 0; case "${TMUX:-}" in */"$ADE_TMUX_SOCKET",*) return 0 ;; esac; return 1; }
 home_summary() {   # <hub>: the hub, its sessions and what to do next (ade home; ade alone where the tab view is not)
-  echo "hub: $(hub_label "$1") ($1)"
+  echo "hub: $(hub_label "$1") ($1)"; tg_line "$1"
   [ -x "$1/bin/sessions" ] && (HUB="$1"; export HUB; "$1/bin/sessions")
   echo "next:"
   echo "  ade                  open your workspace: a tab per agent (ade ui)"
@@ -851,7 +851,10 @@ repo-create|retry|retry=try again;name=pick another name;stop=stop here
 hub-init|retry|retry=try again from where it stopped;stop=stop here
 first-save|retry|retry=try again;go-on=go on (save it later, with the command shown);stop=stop here
 session|go-on|again=start it again;go-on=go on (this step stays not done);stop=stop here
-telegram|retry|token=enter the token again;retry=try again;skip=skip Telegram;stop=stop here
+tg-token|token|token=enter the token again;later=finish Telegram later;stop=stop here
+tg-bun|retry|retry=try again;manual=show how to install bun yourself;later=skip Telegram for now;stop=stop here
+tg-step|retry|retry=try again;later=finish Telegram later;stop=stop here
+tg-wait|again|again=show the step again;later=finish Telegram later;stop=stop here
 key-store|key|key=enter it again;stop=stop here
 '
 # plain <text>: text from another tool as one line ade may print: ASCII only, no control character, key-shaped text hidden
@@ -884,12 +887,24 @@ run_logged() {
 }
 hub_run() { local hub="$1" s="$2"; shift 2; [ -x "$hub/bin/$s" ] || die 2 "this hub has no bin/$s; update it"; ( HUB="$hub"; export HUB; "$hub/bin/$s" "$@" ); }
 
+# key_put <hub> <tool>: SECRET to the hub's bin/keys set <tool> on its stdin, then SECRET is emptied. The hub's own
+# prompt and "stored" line (it writes them even when the value comes on stdin) are not shown: the person was asked
+# once, by ade. KEY_ERR is the hub's last line when it failed, with the value itself and key-shaped text hidden.
+KEY_ERR=""
+key_put() {
+  local err rc
+  err="$(printf '%s\n' "$SECRET" | hub_run "$1" keys set "$2" 2>&1 > /dev/null)"; rc=$?
+  [ -z "$SECRET" ] || err="${err//"$SECRET"/<hidden>}"
+  SECRET=""; KEY_ERR=""
+  [ "$rc" = 0 ] || KEY_ERR="$(plain "$(printf '%s\n' "$err" | sed 's/^value for [A-Za-z0-9._-]*: *//' | grep -v '^[[:space:]]*$' | tail -1)")"
+  return "$rc"
+}
 store_key() {   # store_key <hub> <tool>: hidden prompt, then the hub's bin/keys set <tool> on stdin; 1 = skipped
   local hub="$1" tool="$2" rc
   while :; do
     ask_secret "Paste the $tool key (hidden; empty skips):"
     [ -n "$SECRET" ] || { SECRET=""; return 1; }
-    printf '%s\n' "$SECRET" | hub_run "$hub" keys set "$tool" > /dev/null; rc=$?; SECRET=""
+    key_put "$hub" "$tool"; rc=$?
     [ "$rc" != 0 ] || break
     failed key-store "The $tool key was not stored (the hub's bin/keys set $tool, exit $rc)"
   done
@@ -1079,25 +1094,160 @@ setup_focus() {   # focus agents: several; each signed in and live-tested; only 
   echo "AI services your agents use: ${allowed:-none yet} (change it later; ade roles shows it)"
 }
 
-setup_telegram() {
-  local hub="$1" rc step=token
-  yes_no "Do you want to reach your main agent from Telegram?" || { echo "Telegram skipped (later: ade setup --telegram)"; return 0; }
-  echo "1. In Telegram, open @BotFather and send /newbot."
-  echo "2. Give the bot a name; BotFather replies with its token."
-  echo "3. Paste the token below; it goes only to the hub's key store."
+# Telegram (the guide's last step, and ade setup --telegram): from a bot token to a bot that passed the hub's test and a
+# session that keeps running. The state alone says what is left (tg_left), so running it again resumes there and
+# shows nothing that is done. ade carries out what a program can (the key store, bun, claude plugin install, bin/chat
+# stop and test, hub.conf, bin/schedule install), each said in a line before and checked after; what only a person
+# can do inside a Claude Code session (bin/chat start at a terminal, /telegram:access pair and policy) is shown one
+# step at a time, then checked with the hub's bin/chat status. Never the hub's bin/chat setup (its list of every step).
+TG_PLUGIN="telegram@claude-plugins-official"
+BUN_INSTALL_CMD="curl -fsSL https://bun.sh/install | bash"
+TG_RUN=unknown; TG_POLICY=none
+tg_chat() {   # <hub>: TG_RUN (running, unconnected, stopped, unknown) and TG_POLICY (none, or the policy's name)
+  local out first pol
+  out="$(hub_run "$1" chat status 2> /dev/null < /dev/null | no_ctl)"; first="$(printf '%s\n' "$out" | head -1)"
+  case "$first" in *"channel not connected"*) TG_RUN=unconnected ;; running*|*": running"*) TG_RUN=running ;;
+    stopped*|*": stopped"*) TG_RUN=stopped ;; *) TG_RUN=unknown ;; esac
+  pol="$(printf '%s\n' "$out" | sed -n 's/^telegram: policy \([a-z]*\).*/\1/p' | head -1)"; TG_POLICY="${pol:-none}"
+}
+tg_bun() { tool_present bun || [ -x "$HOME/.bun/bin/bun" ]; }
+tg_left() {   # <hub>: the first thing not done (token bun plugin start pair allowlist test service); nothing when all is
+  local hub="$1"
+  key_stored "$hub" telegram < /dev/null || { echo token; return 0; }
+  tg_bun || { echo bun; return 0; }
+  plugin_version "$hub" "$hub" "$TG_PLUGIN" > /dev/null || { echo plugin; return 0; }
+  tg_chat "$hub"
+  if [ "$TG_POLICY" != allowlist ]; then
+    if [ "$TG_RUN" != running ]; then echo start; elif [ "$TG_POLICY" = none ]; then echo pair; else echo allowlist; fi
+    return 0
+  fi
+  [ "$(conf_get "$hub" HUB_CHAT)" = telegram ] || { echo test; return 0; }   # written once the test passed
+  [ "$TG_RUN" = running ] || echo service
+}
+tg_what() {   # <id>: the one thing that is left, as what to do
+  case "$1" in token) echo "enter your bot's token" ;; bun) echo "install bun" ;; plugin) echo "install the Telegram plugin" ;;
+    start) echo "start your bot's session" ;; pair) echo "pair your Telegram account" ;;
+    allowlist) echo "allow only your account" ;; test) echo "pass the bot's test" ;; service) echo "start it in the background" ;; esac
+}
+tg_state() {   # <hub>: on, "not finished: <what is left>" or off; 0 only when on
+  local left; left="$(tg_left "$1")"
+  [ -n "$left" ] || { echo on; return 0; }
+  if [ "$left" = token ] && [ "$(conf_get "$1" HUB_CHAT)" != telegram ]; then echo off; else echo "not finished: $(tg_what "$left")"; fi
+  return 1
+}
+tg_later() { echo "Telegram is not finished: $(tg_what "$1"), then ade setup --telegram"; }
+tg_hub_cd() {   # <hub>: what to type to enter the hub
+  case "$1" in *[!A-Za-z0-9_./@%+=:,-]*) printf 'cd %s' "$(shq "$1")" ;; *) printf 'cd %s' "$(tilde "$1")" ;; esac
+}
+tg_show() {   # <hub> <start|pair|allowlist>: that one step, with the exact text to type and where
+  case "$2" in
+    start) echo "Your turn: open a second terminal window (keep this one open) and type:"
+      echo "  $(tg_hub_cd "$1") && bin/chat start"
+      echo "Claude Code opens there with your bot attached. Leave it open." ;;
+    pair) echo "Your turn: in Telegram, send your bot any message. It replies with a pairing"
+      echo "code. In the Claude Code window you opened, type (with your code):"
+      echo "  /telegram:access pair <code>" ;;
+    allowlist) echo "Your turn: in the same Claude Code window, type:"
+      echo "  /telegram:access policy allowlist"
+      echo "After this, only your Telegram account reaches your main agent." ;;
+  esac
+}
+tg_seen() {   # <start|pair|allowlist>: what the hub's bin/chat status says now, for the line when the step is not done
+  case "$1:$TG_RUN" in
+    start:unconnected) echo "The session runs, but your bot has not connected to it yet" ;;
+    start:*) echo "The session with your bot is not running yet" ;;
+    pair:*) echo "Your Telegram account is not paired yet" ;;
+    *) echo "The bot is not locked to your account yet (now: $TG_POLICY)" ;;
+  esac
+}
+tg_person() {   # <hub> <step>: shown, waited for, checked (bin/chat status); 1 = finish Telegram later
+  local hub="$1" id="$2" ok
+  agent_context && { echo "The next step is for a person, at a terminal; an agent cannot do it."; return 1; }
   while :; do
-    if [ "$step" = token ]; then
-      ask_secret "Bot token (hidden):"
-      [ -n "$SECRET" ] || { echo "Telegram skipped (no token)"; return 0; }
-      printf '%s\n' "$SECRET" | hub_run "$hub" keys set telegram > /dev/null; rc=$?; SECRET=""
-      [ "$rc" = 0 ] || { failed key-store "The Telegram token was not stored (the hub's bin/keys set telegram, exit $rc)"; continue; }
-      record_key "$hub" telegram
-    fi
-    hub_run "$hub" chat setup telegram; rc=$?; [ "$rc" != 0 ] || break
-    failed telegram "The Telegram set-up did not finish (the hub's bin/chat setup telegram, exit $rc)"
-    case "$CHOICE" in skip) echo "Telegram skipped (later: ade setup --telegram)"; return 0 ;; *) step="$CHOICE" ;; esac
+    tg_show "$hub" "$id"
+    ask_read "Press Enter when done (or type later):" || { ask_stop; return 1; }
+    [ "$ANSWER" != later ] || return 1
+    tg_chat "$hub"; ok=0
+    case "$id" in start) [ "$TG_RUN" = running ] && ok=1 ;; pair) [ "$TG_POLICY" != none ] && ok=1 ;; allowlist) [ "$TG_POLICY" = allowlist ] && ok=1 ;; esac
+    [ "$ok" = 0 ] || break
+    failed tg-wait "$(tg_seen "$id")" "the hub's own words: ade chat status"
+    [ "$CHOICE" = again ] || return 1
+  done
+  case "$id" in start) echo "checked: the session is running, with your bot connected" ;; pair) echo "checked: your Telegram account is paired" ;;
+    allowlist) echo "checked: only your account reaches the bot" ;; esac
+}
+tg_wait_running() {   # <hub>: up to ADE_TG_WAIT seconds (default 30) for bin/chat status to say running
+  local n="${ADE_TG_WAIT:-30}" i=0; matches "$n" '^[0-9]{1,3}$' || n=30
+  while :; do tg_chat "$1"; [ "$TG_RUN" = running ] && return 0; [ "$i" -lt "$n" ] || return 1; i=$((i + 1)); sleep 1; done
+}
+tg_auto() {   # <hub> <step>: one step ade does itself: said, done, checked; 1 = finish Telegram later
+  local hub="$1" id="$2" out rc
+  while :; do
+    case "$id" in
+      bun) echo "Next: bun, the program the Telegram plugin runs on."
+        tools_install bun || true; hash -r
+        if tg_bun; then echo "checked: bun is installed"; return 0; fi
+        failed tg-bun "${TOOLS_WHY:-bun is not installed yet; the Telegram plugin runs on it}" "${TOOLS_WHY:+in the lines above, from the installer itself}${TOOLS_WHY:-https://bun.sh shows how to install it}"
+        [ "$CHOICE" != manual ] || { echo "To install bun yourself, run (from https://bun.sh; ade does not run it for you):"; echo "  $BUN_INSTALL_CMD"; return 1; } ;;
+      plugin) echo "Next: the Telegram plugin for Claude Code, installed for your user."
+        run_logged "$hub" hub_claude "$hub" plugin install "$TG_PLUGIN" --scope user > /dev/null; rc=$?
+        if plugin_version "$hub" "$hub" "$TG_PLUGIN" > /dev/null; then echo "checked: the Telegram plugin is installed"; return 0; fi
+        if [ "$rc" != 0 ]; then failed tg-step "The Telegram plugin was not installed: $FAIL_LINE" "$FAIL_FILE"
+        else failed tg-step "Claude Code does not list the Telegram plugin as installed" "claude plugin list shows what is installed"; fi ;;
+      test) tg_chat "$hub"
+        if [ "$TG_RUN" != stopped ]; then echo "Next: closing the session in your other window, so the hub can test the bot."
+          hub_run "$hub" chat stop > /dev/null 2>&1 < /dev/null; tg_chat "$hub"; fi
+        if [ "$TG_RUN" = stopped ]; then
+          echo "Next: the test. Your bot sends you a message in Telegram: reply to it with"
+          echo "anything. The hub waits for your reply (up to two minutes)."
+          out="$(hub_run "$hub" chat test telegram 2>&1 < /dev/null)"; rc=$?
+          if [ "$rc" = 0 ]; then conf_set "$hub" HUB_CHAT telegram; echo "checked: your bot's message reached you, and your reply reached the hub"; return 0; fi
+          out="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1)"; out="${out#chat: }"
+          failed tg-step "The test did not pass: ${out:-bin/chat test in the hub, exit $rc}" "ade setup --test telegram runs it alone"
+        else failed tg-step "The session in your other window is still running" "close it there (type /exit), then try again"; fi ;;
+      service) echo "Next: your hub keeps the session with your bot running, in the background."
+        if run_logged "$hub" env HUB="$hub" ./bin/schedule install > /dev/null && tg_wait_running "$hub"; then
+          echo "checked: the session is running in the background"; return 0; fi
+        failed tg-step "The background session has not started${FAIL_LINE:+: $FAIL_LINE}" "ade chat logs shows the hub's own lines" ;;
+    esac
+    [ "$CHOICE" = retry ] || return 1
+  done
+}
+tg_token() {   # <hub>: the token, asked once (hidden), to the hub's key store on stdin; 1 = skipped (Enter)
+  local hub="$1" rc
+  echo "In Telegram, open @BotFather and send /newbot, then give your bot a name."
+  echo "BotFather replies with the bot's token. Paste it here; it is not shown, and it"
+  echo "goes only to the hub's key store."
+  while :; do
+    ask_secret "Bot token (hidden; Enter skips):"
+    [ -n "$SECRET" ] || return 1
+    key_put "$hub" telegram; rc=$?
+    [ "$rc" != 0 ] || break
+    failed tg-token "The token was not stored: ${KEY_ERR:-bin/keys set telegram in the hub, exit $rc}"
+    [ "$CHOICE" = token ] || return 2
+  done
+  record_key "$hub" telegram; echo "checked: the token is in the hub's key store"
+}
+setup_telegram() {
+  local hub="$1" left rc ASK_AGAIN="ade setup --telegram"
+  left="$(tg_left "$hub")"
+  if [ "$left" = token ]; then
+    yes_no "Do you want to reach your main agent from Telegram?" || { echo "Telegram skipped (later: ade setup --telegram)"; return 0; }
+    tg_token "$hub"; rc=$?
+    [ "$rc" != 1 ] || { echo "Telegram skipped (no token; later: ade setup --telegram)"; return 0; }
+    [ "$rc" = 0 ] || { tg_later token; return 0; }
+  fi
+  while :; do
+    left="$(tg_left "$hub")"
+    case "$left" in
+      "") break ;;
+      token) tg_later token; return 0 ;;   # the key store no longer lists it
+      start|pair|allowlist) tg_person "$hub" "$left" || { tg_later "$left"; return 0; } ;;
+      *) tg_auto "$hub" "$left" || { tg_later "$left"; return 0; } ;;
+    esac
   done
   record_channel "$hub" telegram; record_services "$hub"
+  echo "Telegram is working: your bot passed its test, and its session is running."
 }
 
 setup_check() {   # one line per step; reads only
@@ -1109,10 +1259,15 @@ setup_check() {   # one line per step; reads only
     [ -n "$hub" ] && for p in $KEY_PROVIDERS; do key_stored "$hub" "$p" && keys="${keys:+$keys, }$p"; done
     if [ -n "$keys" ]; then echo "sign-in: signed in (key: $keys)"; else echo "sign-in: not signed in"; fi
   fi
-  if [ -z "$hub" ]; then echo "hub: none (ade hub new <name>)"; echo "projects: none"; echo "channel: none"; return 0; fi
+  if [ -z "$hub" ]; then echo "hub: none (ade hub new <name>)"; echo "projects: none"; echo "channel: none"; echo "telegram: off"; return 0; fi
   unt="$(conf_get "$hub" HUB_PROVIDERS_UNTESTED)"; echo "hub: $hub${unt:+ ($unt: not tested; ade setup --test)}"
   for d in "$hub"/projects/*/; do [ -d "$d" ] && n=$((n + 1)); done; echo "projects: $n"
   ch="$(conf_get "$hub" HUB_CHANNELS)"; echo "channel: ${ch:-none}"
+  tg_line "$hub"
+}
+tg_line() {   # <hub>: "telegram: on", "telegram: not finished: <what is left> (ade setup --telegram)" or "telegram: off"
+  local st; st="$(tg_state "$1")"
+  case "$st" in "not finished"*) echo "telegram: $st (ade setup --telegram)" | cut -c1-80 ;; *) echo "telegram: $st" ;; esac
 }
 
 # setup_test: --test [provider|telegram]: re-run live tests; changes nothing, but for an everything agent that was
@@ -1133,7 +1288,7 @@ setup_test() {
   return $rc
 }
 
-SETUP_PROMPT="Run the ADE setup guide for this hub. Ask me in plain words about my projects and my work first. Then propose a plan and carry it out one step at a time, and ask before each change (wait for my yes): 1) ade init in each project; 2) ade agent add for the specialists each project needs; 3) ade skills add for useful ade-skills plugins; 4) set the role models with bin/models; 5) offer the Telegram channel with bin/chat setup telegram. Say what each step changes before you run it."
+SETUP_PROMPT="Run the ADE setup guide for this hub. Ask me in plain words about my projects and my work first. Then propose a plan and carry it out one step at a time, and ask before each change (wait for my yes): 1) ade init in each project; 2) ade agent add for the specialists each project needs; 3) ade skills add for useful ade-skills plugins; 4) set the role models with bin/models; 5) do not set up Telegram here: say that the guide offers it next, once this session ends (ade setup --telegram, at my own terminal). Say what each step changes before you run it."
 
 # ADE Computer (A18): the image marks itself with this file (.ade/context/hub-interface.md)
 ADE_COMPUTER_MARKER="${ADE_COMPUTER_MARKER:-/etc/ade-computer}"
@@ -1238,7 +1393,7 @@ guide_state() {   # <step>: its state in a few words; 0 when it is done (an opti
       [ -n "$(conf_get "$hub" HUB_ROOT_PROVIDER)" ] && { a="$(conf_get "$hub" HUB_PROVIDERS_UNTESTED)"; echo "$(hub_label "$hub") ($(tilde "$hub"))${a:+; $a not tested}"; return 0; }
       echo "$(hub_label "$hub"): its agents are not chosen yet" ;;
     project) [ -n "$hub" ] && p="$(first_project "$hub")" && { echo "$p"; return 0; }; echo "none yet" ;;
-    telegram) [ -n "$hub" ] && case " $(conf_get "$hub" HUB_CHANNELS) " in *" telegram "*) echo on; return 0 ;; esac; echo off ;;
+    telegram) [ -n "$hub" ] || { echo off; return 1; }; tg_state "$hub"; return $? ;;
   esac
   return 1
 }
@@ -1263,7 +1418,7 @@ guide_about() {   # <step>: what it is and what it changes, before it runs
     project) echo "ADE opens Claude Code at your hub: it asks about your work and sets up your"
       echo "first project with you, asking before each change. /exit comes back here." ;;
     telegram) echo "Optional: a Telegram bot of your own lets you reach your main agent. A yes asks"
-      echo "for the bot's token (hidden) and pairs your Telegram account; no skips it." ;;
+      echo "for the bot's token (hidden), then goes one step at a time; no skips it." ;;
   esac   # github: github_ready says what it is and what it runs
 }
 guide_install_claude() {
@@ -1324,11 +1479,12 @@ guide_checked() {   # <step>: one line, after the step, from its state now
   else
     case "$1" in claude-sign-in) echo "checked: your key is asked at step 4, once your hub is made" ;;
       project) echo "checked: no project yet; ade setup comes back to this step" ;;
-      telegram) echo "checked: Telegram is off" ;; *) echo "checked: $(guide_title "$1"): $st" ;; esac
+      telegram) case "$st" in off) echo "checked: Telegram is off" ;; *) echo "checked: Telegram is not finished; ade setup --telegram comes back to it" ;; esac ;;
+      *) echo "checked: $(guide_title "$1"): $st" ;; esac
   fi
 }
 guide() {   # [1: the list is already shown]: exit 0 at the end, 1 when a step stopped, 2 when refused
-  local id n=0 total did=0 herr left="" hub
+  local id n=0 total did=0 herr left="" hub st
   herr="$( (find_hub) 2>&1 > /dev/null)"
   if [ -n "$herr" ] && ! printf '%s' "$herr" | grep -q "no hub found"; then echo "$herr" >&2; exit 2; fi
   ASK_AGAIN="ade setup"; GUIDE_ON=1; total="$(echo $GUIDE_STEPS | wc -w | tr -d ' ')"
@@ -1336,8 +1492,9 @@ guide() {   # [1: the list is already shown]: exit 0 at the end, 1 when a step s
   agent_context && die 2 "ade setup asks a person at a terminal; it refuses inside a Claude Code session (an agent cannot answer for you)"
   setup_tools_steps
   for id in $GUIDE_STEPS; do n=$((n + 1))
-    guide_state "$id" > /dev/null && continue
-    case " $GUIDE_OPTIONAL " in *" $id "*) [ "$did" = 1 ] || continue ;; *) did=1 ;; esac
+    st="$(guide_state "$id")" && continue
+    # an optional step: offered in a run that did a required step, and picked up again once it was started
+    case " $GUIDE_OPTIONAL " in *" $id "*) [ "$did" = 1 ] || case "$st" in "not finished"*) ;; *) continue ;; esac ;; *) did=1 ;; esac
     echo; echo "Step $n of $total: $(guide_title "$id")"; guide_about "$id"
     guide_run "$id"; guide_checked "$id"
   done
@@ -3144,7 +3301,7 @@ clip_copy() {   # <path>: onto the clipboard on stdin (pbcopy, wl-copy, xclip, x
 
 # the tools ade uses: the required ones (checked by install.sh and ade setup) and the viewer extras (one step in ade
 # setup); ade setup --tools installs what is missing with Homebrew (macOS) or apt (Ubuntu), after a yes at a terminal
-REQUIRED_TOOLS="git python3 tmux gh"
+REQUIRED_TOOLS="git python3 tmux gh gitleaks"
 EXTRA_TOOLS="yazi bat glow poppler chafa code"
 tool_bin() { local c; for c in "$1" $([ "$1" = bat ] && echo batcat); do command -v "$c" 2> /dev/null && return 0; done; return 1; }   # Ubuntu names bat batcat
 tool_present() { case "$1" in poppler) command -v pdftotext && command -v pdftoppm ;; *) tool_bin "$1" ;; esac > /dev/null 2>&1; }
@@ -3153,12 +3310,17 @@ tool_what() {
   case "$1" in
     git) echo "required: hubs and projects are git repositories" ;; python3) echo "required: ade reads JSON with it" ;;
     tmux) echo "required: ade ui" ;; gh) echo "required: ade hub new on GitHub" ;;
+    gitleaks) echo "required: the hub's secret scan before each save" ;;
     yazi) echo "extra: ade files with ADE_FILES=yazi; not read-only" ;; bat) echo "extra: syntax colours in ade view, else less -N" ;;
     glow) echo "extra: Markdown rendered in ade view, else plain text" ;; poppler) echo "extra: PDF pages in ade view (pdftotext, pdftoppm)" ;;
     chafa) echo "extra: images on more terminals" ;; code) echo "extra: Visual Studio Code, for c in ade files and ade view" ;;
   esac
 }
-tool_pkg() { case "$1:$2" in brew:python3) echo python ;; brew:code) echo visual-studio-code ;; apt:poppler) echo poppler-utils ;; apt:yazi|apt:glow|apt:code) ;; *) echo "$2" ;; esac; }   # <brew|apt> <tool>
+tool_pkg() { case "$1:$2" in brew:python3) echo python ;; brew:code) echo visual-studio-code ;; apt:poppler) echo poppler-utils ;; apt:yazi|apt:glow|apt:code|apt:bun) ;; *) echo "$2" ;; esac; }   # <brew|apt> <tool>
+tool_page() {   # <tool>: where to get a tool apt does not have
+  case "$1" in yazi) echo "https://github.com/sxyazi/yazi/releases (ade works without it)" ;; glow) echo "https://github.com/charmbracelet/glow/releases (ade works without it)" ;;
+    bun) echo "https://bun.sh" ;; esac
+}
 tools_report() {   # ade doctor: each tool, installed or missing
   local t; echo "ade tools:"
   for t in $REQUIRED_TOOLS $EXTRA_TOOLS; do
@@ -3166,8 +3328,20 @@ tools_report() {   # ade doctor: each tool, installed or missing
   done
   [ -z "$(tools_missing $REQUIRED_TOOLS $EXTRA_TOOLS)" ] || echo "  ade setup --tools installs what is missing"
 }
+# install_why <file> <packages>: a failed install in one plain line, from the installer's own message; nothing when
+# it is not one of the known ones. Homebrew: Command Line Tools that are too old, and a tap that is not trusted yet
+# (Homebrew ignores a third-party tap until the person runs brew trust). ade says it and changes neither.
+TOOLS_WHY=""
+install_why() {
+  local t; [ -n "$1" ] && [ -f "$1" ] || return 0
+  t="$(LC_ALL=C tr -cd '\n -~' < "$1" | tr 'A-Z' 'a-z')"
+  case "$t" in
+    *"command line tools"*) echo "Homebrew needs newer Command Line Tools: run softwareupdate --install -a" ;;
+    *"not trusted"*|*"tap trust"*) case "$2" in *" "*) echo "Homebrew does not trust one of its taps yet (see brew trust)" ;; *) echo "Homebrew does not trust the ${2##*/} tap yet" ;; esac ;;
+  esac
+}
 tools_install() {   # <tool>...: one question at a terminal, then brew install or apt-get install -y; 1 = not installed
-  local m="" t p pkgs="" cmd rc
+  local m="" t p pkgs="" cmd rc tmp; TOOLS_WHY=""
   if on_macos; then command -v brew > /dev/null 2>&1 && m=brew; elif command -v apt-get > /dev/null 2>&1; then m=apt; fi
   if [ -z "$m" ]; then
     if on_macos; then echo "Homebrew is not installed (https://brew.sh), so ade cannot install: $*"
@@ -3177,16 +3351,21 @@ tools_install() {   # <tool>...: one question at a terminal, then brew install o
   for t in "$@"; do p="$(tool_pkg "$m" "$t")"
     if [ -n "$p" ]; then pkgs="${pkgs:+$pkgs }$p"
     elif [ "$t" = code ]; then echo "code: Visual Studio Code is not in apt; get it from https://code.visualstudio.com/download (ade adds no repository; ade works without it)"
-    else echo "$t: not in apt; get it from https://github.com/$( [ "$t" = yazi ] && echo sxyazi/yazi || echo charmbracelet/glow)/releases (ade works without it)"; fi
+    else echo "$t: not in apt; get it from $(tool_page "$t")"; fi
   done
   [ -n "$pkgs" ] || return 1
   if [ "$m" = brew ]; then cmd="brew install $pkgs"; elif [ "$(id -u)" = 0 ]; then cmd="apt-get install -y $pkgs"; else cmd="sudo apt-get install -y $pkgs"; fi
   if agent_context; then echo "ade installs nothing from an agent session; run it yourself at a terminal: $cmd"; return 1; fi
   { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || { echo "to install them, run at a terminal: $cmd (or ade setup --tools)"; return 1; }
   tty_confirm "Install $pkgs now? This runs: $cmd" || { echo "nothing installed (later: ade setup --tools)"; return 1; }
-  $cmd < /dev/tty; rc=$?   # cmd: ade's own words (the package names above), split on purpose
-  if [ "$rc" = 0 ]; then echo "installed: $pkgs"; return 0; fi
-  echo "$cmd failed (exit $rc)$([ "$m" = apt ] && echo '; when apt cannot find a package, run apt-get update first')"; return 1
+  tmp="$(mk_tmp)" || tmp=""
+  # cmd: ade's own words (the package names above), split on purpose. Its lines are shown as they come and kept, so a
+  # failure can be said in one plain line (install_why); ade repairs nothing itself (no brew trust, no system update)
+  if [ -n "$tmp" ]; then $cmd < /dev/tty 2>&1 | tee "$tmp/out"; rc="${PIPESTATUS[0]}"; else $cmd < /dev/tty; rc=$?; fi
+  if [ "$rc" = 0 ]; then [ -z "$tmp" ] || rm_tmp "$tmp"; echo "installed: $pkgs"; return 0; fi
+  TOOLS_WHY="$(install_why "${tmp:+$tmp/out}" "$pkgs")"; [ -z "$tmp" ] || rm_tmp "$tmp"
+  [ -n "$TOOLS_WHY" ] || TOOLS_WHY="$cmd failed (exit $rc)$([ "$m" = apt ] && echo '; when apt cannot find a package, run apt-get update first')"
+  echo "$TOOLS_WHY"; return 1
 }
 setup_tools() {   # [required|extras]: ade setup --tools; what is missing, after one yes
   local req ext
