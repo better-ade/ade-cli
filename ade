@@ -1196,7 +1196,11 @@ shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 confirm() { printf '%s [y/N] ' "$1"; IFS= read -r ANSWER || ANSWER=""; [ -t 0 ] || echo
   case "$ANSWER" in y|Y|yes|Yes) return 0 ;; *) return 1 ;; esac; }
 # reset and uninstall ask a person at a terminal: answers come from /dev/tty, never a pipe or an agent session
-agent_context() { [ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}${CLAUDE_CODE_SESSION_ID:-}" ]; }
+# Claude Code's session markers (ade-secrets docs/contract.md v1): any one set is an agent session. An accident guard, not
+# a boundary: an agent running as you can unset them. One line: tests/helpers.sh reads it.
+AGENT_SESSION_VARS="CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_PROJECT_DIR CLAUDE_PLUGIN_ROOT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT"
+agent_var() { local v; for v in $AGENT_SESSION_VARS; do [ -n "${!v+x}" ] && { echo "$v"; return 0; }; done; return 1; }
+agent_context() { agent_var > /dev/null; }
 tty_ready() {
   agent_context && die 2 "ade $1 asks a person at a terminal; it refuses inside a Claude Code session (an agent cannot answer for you); nothing changed"
   { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || die 2 "ade $1 asks a person at a terminal; it refuses piped or missing answers; nothing changed"
@@ -2993,24 +2997,46 @@ PY
 # of its output; a value is never read, held, logged or printed here. Names follow the contract's rule.
 ADE_SECRETS_REF="${ADE_SECRETS_REF:-v0.3.0}"
 SECRETS_FILES="ade-secrets vault.sh"   # what an install takes from the release (bin/ade-secrets, lib/vault.sh)
-SECRETS_SESSION_VARS="CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_BRIDGE_SESSION_ID
-  CLAUDE_PROJECT_DIR CLAUDE_PLUGIN_ROOT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT"
 SECRETS_MARKER="# >>> ade-secrets delegation"   # the first line of the contract's block in a hub's bin/secret (H2)
 KEY_USAGE="usage: ade key list | set <name> [--clipboard] | copy <name> [--for N] | forget <name> | status"
 KEY_NAME_RX='^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$'
 key_name_ok() { local LC_ALL=C; [[ $1 =~ $KEY_NAME_RX ]]; }
 key_name_check() { key_name_ok "$1" || die 2 "a key name is letters, digits, '.', '_' or '-' (up to 64), starting with a letter or digit"; }
-secrets_session_var() { local v; for v in $SECRETS_SESSION_VARS; do [ -n "${!v+x}" ] && { echo "$v"; return 0; }; done; return 1; }
+secrets_session_var() { agent_var; }
 secrets_tty() { { [ -t 0 ] && : < /dev/tty; } 2> /dev/null; }
+# secrets_find: SECRETS_BIN = the ade-secrets this run uses, found on PATH once, as an absolute path; a copy under the
+# current folder, the hub or any git work tree is refused (SECRETS_WHY says which and why): a project's bin/ earlier on
+# PATH must not stand in for it. 1 = none to use.
+SECRETS_BIN="" SECRETS_WHY="" SECRETS_DONE=0
+under() { case "$1/" in "$2"/*) return 0 ;; esac; return 1; }   # <path> <folder>: physical paths
+secrets_find() {
+  [ "$SECRETS_DONE" = 1 ] && { [ -n "$SECRETS_BIN" ]; return; }
+  SECRETS_DONE=1; local p d f hub top here
+  here="$(pwd -P)"; under "$(cd "$HOME" 2> /dev/null && pwd -P)" "$here" && here=""   # the home folder (or above) is no project
+  [ "$here" != / ] || here=""
+  p="$(command -v ade-secrets 2> /dev/null)" || return 1
+  case "$p" in /*) ;; *) SECRETS_WHY="ade-secrets on PATH is not a file ($(printf '%s' "$p" | no_ctl)); refused"; return 1 ;; esac
+  for f in "$p" "$(cd "$(dirname "$p")" 2> /dev/null && pwd -P)/$(basename "$p")"; do
+    d="$(cd "$(dirname "$f")" 2> /dev/null && pwd -P)" || continue
+    if [ -L "$f" ]; then local l; l="$(readlink "$f")"; case "$l" in /*) ;; *) l="$d/$l" ;; esac; d="$(cd "$(dirname "$l")" 2> /dev/null && pwd -P)" || continue; fi
+    hub="$( (find_hub) 2> /dev/null)" && hub="$(cd "$hub" && pwd -P)"
+    if [ -n "$here" ] && under "$d" "$here"; then SECRETS_WHY="refused $(printf '%s' "$p" | no_ctl): it lies under the current folder"
+    elif [ -n "$hub" ] && under "$d" "$hub"; then SECRETS_WHY="refused $(printf '%s' "$p" | no_ctl): it lies under the hub ($hub)"
+    elif top="$(git -C "$d" rev-parse --show-toplevel 2> /dev/null)" && [ -n "$top" ]; then SECRETS_WHY="refused $(printf '%s' "$p" | no_ctl): it lies in the git work tree $(printf '%s' "$top" | no_ctl)"
+    else continue; fi
+    return 1
+  done
+  SECRETS_BIN="$p"
+}
 key_guard() {   # <what>: before ade-secrets is called: it is installed, no agent session, a person at a terminal
-  command -v ade-secrets > /dev/null 2>&1 || die 2 "ade-secrets is not installed; get it with: ade setup --tools"
+  secrets_find || { [ -z "$SECRETS_WHY" ] || die 2 "$SECRETS_WHY; install ade-secrets outside any project"; die 2 "ade-secrets is not installed; get it with: ade setup --tools"; }
   local v; v="$(secrets_session_var)" && die 3 "ade $1 runs only in your own terminal, not inside an agent session ($v is set); nothing ran"
   secrets_tty || die 3 "ade $1 runs only in your own terminal (there is no terminal here); nothing ran"
 }
 KEY_STORE=""   # the store the person picked for ade-secrets' first set (ADE_SECRETS_STORE for that one call)
 secrets_run() {   # <ade-secrets args>: the terminal attached, nothing captured; its exit code, one plain line for 3, 4, 5
   local rc=0
-  if [ -n "$KEY_STORE" ]; then ADE_SECRETS_STORE="$KEY_STORE" ade-secrets "$@" || rc=$?; else ade-secrets "$@" || rc=$?; fi
+  if [ -n "$KEY_STORE" ]; then ADE_SECRETS_STORE="$KEY_STORE" "$SECRETS_BIN" "$@" || rc=$?; else "$SECRETS_BIN" "$@" || rc=$?; fi
   case "$rc" in
     3) echo "ade: ade-secrets refused: run this in your own terminal, not inside an agent session" >&2 ;;
     4) echo "ade: no clipboard here (over SSH or without a display); type the key at the hidden prompt instead" >&2 ;;
@@ -3020,7 +3046,7 @@ secrets_run() {   # <ade-secrets args>: the terminal attached, nothing captured;
 }
 key_store_pick() {   # before a set: with no store recorded, the person picks one and ade-secrets records it (never ade)
   KEY_STORE=""; [ -z "${ADE_SECRETS_STORE:-}" ] || return 0
-  local rc=0 o; ade-secrets store > /dev/null 2>&1 || rc=$?
+  local rc=0 o; "$SECRETS_BIN" store > /dev/null 2>&1 || rc=$?
   [ "$rc" = 2 ] || return 0   # 2: no store recorded yet (anything else: ade-secrets says why at the set itself)
   if on_macos; then o="keychain pass age"; echo "ade-secrets has no store yet: 1) the macOS Keychain (default)  2) pass  3) age"
   else o="pass age"; echo "ade-secrets has no store yet: 1) pass (default)  2) age"; fi
@@ -3040,7 +3066,7 @@ cmd_key() {
       key_guard "key set"; key_store_pick
       if [ -n "$clip" ]; then secrets_run set "$name" --clipboard; else secrets_run set "$name"; fi; exit $? ;;
     copy) { [ $# -eq 1 ] || { [ $# -eq 3 ] && [ "$2" = --for ]; }; } || die 2 "$KEY_USAGE"; name="$1"; key_name_check "$name"
-      if [ $# -eq 3 ]; then secs="$3"; matches "$secs" '^[0-9]{1,4}$' || die 2 "--for takes seconds, 1 to 3600"; fi
+      if [ $# -eq 3 ]; then secs="$3"; { matches "$secs" '^[0-9]{1,4}$' && [ $((10#$secs)) -ge 1 ] && [ $((10#$secs)) -le 3600 ]; } || die 2 "--for takes seconds, 1 to 3600"; fi
       key_guard "key copy"
       if [ -n "$secs" ]; then secrets_run copy "$name" --for "$secs"; else secrets_run copy "$name"; fi; exit $? ;;
     *) die 2 "$KEY_USAGE" ;;
@@ -3049,13 +3075,28 @@ cmd_key() {
 # the hub's side (ade-brain H2): a hub delegates when its bin/secret carries the contract's block and the block's own
 # condition holds (ade-secrets on PATH, HUB_SECRETS not builtin)
 hub_delegates() { [ "${HUB_SECRETS:-}" != builtin ] && command -v ade-secrets > /dev/null 2>&1 && [ -f "$1/bin/secret" ] && grep -q "^$SECRETS_MARKER" "$1/bin/secret"; }
+# Which hub keys Claude Code itself runs on. ade-secrets' contract (v1) marks those, and only those, --helper: a helper
+# entry is readable by Claude Code and anything it runs, without a dialog. The others have no mark of their own in v1,
+# so on a delegating hub ade does not store them (the hub's built-in store does). One row per key ade setup asks for.
+HUB_KEY_USERS="anthropic	claude
+deepseek	claude
+glm	claude
+muse	claude
+gemini	gemini-cli
+telegram	chat"
+claude_key() { printf '%s\n' "$HUB_KEY_USERS" | awk -F '\t' -v t="$1" '$1 == t && $2 == "claude" { f = 1 } END { exit !f }'; }
 hub_key_name() {   # <hub> <tool>: the name the hub keeps that tool's key under (bin/keys' third column), else the tool
-  local n; n="$(hub_run "$1" keys 2> /dev/null | awk -v t="$2" '$1 == t && NF >= 3 { print $3; exit }')"
+  local n; n="$(hub_run "$1" keys 2> /dev/null | awk -v t="$2" '$1 == t && NF == 3 { print $3; exit }')"
   if [ -n "$n" ] && key_name_ok "$n"; then echo "$n"; else echo "$2"; fi
 }
 hub_key_set() {   # <hub> <tool> <what>: ade key set for a delegating hub, as its bin/secret --set does; 1 = skipped or failed
-  local name how rc=0; name="$(hub_key_name "$1" "$2")"
+  local name how rc=0
+  if ! claude_key "$2"; then
+    echo "$2: this key is not supported with ade-secrets yet (Claude Code is not given it); the hub's built-in store handles it: HUB_SECRETS=builtin ade keys set $2"
+    return 1; fi
   key_guard setup
+  name="$(hub_key_name "$1" "$2")"
+  echo "This key is stored for Claude Code's key helper: Claude Code, and anything it runs, can read it without a dialog; that is how its sessions get it."
   ask "Store $3 in ade-secrets: at a hidden prompt (p), from the clipboard (c), or skip (s)? [P/c/s]"; how="$ANSWER"
   case "$how" in s|S) return 1 ;; esac
   key_store_pick
@@ -3103,17 +3144,20 @@ for l in sys.argv[2].splitlines():
 }
 secrets_store_line() {   # what ade-secrets store says, as a store name (it refuses outside a terminal or in a session)
   local out rc=0
+  # no folder yet: none chosen, and the tool is not called (its store command would create the folder)
+  [ -d "${ADE_SECRETS_HOME:-$HOME/.ade-secrets}" ] || { echo "none chosen yet (the first ade key set asks)"; return 0; }
   if secrets_session_var > /dev/null || ! secrets_tty; then echo "unknown here (run ade doctor in your own terminal)"; return 0; fi
-  out="$(ade-secrets store 2> /dev/null)" || rc=$?
+  out="$("$SECRETS_BIN" store 2> /dev/null)" || rc=$?
   if [ "$rc" = 2 ]; then echo "none chosen yet (the first ade key set asks)"; return 0; fi
   out="${out#store: }"; out="${out%% *}"
   case "$rc:$out" in 0:keychain|0:pass|0:age) echo "$out" ;; *) echo "unknown (ade-secrets store exit $rc)" ;; esac
 }
 secrets_report() {   # [hub]: ade doctor and ade setup --check; names only, never a value
   local hub="${1:-}" v miss
-  if ! command -v ade-secrets > /dev/null 2>&1; then
-    echo "secrets: ade-secrets is not installed (ade setup --tools)${hub:+; the hub uses its built-in store}"; return 0; fi
-  v="$(ade-secrets version 2> /dev/null < /dev/null | head -1 | no_ctl)"; matches "$v" '^[0-9]+\.[0-9]+\.[0-9]+$' || v="(version unknown)"
+  if ! secrets_find; then
+    if [ -n "$SECRETS_WHY" ]; then echo "secrets: $SECRETS_WHY; install ade-secrets outside any project"
+    else echo "secrets: ade-secrets is not installed (ade setup --tools)${hub:+; the hub uses its built-in store}"; fi; return 0; fi
+  v="$("$SECRETS_BIN" version 2> /dev/null < /dev/null | head -1 | no_ctl)"; matches "$v" '^[0-9]+\.[0-9]+\.[0-9]+$' || v="(version unknown)"
   echo "secrets: ade-secrets $v, store $(secrets_store_line)"
   [ -n "$hub" ] || return 0
   if [ "${HUB_SECRETS:-}" = builtin ]; then echo "secrets: HUB_SECRETS=builtin keeps the hub on its built-in store (unset it to use ade-secrets)"

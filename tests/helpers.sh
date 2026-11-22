@@ -2,6 +2,8 @@
 set -u
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ADE="$REPO/ade"
+SESSION_VARS="$(sed -n 's/^AGENT_SESSION_VARS="\(.*\)"$/\1/p' "$ADE")"   # ade's one list (agent_context)
+[ -n "$SESSION_VARS" ] || { echo "FAIL: no AGENT_SESSION_VARS line in ade" >&2; exit 1; }
 fail() { echo "FAIL: $*" >&2; exit 1; }
 assert_eq() { [ "$1" = "$2" ] || fail "$3: got [$1] want [$2]"; }
 assert_contains() { grep -qF -- "$2" "$1" || fail "$3: [$2] not in $1"; }
@@ -14,7 +16,8 @@ drop_t() {
 }
 fresh() {
   unset ADE_HUB ADE_HOOK_BIN ADE_METHOD_REPO ADE_REGISTRY_REPO ADE_METHOD_REF ADE_REGISTRY_REF ADE_SKILLS_REPO ADE_SKILLS_REF CLAUDE_CONFIG_DIR
-  unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID   # never an agent session (ade reset refuses one)
+  # shellcheck disable=SC2086  # never an agent session: all of ade's own list of session markers (ade reset refuses one)
+  unset $SESSION_VARS
   export ADE_NO_UPDATE_CHECK=1 ADE_NO_AUTO_UPDATE=1   # never a real release check (test_releases.sh unsets them)
   drop_t; T="$(mktemp -d "${TMPDIR:-/tmp}/ade-test.XXXXXX")"; T="$(cd "$T" && pwd -P)"; trap drop_t EXIT
   export ADE_NO_CLAUDE_UPDATE=1   # the Claude Code update step is tested on its own (test_update.sh)

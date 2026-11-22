@@ -11,6 +11,9 @@ hostile_fixture() {
     printf '#!/bin/bash\nprintf "%%s\\0" "$@" > "$ARGS"\n' > "$H/bin/$s"; chmod +x "$H/bin/$s"; done
   cp "$H/bin/work" "$T/hook"; export ADE_HUB="$H" ADE_HOOK_BIN="$T/hook"
   mkdir -p "$T/fakebin"; printf '#!/bin/bash\nprintf "%%s\\0" "$@" >> "$T/tmux.args"\nexit 0\n' > "$T/fakebin/tmux"; chmod +x "$T/fakebin/tmux"
+  # a fake ade-secrets that would succeed: a key row exits 2 only because ade refuses the name, never "not installed"
+  # (ade doctor's version and store questions are not a name)
+  printf '#!/bin/bash\ncase "$1" in version|store) exit 0 ;; esac\nprintf "%%s\\0" "$@" >> "%s/secrets.args"\nexit 0\n' "$T" > "$T/fakebin/ade-secrets"; chmod +x "$T/fakebin/ade-secrets"
   export PATH="$T/fakebin:$PATH"
   TPL="$T/template"; mkdir -p "$TPL/bin"; git init -q "$TPL"; : > "$TPL/bin/lib.sh"; printf '#!/bin/bash\n: > hub.conf\n' > "$TPL/bin/init"
   chmod +x "$TPL/bin/init"; commit_tag "$TPL" t; export ADE_HUB_TEMPLATE_URL="$TPL"
@@ -87,6 +90,7 @@ b" "$long" "../../etc" ""
     done || exit 1
   done
   [ ! -e "$T/pwned" ] || fail "an input ran"
+  [ ! -e "$T/secrets.args" ] || fail "a hostile name reached ade-secrets"
   ls "$HOME/hubs" 2>/dev/null | grep -q . && fail "no hub was made from a hostile name"
   [ ! -s "$HOME/.config/ade/orchestrators" ] || fail "no orchestrator registered"
   return 0

@@ -190,14 +190,22 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   <name> [--clipboard]`, `copy <name> [--for N]`, `forget <name>` run `ade-secrets <same words>` with the terminal
   attached; nothing captured or piped; its exit code unchanged (0 ok, 1 failed, 2 usage or no store, 3 refused, 4 no
   clipboard, 5 locked), with one plain line from `ade` for 3, 4 and 5. Names `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`.
-- Refused before ade-secrets runs (exit 3): no terminal, or any of `CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_PID
-  CLAUDE_CODE_SESSION_ID CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_PROJECT_DIR CLAUDE_PLUGIN_ROOT CLAUDE_CODE_EXECPATH
-  CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT` set. ade-secrets missing: exit 2.
+- Refused before ade-secrets runs (exit 3): no terminal, or any of `AGENT_SESSION_VARS` (`CLAUDECODE
+  CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_PROJECT_DIR
+  CLAUDE_PLUGIN_ROOT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT`, the one list `agent_context`
+  also uses) set. This stops accidents; it is not a wall: an agent running as the user can get round it. What holds is
+  the macOS dialog on entries not marked for the key helper (ade-secrets `docs/contract.md`, "Residual risk").
+  ade-secrets missing: exit 2. It is found once per run, as an absolute path; a copy under the current folder (not the
+  home folder or above), the hub or a git work tree is refused (exit 2).
 - The store: `ade` only reads it (`ade-secrets store`, exit 2 = none recorded) and passes the person's pick as
   `ADE_SECRETS_STORE` to the first `set`; it never runs `ade-secrets store <name>`.
 - A delegating hub (ade-brain H2): `bin/secret` has a line starting `# >>> ade-secrets delegation`, ade-secrets is on
   `PATH`, `HUB_SECRETS` is not `builtin`. `ade setup` and `ade restore` then run `ade-secrets set <name> [--clipboard]
-  --helper --kind api-key --used-by hub`, `<name>` = the third column of the tool's row in `bin/keys` (else the tool).
+  --helper --kind api-key --used-by hub` for Claude Code's own keys only (`HUB_KEY_USERS`: anthropic, deepseek, glm,
+  muse), `<name>` = the third word of the tool's three-word row in `bin/keys` (else the tool). The Telegram token and
+  the Gemini API key are not stored in ade-secrets (contract v1 has no mark for other consumers): the hub's built-in
+  store handles them.
+- Doctor reads the store only when `${ADE_SECRETS_HOME:-~/.ade-secrets}` exists (`ade-secrets store` creates it).
 - Doctor: the rules of ade-secrets' `docs/claude-settings.json` (`permissions.deny` and `permissions.ask`) are expected
   in the hub's `.claude/settings.json`.
 - Install: `ADE_SECRETS_REF` (default `v0.3.0`) and its
