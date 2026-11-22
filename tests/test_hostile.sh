@@ -12,7 +12,8 @@ hostile_fixture() {
   cp "$H/bin/work" "$T/hook"; export ADE_HUB="$H" ADE_HOOK_BIN="$T/hook"
   mkdir -p "$T/fakebin"; printf '#!/bin/bash\nprintf "%%s\\0" "$@" >> "$T/tmux.args"\nexit 0\n' > "$T/fakebin/tmux"; chmod +x "$T/fakebin/tmux"
   export PATH="$T/fakebin:$PATH"
-  TPL="$T/template"; mkdir -p "$TPL/bin"; git init -q "$TPL"; : > "$TPL/bin/lib.sh"; printf '#!/bin/bash\n: > hub.conf\n' > "$TPL/bin/init"
+  TPL="$T/template"; mkdir -p "$TPL/bin"; git init -q "$TPL"; : > "$TPL/bin/lib.sh"
+  printf '#!/bin/bash\n[ "$1" = --list ] && { echo "p  P"; exit 0; }\nprintf "%%s\\0" "$@" > "$ARGS"\n: > hub.conf\n' > "$TPL/bin/init"
   chmod +x "$TPL/bin/init"; commit_tag "$TPL" t; export ADE_HUB_TEMPLATE_URL="$TPL"
   git init -q "$T/cwd"
 }
@@ -22,14 +23,16 @@ argc_is() { [ -f "$ARGS" ] && [ "$(python3 -c 'import sys; print(open(sys.argv[1
 got_arg() { [ -f "$ARGS" ] && X="$1" python3 -c 'import os,sys; sys.exit(0 if os.environb[b"X"] in open(sys.argv[1],"rb").read().split(b"\0") else 1)' "$ARGS"; }
 
 # The table: one row per ade help command. R = must exit 2; D = data (a hub script gets X intact); S = search-like
-# data (exit 0 or 1); none = takes no name. X is the hostile input.
+# data (exit 0 or 1); A = an answer typed to a question (A18): asked again, then the end of input (exit 1), or taken
+# as data that reaches bin/init intact (exit 0); none = takes no name. X is the hostile input.
 table() {
   case "$1" in
     work|dispatch|notify|chat|method|keys|models|roles|doctor|sync|context|agent-run|status) echo "D1|$1 X" ;;
     open) echo "D2|open X" ;;
     orchestrator) echo "R|orchestrator new X --hub $H"; echo "R|orchestrator start X"; echo "R|orchestrator stop X"
       echo "R|orchestrator logs X"; echo "R|orchestrator remove X" ;;
-    hub) echo "R|hub new X --no-github --persona p --client c --owner o"; echo "R|hub use X" ;;
+    hub) echo "R|hub new X --no-github --persona p --client c --owner o"; echo "R|hub use X"
+      echo "A|hub new okname --no-github --dir $T/ah --client c --owner o"; echo "A|hub new okname --no-github --dir $T/ah --persona p --owner o" ;;
     claude) echo "D1|claude X"; echo "R|claude -- --resume X --dangerously-skip-permissions"
       echo "R|orchestrator new okname --hub $H --channel X" ;;
     setup) echo "R|setup --test X"; echo "R|setup --tools X" ;;
@@ -69,7 +72,10 @@ b" "$long" "../../etc" ""
         rm -f "$ARGS"; read -ra words <<< "$cmd"; argv=(); for w in "${words[@]}"; do if [ "$w" = X ]; then argv+=("$x"); else argv+=("$w"); fi; done
         if [ "$kind" = F ]; then   # a folder named x in the hub: listed or skipped, never run
           case "$x" in ""|*/*|.|..) continue ;; esac; mkdir -p "$H/projects/$x" 2> /dev/null || continue; fi
-        (cd "$T/cwd" && bash "$ADE" "${argv[@]}" < /dev/null) > "$T/out" 2>&1; rc=$?
+        if [ "$kind" = A ]; then case "$x" in *"
+"*) continue ;; esac   # an answer is one line
+          (cd "$T/cwd" && printf '%s\n' "$x" | bash "$ADE" "${argv[@]}") > "$T/out" 2>&1; rc=$?
+        else (cd "$T/cwd" && bash "$ADE" "${argv[@]}" < /dev/null) > "$T/out" 2>&1; rc=$?; fi
         case "$kind" in
           R) [ "$rc" = 2 ] || { cat "$T/out"; fail "[$cmd] with [$x]: exit $rc, want 2"; }
              [ ! -s "$HOME/.config/ade/orchestrators" ] || fail "[$cmd] with [$x] registered something" ;;
@@ -79,6 +85,9 @@ b" "$long" "../../etc" ""
              else [ "$rc" = 0 ] || { cat "$T/out"; fail "[$cmd] with [$x]: exit $rc, want 0"; }; got_arg "$x" || fail "[$cmd] with [$x]: not passed intact"
                argc_is "$n" || fail "[$cmd] with [$x]: not exactly $n argument(s)"; fi ;;
           F) [ "$rc" = 0 ] || fail "[$cmd] with a folder [$x]: exit $rc"; rm -rf -- "$H/projects/$x" ;;
+          A) case "$x" in ""|-*|*[[:cntrl:]]*|"$long") [ "$rc" = 1 ] && [ ! -f "$ARGS" ] || { cat "$T/out"; fail "[$cmd] answered [$x]: refused, exit $rc"; } ;;
+               *) if [ "$rc" = 0 ]; then got_arg "$x" || fail "[$cmd] answered [$x]: not passed intact"; else [ "$rc" = 1 ] && [ ! -f "$ARGS" ] || fail "[$cmd] answered [$x]: exit $rc"; fi ;; esac
+             rm -rf -- "$T/ah" ;;
         esac
         [ ! -e "$T/pwned" ] || fail "[$cmd] with [$x] ran the input"
         rm -f "$HOME/.config/ade/orchestrators"   # the --channel row registers okname each time

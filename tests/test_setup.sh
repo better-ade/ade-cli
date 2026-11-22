@@ -6,7 +6,9 @@
 setup_fakes() {   # $1 = 1: claude on PATH (default), 0: missing
   mkdir -p "$T/fakebin"; export CALLS="$T/calls" ENVS="$T/envs" ADE_GEMINI_CLI=no-gemini-cli-here   # a host Gemini CLI never answers; : > "$CALLS"; : > "$ENVS"
   if [ "${1:-1}" = 1 ]; then fake_claude "$T/fakebin"; fi
-  export PATH="$T/fakebin:$PATH"
+  # a fake gh, signed in (A18: the guide's GitHub step); repo create clones $TPL
+  printf '#!/bin/bash\necho "gh $*" >> "$CALLS"\n[ "$1 $2" = "repo create" ] && git clone -q "$TPL" "$3"\n[ "$1 $2" = "api user" ] && echo tester\nexit 0\n' > "$T/fakebin/gh"
+  chmod +x "$T/fakebin/gh"; export PATH="$T/fakebin:$PATH"
 }
 fake_claude() {
   cat > "$1/claude" <<'STUB'
@@ -29,7 +31,7 @@ STUB
   chmod +x "$1"
 }
 setup_hub() {   # a hub named acme at $T/hub whose fakes log; AGENT_FAIL names providers whose live test fails
-  make_hub "$T/hub" hub; printf 'HUB_NAME=acme\nHUB_ROOT_MODEL=opus\n' > "$T/hub/hub.conf"; mkdir -p "$T/hub/projects/a" "$T/hub/projects/b"
+  make_hub "$T/hub" hub; printf 'HUB_NAME=acme\nHUB_ROOT_MODEL=opus\n' > "$T/hub/hub.conf"   # no project yet: the guide runs the session
   cat > "$T/hub/bin/keys" <<'STUB'
 #!/bin/bash
 echo "keys $*" >> "$CALLS"; env >> "$ENVS"
@@ -43,7 +45,7 @@ echo "chat $*" >> "$CALLS"; env >> "$ENVS"; echo "chat ran: $*"
 STUB
   chmod +x "$T/hub/bin/keys" "$T/hub/bin/agent" "$T/hub/bin/chat"; export ADE_HUB="$T/hub"
 }
-setup() { printf '%s\n' "$@" | bash "$ADE" setup > "$T/out" 2>&1; }
+setup() { printf '%s\n' 1 "$@" | bash "$ADE" setup > "$T/out" 2>&1; }   # 1: the guide's Claude sign-in step, with the account (A18)
 conf() { (. "$T/hub/hub.conf"; eval "echo \"\${$1:-}\""); }
 
 installer_asks_first() {   # AC1
@@ -96,8 +98,9 @@ hub_when_missing() {   # AC5
   fresh; setup_fakes; mkdir -p "$T/nowhere"
   TPL="$T/template"; mkdir -p "$TPL/bin"; git init -q "$TPL"; : > "$TPL/bin/lib.sh"
   printf '#!/bin/bash\n[ "$1" = --list ] && exit 0\necho "init ran: $*" >> "%s"\necho HUB_NAME=fresh > hub.conf\n' "$CALLS" > "$TPL/bin/init"; chmod +x "$TPL/bin/init"; agent_stub "$TPL/bin/agent"; commit_tag "$TPL" t
-  export ADE_HUB_TEMPLATE_URL="$TPL"
-  (cd "$T/nowhere" && printf '%s\n' fresh n sre Acme owner1 1 "" n | bash "$ADE" setup) > "$T/out" 2>&1 || { cat "$T/out"; fail "setup exit"; }
+  export ADE_HUB_TEMPLATE_URL="$TPL" TPL
+  (cd "$T/nowhere" && printf '%s\n' 1 fresh sre Acme owner1 1 "" n | bash "$ADE" setup) > "$T/out" 2>&1 || { cat "$T/out"; fail "setup exit"; }
+  assert_contains "$CALLS" "gh repo create fresh --template better-ade/ade-brain --private --clone" "on GitHub (A18: required)"
   assert_contains "$CALLS" "init ran: --persona sre --client Acme --owner owner1 --name fresh" "ade hub new ran"; [ -f "$HOME/hubs/fresh/hub.conf" ] || fail "hub made"
   fresh; setup_fakes; setup_hub; setup 1 "" n || fail "with a hub"
   assert_not_contains "$T/out" "No hub yet" "a hub skips it"
@@ -112,7 +115,7 @@ guided_session() {   # AC6
 }
 
 check_changes_nothing() {   # AC7
-  fresh; setup_fakes; setup_hub; echo "telegram=x" > "$CALLS.keystore"; printf 'HUB_CHANNELS="telegram"\n' >> "$T/hub/hub.conf"
+  fresh; setup_fakes; setup_hub; echo "telegram=x" > "$CALLS.keystore"; printf 'HUB_CHANNELS="telegram"\n' >> "$T/hub/hub.conf"; mkdir -p "$T/hub/projects/a" "$T/hub/projects/b"
   snap() { (cd "$T" && find hub home -type f -exec cksum {} + | sort); }
   before="$(snap)"; bash "$ADE" setup --check < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "check exit"; }
   assert_eq "$(snap)" "$before" "no file changed"
@@ -124,7 +127,7 @@ check_changes_nothing() {   # AC7
 top_first_only_one() {   # AC8
   fresh; setup_fakes; setup_hub
   setup "1 3" 1 "" n || { cat "$T/out"; fail "exit"; }
-  assert_contains "$T/out" "pick one" "two answers refused"
+  assert_contains "$T/out" "accepted: a number from 1 to 5" "two answers refused, and asked again (A18)"
   top_line=$(grep -n "everything agent" "$T/out" | head -1 | cut -d: -f1); focus_line=$(grep -n "focus agents" "$T/out" | head -1 | cut -d: -f1)
   [ -n "$top_line" ] && [ -n "$focus_line" ] && [ "$top_line" -lt "$focus_line" ] || fail "top asked first"
   sed -n "${top_line},${focus_line}p" "$T/out" | grep -qi gemini && fail "Gemini is not offered for the top"
@@ -216,7 +219,7 @@ guided_default_mode() {   # review 9: the guided session runs in the default per
 
 other_hub_errors_pass() {   # review 10: only "no hub found" makes a new hub
   fresh; setup_fakes; mkdir -p "$T/nothub"; export ADE_HUB="$T/nothub"
-  printf 'fresh\nn\n' | bash "$ADE" setup > "$T/out" 2>&1; assert_eq "$?" 2 "a bad ADE_HUB is an error"
+  printf '1\nfresh\n' | bash "$ADE" setup > "$T/out" 2>&1; assert_eq "$?" 2 "a bad ADE_HUB is an error"
   assert_contains "$T/out" "is not a hub"; [ ! -e "$HOME/hubs" ] || fail "no hub made"
 }
 

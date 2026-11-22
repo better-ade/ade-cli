@@ -184,3 +184,25 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `git python3 tmux gh bat poppler-utils chafa`; yazi and glow are not in apt and are not downloaded (their release
   pages are named). Installs run only after one yes at a terminal: `brew install <pkgs>`, `[sudo] apt-get install -y
   <pkgs>`; never in an agent session; never a script piped to a shell. V2's `ade server install` uses the apt list.
+
+## The guided first run (A18)
+- Step ids, in order (`GUIDE_STEPS` in `ade`): `claude-code`, `claude-sign-in`, `github`, `hub`, `project`,
+  `telegram` (optional). A16 adds `tools` (the tools you use) after `hub`. A step is done by its state alone, never a
+  record: `claude` on PATH; `claude auth status` exit 0 or a key in the hub's `bin/keys`; `gh auth status --hostname
+  github.com` exit 0; a hub with `HUB_ROOT_PROVIDER` set; a folder under `projects/`; `telegram` in `HUB_CHANNELS`.
+  Optional steps are offered only in a run that did a required step.
+- Exit codes of `ade setup` (the guide) and of `ade` alone when it starts it: 0 = it ran to its end (the last line
+  says "All set" or which step is left); 1 = it stopped at a step (end of input, a declined install, a sign-in that
+  did not finish), with one line saying how to come back; 2 = refused (an agent session, no terminal for a sign-in,
+  a bad `ADE_HUB`, usage).
+- The ADE Computer marker: the file `/etc/ade-computer` (any content; `ADE_COMPUTER_MARKER` points elsewhere in
+  tests). In one, the guide's first line says so, the GitHub step says the sign-in stays in the computer's home,
+  `xdg-open` opens the GitHub address only after a yes and only when `DISPLAY` is set (else `GH_BROWSER=true`), and
+  the one-time code is shown again in block letters.
+- GitHub: `gh auth status --hostname github.com` (checks), `gh auth login --hostname github.com --git-protocol https
+  --web` (signs in, on the person's terminal), `gh api user --jq .login` (the name shown, control characters removed).
+  Never `gh auth token`, `--show-token` or `--with-token`.
+- `ade hub new`: a clone whose `bin/init` has not finished holds `.git/ade-hub-new` (the hub name); `ade hub new
+  <name>` with that folder picks up there, and the guide's hub step picks up the first one under `~/hubs`. `bin/init`
+  gets every answer as a flag, with stdin closed. `--no-github` stays for tests and scripts; no message offers it.
+- Every question ade asks goes through `ask_text` or `ask_choice` (A18); `CHOICE` is never inherited.

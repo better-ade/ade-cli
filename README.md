@@ -75,9 +75,11 @@ ade status                       # the hub's sessions (bin/sessions)
 ade work projects/api --role builder   # start or resume a focus agent (bin/work)
 ```
 
-`ade hub new my-hub` creates the hub for you ([A3](docs/stories/A3-hub-new-and-first-run.md));
-`ade setup` does sign-in, providers, Telegram and a guided first session in one go
-([A5](docs/stories/A5-ade-setup.md)).
+`ade` with no hub lists the steps to a working hub and offers to start the guide; `ade setup` is the guide, one step
+at a time, and run again it picks up where you are ([A18](docs/stories/A18-guided-first-run.md)). GitHub is
+required: the guide installs `gh` (after a yes) and runs GitHub's own browser sign-in. `ade hub new my-hub` creates
+the hub ([A3](docs/stories/A3-hub-new-and-first-run.md)); providers, Telegram and the guided first session are
+[A5](docs/stories/A5-ade-setup.md).
 
 ## How ade fits
 
@@ -118,7 +120,10 @@ says "this hub has no bin/&lt;cmd&gt;; update it" and exits 2.
 
 ## `ade setup` (A5)
 
-One command from nothing to a working hub and a guided first session. Every step asks first.
+One command from nothing to a working hub and a guided first session. Every step asks first. Since A18 the steps
+are listed with their state and run in this order: Claude Code, sign in to Claude, sign in to GitHub, your hub (with
+the providers below), your first project (the guided session), then Telegram (optional); a step already done is
+skipped. The chart shows the provider and Telegram steps.
 
 ```mermaid
 flowchart TD
@@ -202,11 +207,11 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade version` · `ade help` | The version; every command, one line each | **built** (A1) |
 | `ade orchestrator new\|start\|stop\|list\|logs\|remove` | Named orchestrators, one per hub, with their channels (run by the hub's `bin/chat`) | **built** (A2) |
 | `curl … \| bash` | One-line install of the tagged release | **built** (A3) |
-| `ade hub new <name> [--private\|--public] [--dir <d>] [--no-github]` | Create a hub from the ade-brain template, run its `bin/init`, make it the default | **built** (A3) |
+| `ade hub new <name> [--private\|--public] [--dir <d>]` | Create a hub from the ade-brain template, run its `bin/init`, make it the default | **built** (A3) |
 | `ade hub list` · `ade hub use <path>` | The hubs `ade` knows; switch the default | **built** (A3) |
 | `ade` (no arguments) | Say what to do next: the hub, its status and the next commands | **built** (A3) |
 | `ade claude [<folder>] [-- args]` | Claude Code at the hub root as the orchestrator; with a folder, `ade work <folder>` | **built** (A4) |
-| `ade setup [--check\|--test\|--top\|--telegram]` | Sign-in, providers and live tests, Telegram, hub, guided session | **built** (A5; needs the hub pieces in `.ade/context/hub-interface.md`) |
+| `ade setup [--check\|--test\|--top\|--telegram]` | The guide (A18): Claude Code, Claude and GitHub sign-in, the hub and its providers, the first project, Telegram; resumes where you are | **built** (A5, A18; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade ui [--detach]` · `ade dash [--once]` | One tmux window, a tab per agent with state icons; fleet sidebar; popups for new agent, approve, tickets, plan preview, help | **built** (A6; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade skills list\|enable\|disable\|search` | Skills and plugins on the fly, with a reload hint to running sessions | **built** (A7) |
 | `ade clean [--yes]` | Housekeeping: stale locks, old dispatch markers and event cursors, ade's old temp folders, dead `ade-*` tmux sessions, clean merged worktrees (`git worktree remove`); lists first | **built** (A9) |

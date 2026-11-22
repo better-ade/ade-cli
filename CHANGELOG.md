@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+- The guided first run (A18): `ade` with no hub lists the steps with their state and, at a terminal, asks
+  `Set up now? [Y/n]`; `ade setup` is the guide, one step at a time (Claude Code, sign in to Claude, sign in to
+  GitHub, your hub, your first project, Telegram), each said before it runs and checked after, resuming where you
+  are. GitHub is required: `gh` is installed after a yes and signed in with GitHub's own browser flow on your
+  terminal (`gh auth login --web`); ade never sees a token. Every question numbers its choices and accepts the
+  number, the name in any case or spelling, or a prefix only one has, and asks again otherwise. `ade hub new` asks the
+  persona, client and owner the same way, passes them to `bin/init` as flags, and picks up a hub whose set-up
+  stopped. In an ADE Computer (`/etc/ade-computer`) the GitHub address can open in its browser and the one-time code
+  is shown large. The update notice is one line of at most 80 columns.
+
 ## 0.2.0
 - `ade files [<folder>]`, `ade view <path[:line[:col]]>` and `ade ui` keys `prefix e` (files) and `prefix l` (the file
   paths and URLs in this pane, opened in `ade view` at their line or in the browser) (A15): a read-only explorer with

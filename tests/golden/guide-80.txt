@@ -1,0 +1,76 @@
+ADE set-up guide (ade setup): 6 steps from nothing to a working hub
+  [x] 1. Claude Code            installed
+  [ ] 2. Sign in to Claude      not signed in
+  [ ] 3. Sign in to GitHub      not signed in
+  [ ] 4. Your hub               none yet
+  [ ] 5. Your first project     none yet
+  [ ] 6. Telegram (optional)    off
+Set up now? [Y/n] 
+
+Step 2 of 6: Sign in to Claude
+Claude Code works with your Claude account or with an API key. The account
+sign-in is Claude Code's own, in your browser; ade stores nothing.
+  1) account  your Claude account (Pro, Max, Team or Enterprise)
+  2) key      an API key (Anthropic, DeepSeek, GLM or Muse), asked at step 4
+How do you use Claude? [account]: 
+checked: signed in to Claude (account)
+
+Step 3 of 6: Sign in to GitHub
+Your hub needs GitHub: it is a private repository on your GitHub account,
+which keeps the hub's memory and lets you restore the hub on another computer.
+This runs GitHub's own sign-in (gh auth login --web): it shows a one-time code
+to type at github.com/login/device, on this machine or any other device.
+ade never asks for a password or a token, and never sees one.
+! First copy your one-time code: WDJB-MJHT
+Open this URL to continue in your web browser: https://github.com/login/device
+Logged in as tester
+checked: signed in to GitHub as tester
+
+Step 4 of 6: Your hub
+Your hub is where ADE keeps its memory: a folder in ~/hubs and its own private
+GitHub repository, made from the ADE template. Then you pick its agents.
+Name for your hub (lower-case letters, digits and -, e.g. acme-sre): acme
+hub acme created in ~/hubs/acme
+Personas:
+  1) devops-sre                 DevOps / Site Reliability Engineer
+  2) staff-software-engineer    Staff Software Engineer
+  3) tech-lead                  Tech Lead
+  4) technical-product-manager  Technical Product Manager
+Persona for this hub (1-4): staff software engineer
+Client or team this hub works for: Acme
+Owner (your name, as it should appear in the hub): Sam
+default hub: ~/hubs/acme
+Your everything agent (the orchestrator; one only, later: ade setup --top):
+  1) claude-account  Claude account in Claude Code (Pro, Max, Team, Enterprise)
+  2) anthropic-key   Anthropic API key in Claude Code
+  3) deepseek        DeepSeek
+  4) glm             GLM (needs the live check)
+  5) muse            Muse (needs the live check)
+Pick one (1-5): 1
+anthropic: ready (Ns)
+everything agent: anthropic
+Your focus agents (pick any; each is signed in and live-tested):
+  1) anthropic  Claude Code
+  2) gemini     Gemini (Gemini CLI)
+  3) deepseek   DeepSeek
+  4) glm        GLM (needs the live check)
+  5) muse       Muse (needs the live check)
+Pick any (numbers or names, spaces between; Enter for none): 
+providers in the roles: anthropic (bin/roles shows each role's model)
+checked: your hub is acme (~/hubs/acme)
+
+Step 5 of 6: Your first project
+ADE opens Claude Code at your hub: it asks about your work and sets up your
+first project with you, asking before each change. /exit comes back here.
+(the guided Claude Code session runs here)
+checked: your first project is web
+
+Step 6 of 6: Telegram (optional)
+Optional: a Telegram bot of your own reaches your everything agent. A yes asks
+for the bot's token (hidden) and pairs your Telegram account; no skips it.
+Do you want to reach your everything agent from Telegram? [y/N] n
+Telegram skipped (later: ade setup --telegram)
+checked: Telegram is off
+
+All set: your hub acme is ready (~/hubs/acme).
+next: ade claude (your everything agent), or ade (what to do next)

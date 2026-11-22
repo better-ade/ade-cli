@@ -36,7 +36,7 @@ cmd() { "$A" hub list > /dev/null 2> "$1"; }   # one ordinary command, its banne
 once_a_day_once_per_version() {   # AC2: the first command starts the day's fetch, the next ones read the cache
   fresh; rel_fixture; export ADE_NO_AUTO_UPDATE=1; publish 1.3.0
   cmd "$T/err1"; settle; cmd "$T/err2"; cmd "$T/err3"
-  assert_contains "$T/err2" "ade-cli 1.3.0 is out (you have 1.2.3): the 1.3.0 notes" "a banner from the cache"
+  assert_contains "$T/err2" "ade-cli 1.3.0 is out (you have 1.2.3): run ade update" "a banner from the cache (one line, A18)"
   assert_not_contains "$T/err3" "is out" "once per new version"; assert_eq "$(manifest_requests)" 1 "at most once a day"
   echo $(( $(date +%s) - 90000 )) > "$U/checked"; cmd "$T/err4"; settle
   assert_eq "$(manifest_requests)" 2 "again the next day"; cmd "$T/err5"; assert_not_contains "$T/err5" "is out" "still once per version"
