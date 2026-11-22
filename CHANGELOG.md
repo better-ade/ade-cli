@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+- The guide, when a step fails (A18b): one plain line of at most 80 columns says what went wrong (never another
+  tool's raw text), a `details:` line says where the rest is, and a numbered question offers what fits, with a
+  default; `stop`, the end of input and Ctrl-C leave with the line on how to come back. A live test that fails says a
+  usage limit and when it resets, or that Claude Code is not signed in, or the engine's reason, and offers: sign in
+  with a different Claude account (Claude Code's own sign-in; ade reads no token) or enter the key again, try again,
+  use another AI service, go on without the test. An everything agent chosen without its test is recorded as that
+  (`HUB_PROVIDERS_UNTESTED` in `hub.conf`), is in no focus role, shows as "not tested" in `ade setup --check` and the
+  guide's list, and `ade setup --test` settles it; focus agents, GLM and Muse still need a passed test. The same
+  question follows a failed Claude Code install, Claude or Gemini sign-in, `gh` install, GitHub sign-in,
+  `gh repo create` (a taken name asks for another; a half-made clone is removed), the hub's `bin/init`, an early end
+  of the guided session, the Telegram set-up and a key that `bin/keys` did not store. `gh repo create` and `bin/init`
+  no longer print their errors on the screen: they are kept in `~/.config/ade/last-failure`.
+
 ## 0.2.2
 - The guided first run (A18): `ade` with no hub lists the steps with their state and, at a terminal, asks
   `Set up now? [Y/n]`; `ade setup` is the guide, one step at a time (Claude Code, sign in to Claude, sign in to
