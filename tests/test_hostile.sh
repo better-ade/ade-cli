@@ -42,6 +42,7 @@ table() {
     clean) echo "R|clean X" ;;
     update) echo "R|update X" ;;
     restore) echo "R|restore X"; echo "S|restore --label X" ;;
+    connect) echo "R|connect X"; echo "R|connect status X"; echo "R|connect disconnect X" ;;
     reset) echo "R|reset X"; echo "R|reset --hub X"; echo "R|reset --keys --hub X" ;;
     uninstall) echo "R|uninstall X"; echo "R|uninstall --hub X" ;;
     init|dash|version|help) echo none ;;

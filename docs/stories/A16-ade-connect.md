@@ -1,6 +1,6 @@
 # A16: `ade connect`, predefined connectors with per-user sign-in
 
-Status: Ready for development (2026-11-22). Risk: high (sign-in and access to the owner's accounts).
+Status: In review (2026-11-22). Risk: high (sign-in and access to the owner's accounts).
 Owner's intent (2026-11-22): "we'll need to pull these and ask the users via ade cli too that uses claude code" and
 "so the skills are predefined but authentication is per user". Depends on ade-skills K5 (recipes); builds against the
 contract with fixtures until K5 is released.

@@ -184,3 +184,36 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `git python3 tmux gh bat poppler-utils chafa`; yazi and glow are not in apt and are not downloaded (their release
   pages are named). Installs run only after one yes at a terminal: `brew install <pkgs>`, `[sudo] apt-get install -y
   <pkgs>`; never in an agent session; never a script piped to a shell. V2's `ade server install` uses the apt list.
+
+## `ade connect` and `.ade/connectors.json` (A16)
+- Contract: ade-skills `.ade/context/connectors.md` (sections 1, 2, 3, 6) and decision 0001. This is what ade-cli built.
+- Recipes are read only from the ade-skills checkout at `ADE_SKILLS_REF` (`ADE_SKILLS_REPO`), which must be a `vX.Y.Z`
+  tag, at `plugins/guard/connectors/<service>.json`. `CONNECT_SINCE=0.7.0` (hard-coded, no override) is the first
+  ade-skills release taken to ship recipes; a lower pin prints one line and exits 2. The release manifest is
+  `$ADE_RELEASES_BASE/better-ade/ade-skills/releases/download/<ref>/release.json` (A12's `manifest_py`: component
+  `ade-skills`, version = the pin); each recipe needs a 64-hex `sha256` there as `connector-<service>.json`, compared
+  with the checked-out file before it is read. A recipe that is a link, not `<service>.json`, unnamed, mismatched or
+  not format 1 is refused alone, in one line; the list then exits 2.
+- Format 1 checks: the contract's section 1 "Checks" as of amendment 1 (2026-11-22), all in `recipes_py`: the file
+  opened without following a link and `fstat`ed as regular, hashed on those bytes; every string refusing Unicode Cc Cf
+  Cs Co Cn Zl Zp; unknown keys anywhere; the per-kind rules; `guard.commands` `free` entries `{"words","flags","args"}`
+  and `deny` runs (shape only, in the one function `commands`); across files (prefixes that overlap, a shared
+  `sign_in.connector` or `sign_in.plugin`, two `guard.commands.gh` or `.git`, a `ready` recipe without
+  `plugins/guard/hooks/hooks.json` and `guard.sh`) refuses the whole folder (exit 2). Choices of ade-cli where the
+  contract is silent: required `format service title job tier state sign_in reaches`, `guard` when ready;
+  `sign_in.plugin` must equal the service for every kind (ade installs only `guard` and that plugin).
+- Commands and exits: `ade connect` (anywhere; rows `service job tier state here`, then the tier key; 0, 2 pin or a
+  recipe not verified, or the record invalid); `ade connect <service>` (terminal only, `tty_ready`; 0 connected, 1 a no
+  or a failed sign-in or `gh` missing, 2 refused, 3 held or tier 4); `ade connect status [<service>]` (anywhere; lines
+  `connector <service>: ready|missing|unknown (<detail>)`, a `held` recipe `missing (held: <held>)`, `outside` never (A17); 0 no gap, 1 a gap or not recorded, 2 record invalid or pin
+  not verified); `ade connect disconnect <service>` (terminal only; `plugin`: `claude mcp logout plugin:<p>:<p>`;
+  `cli` and `claude-ai` change nothing and print where to sign out; prints `pages.revoke`; the record is not changed;
+  0, 1 failed, 2 refused). `ade connect test` and `--check` exit 2 (A17).
+- Installed means Claude Code's `installed_plugins.json` entry for that folder (A10's `plugin_version`); installs go
+  through `plugin_add` (the same path as `ade skills add`) and are recorded in `.ade/connections.json`.
+- `gh`: only `gh auth status` (output discarded) to read; `gh auth login` on the terminal only after a typed yes (the
+  contract's step 8). Never `gh auth token`; ade never reads or prints a token.
+- The record: `<folder>/.ade/connectors.json` (`<folder>` the git top level, else the current folder), written as
+  `{"format": 1, "connectors": [...]}` (sorted, unique, at most 64 names `^[a-z][a-z0-9-]{0,31}$`, at most 64 KiB);
+  anything else, a duplicate key or a link rejects the whole file (exit 2). One journal line
+  `ade connect: <service> connected in <folder name>` through the hub's `bin/journal` when a name is added.

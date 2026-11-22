@@ -86,6 +86,9 @@ make_skills_repo() {
 JSON
   commit_tag "$K" k v0.1.0; export ADE_SKILLS_REPO="$K" ADE_SKILLS_REF=v0.1.0
 }
+# PATH without gh (for the "gh missing" checks): only the folders holding git, python3, curl and the basics
+no_gh_path() { local d="$T/nogh" c p; mkdir -p "$d"; for c in git python3 bash sed awk grep mkdir cat dirname basename tr head tail mktemp mv chmod rm ls cp find sort printf env pwd date wc curl cut cksum shasum sha256sum uname; do
+  p="$(command -v "$c")" && ln -sf "$p" "$d/$c"; done; echo "$d"; }
 # pty_run <input> <command...>: the command on a fresh pseudo-terminal (its own session), the input typed ahead
 # (\n escapes) with the terminal's echo off, so a typed key never shows in the transcript; prints what the terminal
 # showed and exits with the command's code

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+- `ade connect` (A16): the connectors ADE knows, from recipes read only at the pinned ade-skills tag and only when
+  their sha256 matches that release's `release.json`; `ade connect <service>` at a person's terminal installs the
+  guard and the service's plugin in project scope, records the name in `.ade/connectors.json` (names only) and prints
+  the sign-in step the person does themselves; `status` and `disconnect`. ade never reads, stores or prints a token.
+  Until ade pins an ade-skills release with recipes it says so (exit 2).
+
 ## 0.2.0
 - `ade files [<folder>]`, `ade view <path[:line[:col]]>` and `ade ui` keys `prefix e` (files) and `prefix l` (the file
   paths and URLs in this pane, opened in `ade view` at their line or in the browser) (A15): a read-only explorer with
