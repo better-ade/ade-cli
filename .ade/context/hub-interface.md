@@ -217,3 +217,13 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `{"format": 1, "connectors": [...]}` (sorted, unique, at most 64 names `^[a-z][a-z0-9-]{0,31}$`, at most 64 KiB);
   anything else, a duplicate key or a link rejects the whole file (exit 2). One journal line
   `ade connect: <service> connected in <folder name>` through the hub's `bin/journal` when a name is added.
+
+## Writes into a checkout (0.2.1)
+- Every file `ade` writes inside a project or hub folder (`.ade/connections.json`, `.ade/method-version`, the files
+  `ade init` copies, the project's and the hub's `.claude/settings.json`, `hub.conf`) goes through `ade_write` in
+  `ADE_PY_WRITE` (run by `write_py`): a `mkstemp` temp file in the same folder, fsync, `os.replace`; a target that is
+  not a regular file, or a folder on the way (`.ade`, `.claude`, and for `ade init` every folder of the path) that is
+  a link, is refused with one line and exit 1. Writers that read first hold `ade_hold`: `flock` on the folder itself
+  (no lock file is left in the project) until they exit. `hub.conf` is checked without its folder, the hub root,
+  which may be a link the owner made.
+- Fetches of the pinned repositories run with `GIT_TERMINAL_PROMPT=0` and `-c credential.helper=`.

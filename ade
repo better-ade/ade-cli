@@ -105,11 +105,54 @@ TMP_ROOT="${TMPDIR:-/tmp}"; TMP_ROOT="${TMP_ROOT%/}"
 mk_tmp() { local d; d="$(mktemp -d "$TMP_ROOT/ade.XXXXXX" 2> /dev/null)" && [ -n "$d" ] && [ -d "$d" ] || return 1; printf '%s' "$d"; }
 rm_tmp() { case "${1:-}" in "$TMP_ROOT"/ade.?*) [ -d "$1" ] && rm -rf -- "$1" ;; esac; return 0; }
 
+# writes into a checkout (fix-record-writes): a cloned repository is data, so a link it commits must never make ade
+# write outside it. Every Python block that writes a file in a project or hub folder runs through write_py, which puts
+# ADE_PY_WRITE in front of it: ade_write makes the temp file with O_EXCL in the same folder (mkstemp), fsyncs it and
+# renames it into place, and refuses a target that is not a regular file or a folder (.ade, .claude) that is a link;
+# ade_hold locks that folder (flock on the folder itself, so no lock file is left in the project) until the block ends,
+# around its read, check and write. A refusal is one line on stderr, exit 1, nothing written.
+ADE_PY_WRITE='import fcntl as _fc, os as _os, stat as _st, sys as _sys, tempfile as _tf
+class AdeUnsafe(Exception):
+    pass
+def _ade_hook(t, e, tb, _old=_sys.excepthook):
+    if t is AdeUnsafe: _sys.stderr.write("ade: %s\n" % e)
+    else: _old(t, e, tb)
+_sys.excepthook = _ade_hook
+def _ade_shown(p): return "".join(c if " " <= c <= "~" else "?" for c in p)[:200]
+def ade_safe(p, guard=True):
+    d = _os.path.dirname(_os.path.abspath(p))
+    if guard and _os.path.islink(d): raise AdeUnsafe("%s is a symbolic link; nothing written" % _ade_shown(d))
+    if _os.path.lexists(d) and not _os.path.isdir(d): raise AdeUnsafe("%s is not a folder; nothing written" % _ade_shown(d))
+    if _os.path.lexists(p) and not _st.S_ISREG(_os.lstat(p).st_mode):
+        raise AdeUnsafe("%s is not a regular file (a link, or something else); nothing written" % _ade_shown(p))
+    return d
+_ade_held = []
+def ade_hold(p, guard=True):
+    d = ade_safe(p, guard); _os.makedirs(d, exist_ok=True); ade_safe(p, guard)
+    fd = _os.open(d, _os.O_RDONLY | getattr(_os, "O_DIRECTORY", 0) | getattr(_os, "O_NOFOLLOW", 0))
+    _fc.flock(fd, _fc.LOCK_EX); _ade_held.append(fd)
+def ade_write(p, data, guard=True):
+    d = ade_safe(p, guard); _os.makedirs(d, exist_ok=True); ade_safe(p, guard)
+    mode = (_os.lstat(p).st_mode & 0o777) if _os.path.lexists(p) else 0o644
+    fd, tmp = _tf.mkstemp(dir=d, prefix="." + _os.path.basename(p) + ".", suffix=".ade-tmp")
+    try:
+        with _os.fdopen(fd, "wb") as f:
+            f.write(data.encode("utf-8") if isinstance(data, str) else data); f.flush(); _os.fsync(f.fileno()); _os.fchmod(f.fileno(), mode)
+        _os.replace(tmp, p)
+    except BaseException:
+        try: _os.unlink(tmp)
+        except OSError: pass
+        raise
+'
+write_py() { local src; src="$(cat)"; python3 -c "$ADE_PY_WRITE
+$src" "$@"; }
+
 # fetch <repo> <ref>: a temp checkout of repo at ref; prints its path
 fetch() {
   local tmp err; tmp="$(mk_tmp)" || die 1 "could not make a temp folder"
-  if [ -d "$1" ]; then err="$(git clone -q --branch "$2" "$1" "$tmp/src" 2>&1)"
-  else err="$(git -c advice.detachedHead=false clone -q --depth 1 --branch "$2" "$1" "$tmp/src" 2>&1)"; fi \
+  # a pinned public repo: a 401 never prompts for a password nor reaches a credential helper (the keychain)
+  if [ -d "$1" ]; then err="$(GIT_TERMINAL_PROMPT=0 git -c credential.helper= clone -q --branch "$2" "$1" "$tmp/src" 2>&1)"
+  else err="$(GIT_TERMINAL_PROMPT=0 git -c credential.helper= -c advice.detachedHead=false clone -q --depth 1 --branch "$2" "$1" "$tmp/src" 2>&1)"; fi \
     || { rm_tmp "$tmp"; die 1 "could not fetch $1 at $2: $(printf '%s\n' "$err" | tail -1)"; }
   echo "$tmp/src"
 }
@@ -117,8 +160,16 @@ fetch() {
 # put <src> <dest>: copy unless dest exists; counts KEPT, exits 1 on a failed copy
 KEPT=0
 put() {
-  if [ -e "$2" ]; then echo "kept $2 (already there)"; KEPT=$((KEPT + 1))
-  else { mkdir -p "$(dirname "$2")" && cp "$1" "$2"; } 2>/dev/null || die 1 "could not copy $2"; echo "copied $2"; fi
+  if [ -e "$2" ]; then echo "kept $2 (already there)"; KEPT=$((KEPT + 1)); return 0; fi
+  write_py "$1" "$2" <<'PY' || die 1 "could not copy $2"
+import os, sys
+src, dest = sys.argv[1], sys.argv[2]; cur = "."
+for c in os.path.normpath(dest).split(os.sep)[:-1]:   # every folder on the way: a real folder, never a link
+    cur = os.path.join(cur, c)
+    if os.path.islink(cur) or (os.path.lexists(cur) and not os.path.isdir(cur)): raise AdeUnsafe("%s is a symbolic link or not a folder; nothing written" % cur)
+ade_write(dest, open(src, "rb").read())
+PY
+  echo "copied $2"
 }
 
 # project_root [args]: cd to the git top level, or stay here with --here; outside git without --here, exit 2
@@ -173,7 +224,10 @@ PY
   if [ "$KEPT" -gt 0 ] && [ -n "$old" ] && [ "$old" != "$ADE_METHOD_REF" ]; then
     echo "kept files are from $old: .ade/method-version left at $old"
   else
-    { mkdir -p .ade && echo "$ADE_METHOD_REF" > .ade/method-version; } || die 1 "could not write .ade/method-version"
+    write_py "$ADE_METHOD_REF" <<'PY' || die 1 "could not write .ade/method-version"
+import sys
+ade_write(".ade/method-version", sys.argv[1] + "\n")
+PY
     conn_record "$PWD" pin ade-method "$ADE_METHOD_REF"
     echo "ade-method $ADE_METHOD_REF recorded in .ade/method-version"
   fi
@@ -216,10 +270,11 @@ SKILLS_USAGE="usage: ade skills list | add <plugin> | enable <skill> | disable <
 
 # skills_py <op> <project> [args]: the one place that reads and writes the settings (atomic; other keys kept)
 skills_py() {
-  PYTHONIOENCODING=utf-8 python3 - "$@" <<'PY'
+  PYTHONIOENCODING=utf-8 write_py "$@" <<'PY'
 import difflib, json, os, sys
 op, proj = sys.argv[1], sys.argv[2]; args = sys.argv[3:]
 sp = os.path.join(proj, ".claude", "settings.json")
+if op in ("enable", "disable"): ade_hold(sp)
 def settings():
     if not os.path.exists(sp): return {}
     try: d = json.load(open(sp))
@@ -237,9 +292,7 @@ def closest(word, names):
     c = difflib.get_close_matches(word, names, n=3, cutoff=0.5)
     return " (closest: %s)" % ", ".join(c) if c else ""
 def write(d):
-    os.makedirs(os.path.dirname(sp), exist_ok=True)
-    with open(sp + ".ade-tmp", "w") as f: json.dump(d, f, indent=2); f.write("\n")
-    os.replace(sp + ".ade-tmp", sp)
+    ade_write(sp, json.dumps(d, indent=2) + "\n")
 if op == "list":
     d = settings(); ov = d.get("skillOverrides", {}) or {}; en = d.get("enabledPlugins", {}) or {}
     print("BMAD skills (.claude/settings.json skillOverrides):")
@@ -558,9 +611,10 @@ cmd_home() {
 ADE_SKILLS_MARKETPLACE="better-ade/ade-skills"
 enable_ade_plugin() {   # <settings.json>: list the ade-skills marketplace and enable ade@ade-skills; other keys kept
   mkdir -p "$(dirname "$1")" || return 1
-  python3 - "$1" "$ADE_SKILLS_MARKETPLACE" <<'PY'
+  write_py "$1" "$ADE_SKILLS_MARKETPLACE" <<'PY'
 import json, os, sys
 p, repo = sys.argv[1], sys.argv[2]
+ade_hold(p)
 d = {}
 if os.path.exists(p):
     try:
@@ -573,10 +627,7 @@ before = json.dumps(d, sort_keys=True)
 d.setdefault("extraKnownMarketplaces", {}).setdefault("ade-skills", {"source": {"source": "github", "repo": repo}})
 d.setdefault("enabledPlugins", {}).setdefault("ade@ade-skills", True)
 if json.dumps(d, sort_keys=True) != before:
-    tmp = p + ".ade-tmp"
-    with open(tmp, "w") as f:
-        json.dump(d, f, indent=2); f.write("\n")
-    os.replace(tmp, p)
+    ade_write(p, json.dumps(d, indent=2) + "\n")
 PY
 }
 
@@ -699,16 +750,17 @@ provider_ready() {   # sign in, then the live test once per provider; READY coll
 
 # conf_set <hub> <KEY> <value>: replace or add one hub.conf line (shell-quoted), atomically
 conf_set() {
-  python3 - "$1/hub.conf" "$2" "$3" <<'PY' || die 1 "could not write hub.conf"
+  write_py "$1/hub.conf" "$2" "$3" <<'PY' || die 1 "could not write hub.conf"
 import os, re, shlex, sys
 p, k, v = sys.argv[1:4]
+ade_hold(p, guard=False)
 lines = open(p).read().splitlines(); line = "%s=%s" % (k, shlex.quote(v)); done = False
 for i, l in enumerate(lines):
     if re.match(r"^%s=" % re.escape(k), l):
         lines[i] = line; done = True
 if not done:
     lines.append(line)
-open(p + ".ade-tmp", "w").write("\n".join(lines) + "\n"); os.replace(p + ".ade-tmp", p)
+ade_write(p, "\n".join(lines) + "\n", guard=False)
 PY
 }
 
@@ -1352,12 +1404,10 @@ e = d.get("enabledPlugins") if isinstance(d, dict) else None
 sys.exit(0 if isinstance(e, dict) and "ade@ade-skills" in e else 1)' "$1" 2> /dev/null
 }
 drop_ade_plugin() {   # <settings.json>: removes only enabledPlugins["ade@ade-skills"]; every other key is kept
-  python3 - "$1" <<'PY'
+  write_py "$1" <<'PY'
 import json, os, sys
-p = sys.argv[1]; d = json.load(open(p)); d["enabledPlugins"].pop("ade@ade-skills", None)
-with open(p + ".ade-tmp", "w") as f:
-    json.dump(d, f, indent=2); f.write("\n")
-os.replace(p + ".ade-tmp", p)
+p = sys.argv[1]; ade_hold(p); d = json.load(open(p)); d["enabledPlugins"].pop("ade@ade-skills", None)
+ade_write(p, json.dumps(d, indent=2) + "\n")
 PY
 }
 service_files() {   # <hub>: the chat and monitor service files of this hub (launchd plists and systemd user units)
@@ -1581,9 +1631,10 @@ EOF
 # failure (nothing in a rejected record is used)
 US="$(printf '\037')"   # the field separator of conn_py get and conn_state (never in a checked value)
 conn_py() {   # conn_py <record file> <op> [args]: get prints US-separated lines; the other ops update the record
-  CONN_BUILTIN="$ADE_SKILLS_REPO" python3 - "$@" <<'PY'
+  CONN_BUILTIN="$ADE_SKILLS_REPO" write_py "$@" <<'PY'
 import json, os, re, sys
 p, op, a = sys.argv[1], sys.argv[2], sys.argv[3:]
+if op != "get": ade_hold(p)   # read, check and write under one lock: two runs never lose an entry
 NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,63}")
 REF = re.compile(r"v[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}")
 GH = re.compile(r"https://github\.com/([A-Za-z0-9_.-]{1,100})/([A-Za-z0-9_.-]{1,100})")
@@ -1733,10 +1784,7 @@ try:
     check(d)
 except Bad as e:   # what this machine has does not fit the record (an override such as ADE_SKILLS_REF=main): not recorded
     sys.exit("ade: not recorded in %s: %s" % (safe(p), e))
-os.makedirs(os.path.dirname(p), exist_ok=True)
-with open(p + ".ade-tmp", "w") as f:
-    json.dump(d, f, indent=2, sort_keys=True); f.write("\n")
-os.replace(p + ".ade-tmp", p)
+ade_write(p, json.dumps(d, indent=2, sort_keys=True) + "\n")
 PY
 }
 conn_record() { local f="$1/.ade/connections.json"; shift; conn_py "$f" "$@" > /dev/null || echo "ade: could not update $f" >&2; return 0; }
