@@ -143,6 +143,26 @@ flowchart TD
 <sub>* GLM and Muse stay off until their live check passes. `ade setup --check` reports each step and changes nothing;
 `ade setup --test [provider|telegram]` re-runs the live tests.</sub>
 
+## Keys: `ade key` and `ade vault` ([A13](docs/stories/A13-keys-and-clipboard.md), [A14](docs/stories/A14-ade-vault.md))
+
+Your keys live in [ade-secrets](https://github.com/better-ade/ade-secrets), a small local key store (the macOS
+Keychain, or `pass` or `age` on Linux). `ade` never shows, logs or keeps a value: it only starts ade-secrets in your
+own terminal, and refuses to inside an agent session or without a terminal.
+
+```bash
+ade key set openai               # type it at a hidden prompt (or --clipboard: from the clipboard, then cleared)
+ade key copy openai --for 20     # onto the clipboard, cleared after 20 s if you copied nothing else
+ade key list                     # names and where each is used, never a value
+ade key forget openai            # after you type the name
+ade vault                        # the full-screen vault: search, add, copy, rotate, notes (in ade ui: prefix v)
+```
+
+The first `ade key set` asks which store to use (the Keychain on macOS by default) and ade-secrets records it.
+`ade setup` asks for a hub's keys the same way once the hub hands its key store to ade-secrets, and `ade doctor` says
+which store is in use. Do the **Owner check** in ade-secrets' `docs/contract.md` (a few steps with a throwaway value)
+before a real key is stored. ade-secrets is not installed by `ade setup` yet: its release must first list its files
+with their sha256, which `ade` checks before installing anything.
+
 ## Files, viewer and links ([A15](docs/stories/A15-files-viewer-links.md))
 
 In `ade ui`, `prefix e` opens the explorer in a popup and `prefix l` lists every file path (`path`, `path:line`,
@@ -188,6 +208,8 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade chat …` | Chat with the hub (hub `bin/chat`) | **built** (A1) |
 | `ade method …` | The hub's method tools (hub `bin/method`) | **built** (A1) |
 | `ade keys …` | Manage provider keys (hub `bin/keys`) | **built** (A1) |
+| `ade key list` · `ade key set <name> [--clipboard]` · `ade key copy <name> [--for N]` · `ade key forget <name>` · `ade key status` | Your keys in ade-secrets, in your own terminal; never a value (refused in an agent session) | **built** (A13; the ade-secrets install waits for its release to list its files) |
+| `ade vault [lock\|unlock]` | ade-secrets' full-screen vault in your terminal; in `ade ui`, `prefix v` (a popup ade never captures) | **built** (A14) |
 | `ade models …` | Show or set models (hub `bin/models`) | **built** (A1) |
 | `ade roles …` | Show or set roles (hub `bin/roles`) | **built** (A1) |
 | `ade doctor` | Check the hub's health (hub `bin/doctor`) | **built** (A1) |

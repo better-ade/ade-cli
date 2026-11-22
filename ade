@@ -40,6 +40,7 @@ Hubs:
   setup       ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]: tools, sign in, providers, Telegram, hub, guided session
   claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root; with a folder, ade work <folder>
   key         ade key list | set <name> [--clipboard] | copy <name> [--for N] | forget <name> | status: keys in ade-secrets, never shown
+  vault       ade vault [lock | unlock]: ade-secrets' full-screen vault in this terminal (in ade ui: prefix v)
   hub         ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]
               | ade hub list | ade hub use <path>
   (none)      ade alone: the hub, its sessions and what to do next
@@ -1027,6 +1028,7 @@ UI_KEYS="  prefix n   new agent: pick a folder, then a role
   prefix f   show or hide the fleet sidebar (ade dash)
   prefix e   files: explore and view the hub and its projects
   prefix l   links: open a file path or URL shown in this pane
+  prefix v   vault: your keys in ade-secrets (never captured)
   prefix ?   this help
   prefix 0-9, Left, Right   switch tabs
   prefix d   detach (agents keep running)"
@@ -1055,6 +1057,7 @@ bind-key -T prefix f run-shell "$run ui --sidebar"
 bind-key -T prefix ? display-popup -E -w 66 -h 16 "$run ui --keys"
 bind-key -T prefix e display-popup -E -w 90% -h 90% "$run files"
 bind-key -T prefix l run-shell "$run ui --menu links #{pane_id}"
+bind-key -T prefix v display-popup -E -w 90% -h 90% "$run vault"
 bind-key -T prefix Left previous-window
 bind-key -T prefix Right next-window
 CONF
@@ -3122,6 +3125,18 @@ secrets_report() {   # [hub]: ade doctor and ade setup --check; names only, neve
   [ -z "$miss" ] || echo "secrets: the hub's .claude/settings.json lacks the ade-secrets permission rules (${miss% }); update the hub: ade update"
 }
 
+# --- ade vault (story A14): ade-secrets' own vault, in the person's terminal; ade draws, reads and holds nothing ---
+# In ade ui, prefix v opens it in a popup (display-popup -E: it closes when the vault exits); ade never captures a
+# popup (its one capture-pane is the links key's, of a pane it is given), so nothing of the vault reaches ade dash or a log.
+VAULT_USAGE="usage: ade vault [lock | unlock]"
+cmd_vault() {
+  case "$#:${1:-}" in
+    0:) key_guard vault; secrets_run vault; exit $? ;;
+    1:lock|1:unlock) key_guard "vault $1"; secrets_run "$1"; exit $? ;;
+    *) die 2 "$VAULT_USAGE" ;;
+  esac
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -3145,6 +3160,7 @@ case "$cmd" in
   doctor) tools_report; secrets_report "$( (find_hub) 2> /dev/null)"; run_hub doctor "$@" ;;
   files) cmd_files "$@" ;;
   key) cmd_key "$@" ;;
+  vault) cmd_vault "$@" ;;
   view) cmd_view "$@" ;;
   ui) cmd_ui "$@" ;;
   dash) cmd_dash "$@" ;;

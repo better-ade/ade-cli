@@ -204,3 +204,11 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `https://github.com/better-ade/ade-secrets/releases/download/<tag>/release.json`, which must name a sha256 for
   `ade-secrets` and `vault.sh`. v0.3.0 names none, so nothing is installed yet (needed: `assets: bin/ade-secrets
   lib/vault.sh` in ade-secrets' release.yml).
+
+## `ade vault` (A14)
+- `ade vault` runs `ade-secrets vault`; `ade vault lock|unlock` run `ade-secrets lock|unlock`; A13's checks and exit
+  codes. `ade ui`: `prefix v` = `display-popup -E -w 90% -h 90% "ade vault"` (closes when the vault exits). ade's only
+  `capture-pane` is the links key's, of the pane it is given: the vault's popup is never captured, shown in `ade
+  dash` or logged.
+- Rotation reminders: none yet. ade-secrets v0.3.0 has no names-only query for keys due; needed from ade-secrets: a
+  command such as `ade-secrets list --due` (one name per line, entries past `ADE_SECRETS_ROTATE_DAYS`).

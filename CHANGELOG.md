@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+- `ade key list | set <name> [--clipboard] | copy <name> [--for N] | forget <name> | status` (A13) and `ade vault
+  [lock | unlock]` (A14; `prefix v` in `ade ui`): your keys in ade-secrets, run in your own terminal. ade never shows,
+  logs or keeps a value, and refuses inside an agent session or without a terminal. The first `ade key set` asks which
+  store to use; `ade setup` and `ade restore` use `ade key set` for a hub that hands its keys to ade-secrets; `ade
+  doctor` names the store. Do the Owner check in ade-secrets' `docs/contract.md` before a real key is stored.
+  `ade setup --tools` checks ade-secrets' release.json and installs nothing until that release lists its files.
+
 ## 0.2.0
 - `ade files [<folder>]`, `ade view <path[:line[:col]]>` and `ade ui` keys `prefix e` (files) and `prefix l` (the file
   paths and URLs in this pane, opened in `ade view` at their line or in the browser) (A15): a read-only explorer with

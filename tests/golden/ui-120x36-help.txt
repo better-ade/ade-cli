@@ -16,10 +16,10 @@ orchestrator ready
                           │  prefix f   show or hide the fleet sidebar (ade dash)          │
                           │  prefix e   files: explore and view the hub and its projects   │
                           │  prefix l   links: open a file path or URL shown in this pane  │
+                          │  prefix v   vault: your keys in ade-secrets (never captured)   │
                           │  prefix ?   this help                                          │
                           │  prefix 0-9, Left, Right   switch tabs                         │
                           │  prefix d   detach (agents keep running)                       │
-                          │                                                                │
                           │                                                                │
                           │                                                                │
                           └────────────────────────────────────────────────────────────────┘
