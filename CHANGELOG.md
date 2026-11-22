@@ -15,6 +15,19 @@
   others (Homebrew or apt), so the hub's first save is no longer skipped on a new machine. A failed install is said
   in one plain line taken from the installer's message (Homebrew's outdated Command Line Tools; a tap that is not
   trusted yet); `ade` never runs `brew trust`, a system update or an installer from the network itself.
+- Focus work opens a tab, never a new window. `ade work <folder>` opens the agent as a tab of the hub's `ade ui`
+  session; when that session is not there, `ade` makes it (detached, tab 0 the orchestrator's place) and says in one
+  line where the tab is (`ade ui` shows it). When your main agent already runs outside tmux, tab 0 only keeps its
+  place and no second one is started. `ade claude` with no arguments, at a terminal, now runs the main agent as tab
+  0 of that session and attaches you to it. `ADE_UI=off` keeps the old way (`ade claude -- <args>` and `ade claude
+  <folder>` mean what they did); without tmux everything is as before, with one line saying tabs need tmux (`ade
+  setup --tools`); inside the ADE app nothing changes.
+- The tab view is the default: `ade` alone, at a terminal with tmux and a hub that is set up, opens it (as `ade ui`:
+  the main agent as tab 0, or the session that is there). A hub with a step of the guide left shows the steps and
+  the offer. Without a terminal or tmux, in an agent session, with `ADE_UI=off` or typed inside the tab view, `ade`
+  prints the summary as before (inside the tab view with the key hint; without tmux with one line on how to get
+  it). `ade home` prints that summary anywhere; `ade status` is unchanged (the hub's sessions). The guide ends with
+  "type ade to open your workspace".
 
 ## 0.2.3
 - The guide, when a step fails (A18b): one plain line of at most 80 columns says what went wrong (never another

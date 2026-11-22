@@ -38,10 +38,12 @@ Hubs:
   ui          ade ui [--detach]: one tmux window, a tab per agent (keys: prefix ? in it)
   dash        ade dash [--once]: the fleet panel (agents, tickets, last events)
   setup       ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]: the guide, one step at a time (resumes where you are)
-  claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root; with a folder, ade work <folder>
+  claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root, as tab 0 of ade ui when tmux is
+              there (ADE_UI=off: in this terminal); with a folder, ade work <folder>
   hub         ade hub new <name> [--private|--public] [--dir <folder>] [--persona P --client C --owner O]
               | ade hub list | ade hub use <path>
-  (none)      ade alone: the hub, its sessions and what to do next
+  (none)      ade alone: your workspace, the tab view of ade ui (set-up not finished: the guide's steps)
+  home        the hub, its sessions and what to do next (what ade alone prints without a terminal or tmux)
 
 Files (read-only; a path outside the hub and its projects asks first):
   files       ade files [<folder>]: explore the hub and its projects, with name search and preview (ADE_FILES=yazi: yazi, neither read-only nor held to the hub)
@@ -97,7 +99,8 @@ run_hub() {   # $1 = script name under bin/
   [ -e "$hub/bin/$script" ] || die 2 "this hub has no bin/$script; update it"
   [ -x "$hub/bin/$script" ] || die 2 "bin/$script is not executable"
   HUB="$hub"; export HUB   # a stale HUB in the caller's environment would win in the hub's lib.sh
-  exec "$hub/bin/$script" "$@"
+  [ "${RUN_HUB_WAIT:-0}" = 1 ] || exec "$hub/bin/$script" "$@"
+  "$hub/bin/$script" "$@"   # RUN_HUB_WAIT=1 (ade work, for its tab): ade goes on after the script
 }
 
 # mk_tmp: a fresh temp folder under the temp root, or failure (never an empty or current path);
@@ -653,10 +656,29 @@ cmd_home() {
     fi
     echo "To set up, run ade setup at a terminal; it asks one step at a time."; return 0
   fi
-  echo "hub: $(hub_label "$hub") ($hub)"; tg_line "$hub"
-  [ -x "$hub/bin/sessions" ] && (HUB="$hub"; export HUB; "$hub/bin/sessions")
+  # The tab view is the default (owner, 2026-11-23): at a terminal, outside an agent session, the ADE app and the
+  # tab view itself, and unless ADE_UI=off, ade alone is ade ui once the hub is set up; a hub whose guide has a step
+  # left gets the step list and its offer. Everywhere else: the summary (ade home), as before.
+  if [ "${ADE_UI:-}" != off ] && [ -t 0 ] && [ -t 1 ] && ! agent_context && ! in_app; then
+    if in_ui; then home_summary "$hub"; echo "You are in the tab view already; its keys: prefix ?"; return 0; fi
+    if ! home_ready "$hub"; then guide_header; guide_list; ASK_AGAIN="ade setup"
+      ask_yn "Set up now?" y && { guide 1; exit $?; }
+      echo "Later: run ade setup; it picks up where you are."; return 0; fi
+    if command -v tmux > /dev/null 2>&1 && (sq "$hub"; sq "$(ade_self)") > /dev/null 2>&1; then conn_gate "$hub"; cmd_ui; exit $?; fi
+    home_summary "$hub"; command -v tmux > /dev/null 2>&1 || echo "The tab view needs tmux; ade setup --tools installs it."; return 0
+  fi
+  home_summary "$hub"
+}
+# home_ready <hub>: nothing the guide still has to do here, read from this machine alone (Claude Code installed, the
+# hub's agents chosen, a first project); the sign-ins need the network and are not asked for on every ade
+home_ready() { command -v claude > /dev/null 2>&1 && [ -n "$(conf_get "$1" HUB_ROOT_PROVIDER)" ] && first_project "$1" > /dev/null; }
+# in_ui: inside ade's own tmux server (tab 0 carries ADE_UI_SESSION; every pane carries TMUX with its socket)
+in_ui() { [ -n "${ADE_UI_SESSION:-}" ] && return 0; case "${TMUX:-}" in */"$ADE_TMUX_SOCKET",*) return 0 ;; esac; return 1; }
+home_summary() {   # <hub>: the hub, its sessions and what to do next (ade home; ade alone where the tab view is not)
+  echo "hub: $(hub_label "$1") ($1)"; tg_line "$1"
+  [ -x "$1/bin/sessions" ] && (HUB="$1"; export HUB; "$1/bin/sessions")
   echo "next:"
-  echo "  ade claude           open the orchestrator (Claude Code at the hub root)"
+  echo "  ade                  open your workspace: a tab per agent (ade ui)"
   echo "  ade work <folder>    start a focus agent on a folder"
   echo "  ade help             every command"
 }
@@ -694,7 +716,14 @@ skips_permissions() {
 cmd_claude() {
   local a hub model name cl cfg
   skips_permissions "$@" && die 2 "ade claude never skips permissions (refused: $SKIP_ARG)"
-  if [ $# -gt 0 ] && [ "$1" != -- ]; then run_hub work "$@"; fi
+  if [ $# -gt 0 ] && [ "$1" != -- ]; then cmd_work "$@"; fi
+  # with no arguments, at a terminal: the main agent runs as tab 0 of the hub's ade ui session and the person is
+  # attached to it, so every later ade work is a tab beside it. Not inside that session (tab 0 runs this very
+  # command), in an agent session, with ADE_UI=off, in the ADE app or without tmux; ade claude -- <args> runs here.
+  if [ $# -eq 0 ] && [ -z "${ADE_UI_SESSION:-}" ] && [ -t 0 ] && [ -t 1 ] && ! agent_context && ui_wanted; then
+    hub="$(find_hub)" || exit $?
+    if (sq "$hub"; sq "$(ade_self)") > /dev/null 2>&1; then conn_gate "$hub"; cmd_ui; exit $?; fi
+  fi
   [ $# -gt 0 ] && shift
   hub="$(find_hub)" || exit $?; conn_gate "$hub"
   model="$(conf_get "$hub" HUB_ROOT_MODEL)"; name="$(hub_label "$hub")"
@@ -1474,7 +1503,7 @@ guide() {   # [1: the list is already shown]: exit 0 at the end, 1 when a step s
   echo
   if [ -n "$left" ]; then echo "Not finished: step $left; run ade setup to pick up there."; return 0; fi
   hub="$(guide_hub)"; echo "All set: your hub $(hub_label "$hub") is ready ($(tilde "$hub"))."
-  echo "next: ade claude (your everything agent), or ade (what to do next)"
+  echo "next: type ade to open your workspace (your main agent, and a tab per agent)"
 }
 
 cmd_setup() {
@@ -1513,11 +1542,66 @@ need_tmux() {
 }
 # ui_live <hub>: the session name when ade's tmux server runs that hub's session (quietly nothing otherwise)
 ui_live() { command -v tmux > /dev/null 2>&1 || return 1; local s; s="$(ui_session "$1")"; ui_tmux has-session -t "=$s" 2> /dev/null && echo "$s"; }
-# ade work while ade ui runs: bin/work opens the agent as a tab (AGENT_TERMINAL=tmux); an explicit AGENT_TERMINAL wins
-work_in_ui() {
-  local hub s; [ -z "${AGENT_TERMINAL:-}" ] || return 0
-  hub="$(find_hub 2> /dev/null)" || return 0; s="$(ui_live "$hub")" || return 0
+# Focus work opens a tab, never a new window. in_app: an ADE desktop app terminal, as the hub's bin/work tells it (there
+# bin/work opens a sub-terminal of the caller's tab, and ade changes nothing).
+in_app() { [ -n "${ADE_HOOK_BIN:-}" ] && [ -f "$ADE_HOOK_BIN" ] && [ -x "$ADE_HOOK_BIN" ] && [ -n "${ADE_HOOK_PORT:-}" ] && [ -n "${ADE_HOOK_TOKEN:-}" ] && [ -n "${ADE_PTY_ID:-}" ]; }
+# ui_wanted: 0 when ade's tabs are the place for a session: not with ADE_UI=off, not in the ADE app, not when the caller
+# chose a terminal (AGENT_TERMINAL; tmux counts only with ade's own session, as tab 0 sets it), and only with tmux
+# (without it: one line on how to get tabs, and everything as before)
+ui_wanted() {
+  [ "${ADE_UI:-}" != off ] || return 1; in_app && return 1
+  case "${AGENT_TERMINAL:-}" in "") ;; tmux) [ -n "${ADE_UI_SESSION:-}" ] || return 1 ;; *) return 1 ;; esac
+  command -v tmux > /dev/null 2>&1 && return 0
+  echo "ade: tabs for focus work need tmux; ade setup --tools installs it" >&2; return 1
+}
+# orchestrator_runs <hub>: a Claude Code session with this hub's Remote Control name is alive (ade claude outside
+# tmux, or the hub's bin/chat start); the hub's bin/work tells a running session the same way
+orchestrator_runs() { pgrep -f -- "--remote-control $(hub_label "$1")( |\$)" > /dev/null 2>&1; }
+# ui_ensure <hub> <session> [place]: the hub's ade ui session, made detached when it is not there (UI_MADE=1). Tab 0
+# runs the orchestrator (ade claude); with "place" it only keeps the orchestrator's place (ade ui --place), for when
+# one already runs outside tmux: ade never starts a second one.
+UI_MADE=0
+ui_ensure() {
+  local hub="$1" s="$2" conf run=claude; UI_MADE=0
+  ui_tmux has-session -t "=$s" 2> /dev/null && return 0
+  [ "${3:-}" != place ] || run="ui --place"
+  claude_update "$hub"
+  conf="$CONF_DIR/ui-$s.tmux.conf"; ui_conf "$hub" "$s" | write_conf_file "ui-$s.tmux.conf"
+  ui_tmux new-session -d -s "$s" -n orchestrator -c "$hub" \
+    "exec env AGENT_TERMINAL=tmux ADE_UI_SESSION=$s ADE_HUB=$(sq "$hub") $(sq "$(ade_self)") $run" || die 1 "tmux could not start $s"
+  ui_tmux source-file "$conf" || die 1 "tmux could not load $conf"
+  ui_tmux set-environment -t "=$s" AGENT_TERMINAL tmux; ui_tmux set-environment -t "=$s" ADE_UI_SESSION "$s"
+  ui_tmux set-environment -t "=$s" ADE_HUB "$hub"; UI_MADE=1
+}
+# ade work <folder> [...]: the hub's bin/work, its session a tab of the hub's ade ui session (made when it is not
+# there). bin/work gets AGENT_TERMINAL=tmux, ADE_UI_SESSION and TMUX (the socket of ade's own tmux server, so its
+# plain tmux reaches that server). The hub's tmux mode looks for a session named ade-<hub name>, which is not ade's
+# session name, so it opens a detached session of its own there: ade takes that session's window into the ade ui
+# session as a tab named after the folder. A hub that opens the tab itself leaves nothing to take in.
+cmd_work() {
+  local hub s sock before n a tab="" rc RUN_HUB_WAIT=0
+  ui_wanted || run_hub work "$@"
+  hub="$(find_hub 2> /dev/null)" || run_hub work "$@"
+  (sq "$hub"; sq "$(ade_self)") > /dev/null 2>&1 || run_hub work "$@"   # a path tmux cannot take: as before
+  s="$(ui_session "$hub")"
+  if orchestrator_runs "$hub"; then ui_ensure "$hub" "$s" place; else ui_ensure "$hub" "$s"; fi
+  sock="$(ui_tmux display-message -p -t "=$s:" '#{socket_path}' 2> /dev/null)"
+  case "${TMUX:-}" in "$sock",*) ;; *) [ -z "$sock" ] || { TMUX="$sock"; export TMUX; } ;; esac
   AGENT_TERMINAL=tmux; ADE_UI_SESSION="$s"; export AGENT_TERMINAL ADE_UI_SESSION
+  before="$(ui_tmux list-sessions -F '#{session_name}' 2> /dev/null)"
+  RUN_HUB_WAIT=1; run_hub work "$@"; rc=$?
+  [ "$rc" = 0 ] || exit "$rc"
+  for a in "$@"; do matches "$a" '^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$' && tab="$a"; done
+  while IFS= read -r n; do
+    [ -n "$n" ] && [ "$n" != "$s" ] || continue
+    printf '%s\n' "$before" | grep -qxF -- "$n" && continue
+    ui_tmux rename-window -t "=$n:" "${tab:-$n}" 2> /dev/null
+    ui_tmux move-window -d -s "=$n:" -t "=$s:" 2> /dev/null || echo "ade: $n stays a tmux session of its own (it could not be moved into $s)" >&2
+  done <<EOF
+$(ui_tmux list-sessions -F '#{session_name}' 2> /dev/null)
+EOF
+  [ "$UI_MADE" != 1 ] || echo "ade: ${tab:-the focus work} is a tab in $s; ade ui shows it" >&2
+  exit 0
 }
 sq() {   # a path quoted for a tmux command; anything tmux or the shell could expand is refused
   case "$1" in *"'"*|*'"'*|*'$'*|*'\'*|*'#'*|*'`'*) die 2 "ade ui does not support this path (quotes, \$, \\, # or backticks): $1" ;; esac
@@ -1782,7 +1866,7 @@ ui_sidebar() {
 }
 
 cmd_ui() {
-  local hub s d conf detach=0
+  local hub s d detach=0
   case "${1:-}" in
     --bar) [ -n "${2:-}" ] || die 2 "usage: ade ui --bar <session>"; hub="$(find_hub)" || exit $?
       ui_bar "$hub" "$2"; return 0 ;;
@@ -1796,21 +1880,16 @@ cmd_ui() {
     --tickets) hub="$(find_hub)" || exit $?; d="$(mk_tmp)" || die 1 "could not make a temp folder"; ui_data "$hub" "$d"
       ui_render dash "$d" | awk '/^TICKETS/ { on = 1 } /^EVENTS/ { on = 0 } on'; rm_tmp "$d"; [ -t 0 ] && read -r _; return 0 ;;
     --session) hub="$(find_hub)" || exit $?; ui_session "$hub"; return 0 ;;
+    --place) echo "Your main agent is running in another terminal. This tab is its place:"   # tab 0, made by ade work
+      echo "close it there, then press Enter here to start it in this tab."
+      read -r _ || true; cmd_claude; return ;;
     --detach) detach=1 ;;
     "") ;;
     *) die 2 "usage: ade ui [--detach]" ;;
   esac
   need_tmux; hub="$(find_hub)" || exit $?; s="$(ui_session "$hub")"
   sq "$hub" > /dev/null; sq "$(ade_self)" > /dev/null   # checked here: inside $(...) a refusal would only end a subshell
-  if ! ui_tmux has-session -t "=$s" 2> /dev/null; then
-    claude_update "$hub"
-    conf="$CONF_DIR/ui-$s.tmux.conf"; ui_conf "$hub" "$s" | write_conf_file "ui-$s.tmux.conf"
-    ui_tmux new-session -d -s "$s" -n orchestrator -c "$hub" \
-      "exec env AGENT_TERMINAL=tmux ADE_UI_SESSION=$s ADE_HUB=$(sq "$hub") $(sq "$(ade_self)") claude" || die 1 "tmux could not start $s"
-    ui_tmux source-file "$conf" || die 1 "tmux could not load $conf"
-    ui_tmux set-environment -t "=$s" AGENT_TERMINAL tmux; ui_tmux set-environment -t "=$s" ADE_UI_SESSION "$s"
-    ui_tmux set-environment -t "=$s" ADE_HUB "$hub"
-  fi
+  ui_ensure "$hub" "$s"
   [ "$detach" = 1 ] && { echo "ade ui: session $s (attach with: ade ui)"; return 0; }
   TMUX=""; export TMUX; exec tmux -L "$ADE_TMUX_SOCKET" attach-session -t "=$s"
 }
@@ -3704,7 +3783,7 @@ case "$cmd" in   # A12: the daily update check, never for the commands tmux and 
   *) update_check ;;
 esac
 case "$cmd" in
-  work) work_in_ui; run_hub work "$@" ;;
+  work) cmd_work "$@" ;;
   chat) if [ "${1:-}" = setup ] && [ $# -ge 2 ]; then   # the channel is recorded once its setup succeeds
       h="$(find_hub)" || exit $?; hub_run "$h" chat "$@" || exit $?; record_channel "$h" "$2"; exit 0; fi
     run_hub chat "$@" ;;
@@ -3720,6 +3799,7 @@ case "$cmd" in
   agent) cmd_agent "$@" ;;
   skills) cmd_skills "$@" ;;
   "") cmd_home ;;
+  home) [ $# -eq 0 ] || die 2 "usage: ade home"; h="$(find_hub)" || exit $?; home_summary "$h" ;;
   claude) cmd_claude "$@" ;;
   setup) cmd_setup "$@" ;;
   hub) cmd_hub "$@" ;;
