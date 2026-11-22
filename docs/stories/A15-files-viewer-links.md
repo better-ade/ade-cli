@@ -8,7 +8,8 @@ or Finder, and every file link viewable there. Verification command: `bash tests
 
 ## Goal
 - **`ade files [path]`** and `ade ui` key `e`: a directory explorer over the hub and its projects with name search and
-  live preview; uses `yazi` when installed, else a built-in browser (bash + python3, no extra install).
+  live preview; a built-in browser (bash + python3, no extra install). Fix round (2026-11-22, coordinator's default):
+  yazi only when the user sets `ADE_FILES=yazi`, because yazi is neither read-only nor held to the hub and its projects.
 - **`ade view <path[:line]>`**: code with syntax colours (`bat`, else `less -N`) opened at the line; Markdown rendered
   (`glow`, else plain); images inline on terminals with graphics (iTerm2, kitty, WezTerm, Ghostty; via the terminal's
   protocol or `chafa`), else "image: <size> (o to open)".
@@ -27,13 +28,15 @@ or Finder, and every file link viewable there. Verification command: `bash tests
   and `ade view` fall back to built-ins when an extra is missing and print a one-line hint once; `ade doctor` lists each
   tool as installed or missing; `ade setup --tools` installs what is missing; V2's `ade server install` installs the
   same set with apt.
+- **yazi is the exception:** with `ADE_FILES=yazi`, yazi is neither read-only nor held to the hub and its projects;
+  the help, README, contract and `ade setup`'s extras step say so.
 - **Read-only and contained:** nothing edits, moves or deletes; viewing outside the hub and its project checkouts asks
   first; symlinks leaving those folders are shown, not followed, unless confirmed.
 
 ## Acceptance criteria (`tests/test_files.sh`; tmux capture via the A8 full-screen renderer; fakes for open/xdg-open/bat/glow/pdftotext/pdftoppm)
 | AC | Criterion |
 |---|---|
-| 1 | The built-in explorer lists, searches and previews a fixture tree; `yazi` is used when present (fake) |
+| 1 | The built-in explorer lists, searches and previews a fixture tree; `yazi` (fake) is used only with `ADE_FILES=yazi` |
 | 2 | `ade view file.ts:42` opens at line 42 with `bat` (fake records args) and with the `less` fallback |
 | 3 | A fixture PDF shows text pages without graphics support, and page images when the terminal reports graphics |
 | 4 | `o`, `f`, `y` call open / open -R (or xdg-open) / the clipboard with the right path; over SSH they offer the path instead |

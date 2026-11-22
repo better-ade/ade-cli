@@ -20,8 +20,10 @@ without a question). Nothing else changes risk: the commands only read.
   before matching.
 - **No option injection**: every path is absolute and passed after `--` (bat, less, glow, yazi, pdftotext, pdftoppm,
   chafa, `open`); `xdg-open` has no `--`, so it only ever gets an absolute path or an `http(s)://` URL.
-- **`o` never runs a program**: an executable file or a program-like extension (`.app`, `.command`, `.sh`, `.py`, ...)
-  is refused for `o`; `f` still reveals it.
+- **`o` opens documents only** (fix round): an allow list of extensions (pdf, images, text and Markdown, office,
+  audio, video), case-insensitive, on `os.path.realpath`; refused: an executable, a folder, and anything with a bundle
+  or link-file extension in any component of the real path (`X.app/...`, `.prefPane`, `.webloc`, `.dmg`, `.zip`, ...).
+  `report.pdf -> Evil.app` and `safe.pdf -> f.webloc` are refused. `f` reveals anything.
 - **Viewer choice**: code `bat --style=numbers [--highlight-line N --pager "less -RF +Ng"]` (Ubuntu's `batcat`), else
   `less -N +Ng`; Markdown without a line `glow -p`, else `less`; PDF text from `pdftotext -layout` (pages split on form
   feeds), page images from `pdftoppm -f N -l N -png -r 110` on a graphics terminal; images by `chafa` when installed,
@@ -42,6 +44,15 @@ without a question). Nothing else changes risk: the commands only read.
   extras as one yes/no, before Claude Code; `install.sh` runs `ade setup --tools required` on `/dev/tty` when its
   output is a terminal, else only names what is missing. `ade doctor` prints the tool table, then runs the hub's
   `bin/doctor` as before.
+- **yazi** (fix round, coordinator's default): only with `ADE_FILES=yazi`. yazi is neither read-only nor held to the hub and its projects: it
+  deletes, renames, moves, runs shell commands, uses its own opener and walks to `$HOME` and `/` without asking. The
+  help, README, contract, story and `ade setup`'s extras step say so; the built-in browser is the default.
+- **Fix round hardening**: `/`, `$HOME` and its parents are never roots; a folder allowed by a yes is listed, never
+  previewed, and a yes to a wide one allows nothing under it. Pagers run with `LESSSECURE=1`, `LESSOPEN=` (bat's
+  pager is `less -RF`, glow's `PAGER=less -r`). Names in messages come from Python's `shown()` (C1, bidi, zero-width
+  and non-UTF-8 bytes as `?`; bash's `no_ctl` cannot tell a stray C1 byte from UTF-8 cheaply, so the messages use the
+  Python path); `--act url` takes printable ASCII only. `y` copies a shell-quoted path when it must; the SSH line is
+  `scp -s '<host>:<real path>' .`. bash makes the cleaned copy and the PDF page folder and removes them from a HUP/TERM/INT
+  trap when the window is closed; Python's SIGHUP/SIGTERM handlers stop the running tool and remove the page folder
+  first (on Linux a hung-up Python can die before its `finally`, so the bash trap is the guarantee). No `file://` title link for a binary file or anything inside a bundle.
 - **Not built here**: V2's `ade server install` (another repo); it should use the package lists in the contract.
-  yazi is used as the story asks; its own keys can rename or delete, which ade cannot switch off (the built-in
-  browser is read-only).

@@ -64,17 +64,30 @@ explorer_lists_searches_previews() {   # AC1
   P "/a.ts\r\rq" files "$A_DIR" > "$T/raw" 2>&1 || { cat "$T/raw"; fail "explorer exit"; }
   plain < "$T/raw" > "$T/screen"
   for s in "ade files · hub/projects/api" "docs/" "src/" "spec.pdf" "img.png" "src/a.ts" "const three = 3"; do assert_contains "$T/screen" "$s" "explorer shows: $s"; done
-  assert_contains "$CALLS" "bat --style=numbers -- $A_DIR/src/a.ts" "Enter on a search result views it"
-  assert_contains "$T/screen" "yazi is not installed" "the fallback says which tool is missing"
-  assert_contains "$T/screen" "ade setup --tools installs it" "and how to get it"
+  assert_contains "$CALLS" "bat --style=numbers --pager less -RF -- $A_DIR/src/a.ts" "Enter on a search result views it"
+  assert_not_contains "$T/screen" "yazi" "the built-in browser is the default; yazi is not even mentioned"
   P "jjq" files "$A_DIR" > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
-  assert_not_contains "$T/screen" "yazi is not installed" "the hint is shown once"
   assert_contains "$T/screen" "a.ts" "j moves the selection and the preview follows it (src/ lists a.ts)"
   P "q" files > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"; assert_contains "$T/screen" "ade files · hub" "no folder: the hub"
   A files "$A_DIR" < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "the browser needs a terminal"
   A files "$A_DIR/src/a.ts" < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "a file is not a folder"
-  mkfake yazi; : > "$CALLS"; P "q" files "$A_DIR" > /dev/null 2>&1
-  assert_eq "$(cat "$CALLS")" "yazi -- $A_DIR" "yazi when installed, after --"
+  ADE_FILES=yazi P "q" files "$A_DIR" 2>&1 | plain > "$T/screen"
+  assert_contains "$T/screen" "ADE_FILES=yazi, but yazi is not installed" "asked for and missing: said"; assert_contains "$T/screen" "ade files · hub/projects/api" "then the built-in browser"
+  mkfake yazi; : > "$CALLS"; P "q" files "$A_DIR" 2>&1 | plain > "$T/screen"
+  assert_not_contains "$CALLS" "yazi" "yazi installed but not asked for: never used (it is not read-only)"; assert_contains "$T/screen" "ade files · hub/projects/api" "the built-in browser"
+  : > "$CALLS"; ADE_FILES=yazi P "q" files "$A_DIR" 2>&1 | plain > "$T/screen"
+  assert_eq "$(cat "$CALLS")" "yazi -- $A_DIR" "ADE_FILES=yazi: yazi, after --"; assert_contains "$T/screen" "not read-only" "with the warning"
+}
+
+pagers_are_secure() {   # review finding 4: less, bat's pager and glow's pager run with LESSSECURE=1 and no LESSOPEN
+  fresh; files_fixture; local c; for c in bat glow less; do mkfake "$c" 'echo "'"$c"' env LESSSECURE=${LESSSECURE-unset} LESSOPEN=${LESSOPEN-unset} PAGER=${PAGER-unset}" >> "$CALLS"'; done
+  export LESSOPEN='|touch /tmp/ade-lessopen-ran %s' PAGER=most
+  A view "$A_DIR/src/a.ts:3" > /dev/null 2>&1; A view "$A_DIR/src/a.ts" > /dev/null 2>&1; A view "$A_DIR/docs/x.md" > /dev/null 2>&1
+  assert_eq "$(grep -c '^bat env LESSSECURE=1 LESSOPEN= ' "$CALLS")" 2 "bat: secure less, no LESSOPEN"
+  assert_contains "$CALLS" "glow env LESSSECURE=1 LESSOPEN= PAGER=less -r" "glow -p: secure less as its pager"
+  assert_contains "$CALLS" "bat --style=numbers --pager less -RF -- $A_DIR/src/a.ts" "bat's pager is always less"
+  rm "$F/bat" "$F/glow"; : > "$CALLS"; A view "$A_DIR/src/a.ts" > /dev/null 2>&1; A view "$A_DIR/docs/x.md" > /dev/null 2>&1
+  assert_eq "$(grep -c '^less env LESSSECURE=1 LESSOPEN= ' "$CALLS")" 2 "less itself: secure, no LESSOPEN"
 }
 
 explorer_in_real_tmux() {   # AC1 on a real terminal screen: a tmux pane at 100x30, captured
@@ -96,7 +109,7 @@ view_at_line() {   # AC2
   (cd "$A_DIR" && A view src/a.ts:42) > "$T/out" 2>&1 || { cat "$T/out"; fail "view exit"; }
   assert_contains "$CALLS" "bat --style=numbers --highlight-line 42 --pager less -RF +42g -- $A_DIR/src/a.ts" "bat opens at line 42"
   : > "$CALLS"; (cd "$A_DIR" && A view src/a.ts:42:7) > /dev/null 2>&1; assert_contains "$CALLS" "--highlight-line 42 " "path:line:col"
-  : > "$CALLS"; (cd "$A_DIR" && A view weird:5) > /dev/null 2>&1; assert_contains "$CALLS" "bat --style=numbers -- $A_DIR/weird:5" "a name with a colon that exists is that file"
+  : > "$CALLS"; (cd "$A_DIR" && A view weird:5) > /dev/null 2>&1; assert_contains "$CALLS" "bat --style=numbers --pager less -RF -- $A_DIR/weird:5" "a name with a colon that exists is that file"
   printf 'safe \033]0;owned\007 text\n' > "$A_DIR/ctl.txt"; (cd "$A_DIR" && A view ctl.txt) > "$T/out" 2>&1
   grep -q "safe" "$CALLS.seen" && ! LC_ALL=C grep -q "$(printf '\033')" "$CALLS.seen" || fail "control characters never reach the viewer"
   assert_contains "$T/out" "control characters" "and it says so"
@@ -173,15 +186,34 @@ open_reveal_copy() {   # AC4
   assert_contains "$CALLS" "xclip -selection clipboard" "Linux y"; assert_eq "$(cat "$CALLS.clip")" "$img" "the path"
   : > "$CALLS"; FAKE_OS=Darwin P "/img\rfq" files "$A_DIR" > /dev/null 2>&1; assert_contains "$CALLS" "open -R -- $img" "f in the explorer"
   : > "$CALLS"; FAKE_OS=Darwin P "/tool\roq" files "$A_DIR" > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
-  assert_not_contains "$CALLS" "open -- $A_DIR/tool.sh" "o never runs a program"; assert_contains "$T/screen" "is a program" "and says why"
+  assert_not_contains "$CALLS" "open -- $A_DIR/tool.sh" "o never runs a program"; assert_contains "$T/screen" "o opens documents only" "and says why"
+  mkdir -p "$A_DIR/X.app/Contents/MacOS" "$A_DIR/X.app/Contents/Resources"; echo x > "$A_DIR/X.app/Contents/MacOS/X"; echo x > "$A_DIR/X.app/Contents/Resources/readme.txt"
+  ln -s X.app "$A_DIR/report.pdf"; echo x > "$A_DIR/runme"; chmod +x "$A_DIR/runme"; echo x > "$A_DIR/Notes.TXT"; local e f
+  for e in fileloc webloc WebLoc inetloc url prefPane mobileconfig dmg zip saver kext scptd ps1 vbs; do echo x > "$A_DIR/f.$e"; done
+  echo x > "$A_DIR/X.app/Contents/Resources/readme.pdf"; ln -s X.app/Contents/Resources/readme.pdf "$A_DIR/inner.pdf"; ln -s f.webloc "$A_DIR/safe.pdf"
+  for f in report.pdf inner.pdf safe.pdf X.app X.app/Contents/Resources/readme.txt runme f.fileloc f.webloc f.WebLoc f.inetloc f.url f.prefPane f.mobileconfig f.dmg f.zip f.saver f.kext f.scptd f.ps1 f.vbs; do
+    : > "$CALLS"; FAKE_OS=Darwin A files --act open "$A_DIR/$f" > "$T/out" 2>&1; assert_eq "$?" 2 "o refuses $f"
+    assert_eq "$(cat "$CALLS")" "" "no open call for $f"; assert_contains "$T/out" "f shows it in its folder" "points at f for $f"; done
+  : > "$CALLS"; FAKE_OS=Linux A files --act open "$A_DIR/report.pdf" > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "" "no xdg-open through a link to a bundle"
+  : > "$CALLS"; FAKE_OS=Darwin A files --act open "$A_DIR/Notes.TXT" > /dev/null 2>&1; assert_contains "$CALLS" "open -- $A_DIR/Notes.TXT" "a document opens (extension case-insensitive)"
+  : > "$CALLS"; FAKE_OS=Darwin A files --act reveal "$A_DIR/report.pdf" > /dev/null 2>&1; assert_contains "$CALLS" "open -R -- $A_DIR/report.pdf" "f still reveals it"
   : > "$CALLS"; SSH_CONNECTION="1 2 3 4" FAKE_OS=Darwin P "ofyq" view "$img" > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
   assert_not_contains "$CALLS" "open " "over SSH nothing opens here"; assert_not_contains "$CALLS" "pbcopy" "nor copies"
-  assert_contains "$T/screen" "over SSH: $img" "the path instead"; assert_contains "$T/screen" "scp " "and a copy command"
+  assert_contains "$T/screen" "over SSH: $img" "the path instead"; SSH_CONNECTION="1 2 3 4" A files --act open "$img" > "$T/out" 2>&1
+  assert_contains "$T/out" "scp -s '$(uname -n):$img' ." "and an scp -s line, quoted"
+  ln -s img.png "$A_DIR/pic link.png"; SSH_CONNECTION="1 2 3 4" A files --act copy "$A_DIR/pic link.png" > "$T/out" 2>&1
+  assert_contains "$T/out" "scp -s '$(uname -n):$img' ." "the scp line names the real path"
+  : > "$CALLS"; FAKE_OS=Darwin A files --act copy "$A_DIR/pic link.png" > /dev/null 2>&1
+  assert_eq "$(cat "$CALLS.clip")" "'$A_DIR/pic link.png'" "y: a name with a space is copied shell-quoted"
   rm "$F/xclip"; FAKE_OS=Linux A files --act copy "$img" > "$T/out" 2>&1
   assert_contains "$T/out" "no clipboard tool" "no clipboard: says so"; assert_contains "$T/out" "$img" "and shows the path"
   rm "$F/xdg-open"; FAKE_OS=Linux A files --act open "$img" > "$T/out" 2>&1; assert_eq "$?" 2 "no xdg-open"; assert_contains "$T/out" "xdg-open is not installed" "named"
   A files --act open relative.png > /dev/null 2>&1; assert_eq "$?" 2 "only an absolute path"
   TERM_PROGRAM=vscode P "q" view "$img" > "$T/raw" 2>&1; assert_contains "$T/raw" "]8;;file://" "a terminal hyperlink (OSC 8) where supported"
+  printf 'MZ\000\000binary' > "$A_DIR/blob.bin"; TERM_PROGRAM=vscode P "q" view "$A_DIR/blob.bin" > "$T/raw" 2>&1
+  assert_not_contains "$T/raw" "]8;;file://" "no hyperlink for a binary file"
+  printf '\211PNG\r\n\032\n' > "$A_DIR/X.app/Contents/Resources/icon.png"; TERM_PROGRAM=vscode P "q" view "$A_DIR/X.app/Contents/Resources/icon.png" > "$T/raw" 2>&1
+  assert_not_contains "$T/raw" "]8;;file://" "nor for a file inside a program"
 }
 
 link_picker() {   # AC5
@@ -218,7 +250,7 @@ outside_asks_first() {   # AC6
   A view "$s" < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "outside, no terminal: refused"
   assert_contains "$T/out" "outside the hub and its projects" "says why"; assert_not_contains "$CALLS" "bat" "nothing shown"
   P "n\r" view "$s" > /dev/null 2>&1; assert_not_contains "$CALLS" "bat" "no: nothing shown"
-  P "y\r" view "$s" > /dev/null 2>&1; assert_contains "$CALLS" "bat --style=numbers -- $s" "yes: shown"
+  P "y\r" view "$s" > /dev/null 2>&1; assert_contains "$CALLS" "bat --style=numbers --pager less -RF -- $s" "yes: shown"
   : > "$CALLS"; CLAUDECODE=1 P "y\r" view "$s" 2>&1 | plain > "$T/screen"; assert_not_contains "$CALLS" "bat" "an agent session cannot answer"
   assert_contains "$T/screen" "refused inside" "and says so"
   A view "$A_DIR/leak.txt" < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "an escaping link: refused"
@@ -231,12 +263,52 @@ outside_asks_first() {   # AC6
   assert_not_contains "$T/screen" "TOP SECRET" "never followed"
   P "/outdir\r\rnq" files "$A_DIR" 2>&1 | plain > "$T/screen"
   assert_contains "$T/screen" "outdir is a link to $T/outside, outside the hub and its projects. Open it anyway? [y/N]" "entering an escaping folder asks"
-  assert_not_contains "$T/screen" "ade files · outside" "no: not entered"
-  P "/outdir\r\ryq" files "$A_DIR" 2>&1 | plain > "$T/screen"; assert_contains "$T/screen" "ade files · outside" "yes: entered"
-  assert_contains "$T/screen" "secret.txt" "and listed"
+  assert_not_contains "$T/screen" "ade files · $A_DIR/outdir" "no: not entered"
+  P "/outdir\r\ryq" files "$A_DIR" 2>&1 | plain > "$T/screen"; assert_contains "$T/screen" "ade files · $A_DIR/outdir" "yes: entered"
+  assert_contains "$T/screen" "secret.txt" "and listed"; assert_not_contains "$T/screen" "TOP SECRET" "but a folder allowed by a yes is never previewed"
+  assert_contains "$T/screen" "no preview outside the hub and its projects" "and says so"
+  echo "HOME SECRET" > "$HOME/notes.txt"; P "hyk\rnq" files "$H" 2>&1 | plain > "$T/screen"
+  assert_eq "$(grep -o 'Open it anyway?' "$T/screen" | wc -l | tr -d ' ')" 2 "a yes to a parent of the home folder never allows what is under it: home asks again"
+  assert_not_contains "$T/screen" "notes.txt" "and nothing under home is previewed"
   P "hnq" files "$H" 2>&1 | plain > "$T/screen"; assert_contains "$T/screen" "outside the hub and its projects" "up from the hub asks"
-  printf '| Repo | Checkout | Branch |\n|---|---|---|\n| o/x | / | main |\n| o/y | ~/ | main |\n' > "$H/projects/api/ACCESS.md"
-  A view "$s" < /dev/null > /dev/null 2>&1; assert_eq "$?" 2 "a checkout row of / or the home folder never makes everything inside"
+  printf '| Repo | Checkout | Branch |\n|---|---|---|\n| o/x | / | main |\n| o/y | ~/ | main |\n| o/z | %s | main |\n' "$(dirname "$HOME")" > "$H/projects/api/ACCESS.md"
+  A view "$s" < /dev/null > /dev/null 2>&1; assert_eq "$?" 2 "a checkout row of /, the home folder or a parent of it never makes everything inside"
+  : > "$CALLS"; A view "$HOME/notes.txt" < /dev/null > /dev/null 2>&1; assert_eq "$?" 2 "a file under home with a row for home's parent: asks"
+  assert_not_contains "$CALLS" "bat" "nothing shown"
+}
+
+spoofed_names() {   # review finding 7: bidi, zero-width and stray C1 bytes never reach the screen or a link
+  fresh; files_fixture; mkfake open; local rlo zw; rlo="$(printf '\342\200\256')"; zw="$(printf '\342\200\213')"
+  echo x > "$A_DIR/abc${rlo}gnp.txt"; ln -s "$T/outside/secret.txt" "$A_DIR/x${rlo}y"
+  P "q" files "$A_DIR" > "$T/raw" 2>&1; grep -q "abc" "$T/raw" || fail "the spoofed name is listed"
+  ! LC_ALL=C grep -q "$rlo" "$T/raw" || fail "no right-to-left override drawn in the explorer"
+  A view "$A_DIR/x${rlo}y" < /dev/null > "$T/out" 2>&1; assert_contains "$T/out" "x?y is a link to" "the question shows the name with a ?"
+  ! LC_ALL=C grep -q "$rlo" "$T/out" || fail "no override in the question"
+  A view "$(printf 'no\233such')" < /dev/null > "$T/out" 2>&1; assert_contains "$T/out" "no such file" "a missing name"
+  ! LC_ALL=C grep -q "$(printf '\233')" "$T/out" || fail "no stray C1 byte in the message"
+  A files --act url "https://exa${zw}mple.com" > "$T/out" 2>&1; assert_eq "$?" 2 "a link with a zero-width space is refused"
+  A files --act url "https://ex${rlo}moc.com" > /dev/null 2>&1; assert_eq "$?" 2 "and with an override"
+  assert_eq "$(cat "$CALLS")" "" "nothing opened"; ! LC_ALL=C grep -q "$zw" "$T/out" || fail "nor drawn"
+}
+
+killed_window_cleans_up() {   # review finding 9: closing the window (SIGHUP to the terminal's processes) leaves no copy
+  fresh; files_fixture; pdf_fakes; mkfake chafa; mkfake bat 'sleep 30'; export TMPDIR="$T/tmp"; mkdir -p "$TMPDIR"
+  printf 'safe \033]0;x\007 text\n' > "$A_DIR/ctl.txt"
+  hup() { python3 -c '
+import glob, os, pty, signal, sys, time
+pid, fd = pty.fork()
+if pid == 0: os.execvp(sys.argv[1], sys.argv[1:])
+t = time.time(); had = False
+while time.time() - t < 10 and not had:
+    try: os.read(fd, 65536)
+    except OSError: break
+    had = bool(glob.glob(os.path.join(os.environ["TMPDIR"], "ade.*")))
+    time.sleep(0.1)
+time.sleep(0.5); os.killpg(pid, signal.SIGHUP); os.close(fd); os.waitpid(pid, 0); time.sleep(1)
+print("had-tmp" if had else "no-tmp", len(glob.glob(os.path.join(os.environ["TMPDIR"], "ade.*"))))' "$@"
+  }
+  assert_eq "$(hup env PATH="$F:$T/sys" "$BASH" "$ADE" view "$A_DIR/ctl.txt")" "had-tmp 0" "view_text: the cleaned copy is removed when the window closes"
+  assert_eq "$(TERM_PROGRAM=iTerm.app hup env PATH="$F:$T/sys" "$BASH" "$ADE" view "$A_DIR/docs/spec.pdf")" "had-tmp 0" "the PDF page folder too"
 }
 
 read_only() {   # AC7
@@ -263,6 +335,7 @@ tools_setup_installs_missing() {   # AC8: ade setup --tools, after a yes at a te
   FAKE_OS=Darwin P "y\r" setup --tools > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
   assert_eq "$(cat "$CALLS")" "brew install tmux gh yazi glow poppler chafa" "brew, only the missing ones (bat is here)"
   assert_contains "$T/screen" "This runs: brew install tmux gh yazi glow poppler chafa" "the question shows the command"
+  assert_contains "$T/screen" "yazi only with ADE_FILES=yazi: yazi is neither read-only nor held to the hub" "and what yazi is"
   : > "$CALLS"; FAKE_OS=Darwin P "n\r" setup --tools > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "" "no: nothing installed"
   A setup --tools < /dev/null > "$T/out" 2>&1; assert_eq "$(cat "$CALLS")" "" "no terminal: nothing installed"; assert_contains "$T/out" "run at a terminal: brew install" "says how"
   CLAUDECODE=1 FAKE_OS=Darwin P "y\r" setup --tools > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "" "an agent session: nothing installed"
@@ -285,12 +358,13 @@ tools_in_setup_and_installer() {   # AC8: ade setup's first steps and the one-li
   assert_eq "$(sed -n 1p "$CALLS")" "brew install tmux gh" "setup: the required tools, after a yes"
   assert_eq "$(sed -n 2p "$CALLS")" "brew install yazi glow poppler chafa" "then the extras, as one step"
   assert_contains "$T/screen" "viewer extras" "the extras step is named"
+  assert_contains "$T/screen" "yazi is neither read-only nor held to the hub and its projects" "and it says what yazi is"
   : > "$CALLS"; FAKE_OS=Darwin pty_run "y\r" env PATH="$F:$T/sys" "$BASH" "$REPO/install.sh" "$T/prefix" > "$T/raw" 2>&1
   assert_contains "$T/raw" "installed ade" "the installer ran"; assert_eq "$(cat "$CALLS")" "brew install tmux gh" "the installer: required tools after a yes"
   : > "$CALLS"; PATH="$F:$T/sys" "$BASH" "$REPO/install.sh" "$T/prefix" > "$T/out" 2>&1 < /dev/null
   assert_eq "$(cat "$CALLS")" "" "piped, no terminal: nothing installed"; assert_contains "$T/out" "missing tools ade needs: tmux gh" "but named"
 }
 
-ALL="explorer_lists_searches_previews explorer_in_real_tmux view_at_line pdf_pages pdf_real_tools open_reveal_copy link_picker outside_asks_first read_only tools_doctor tools_setup_installs_missing tools_in_setup_and_installer"
+ALL="explorer_lists_searches_previews explorer_in_real_tmux view_at_line pagers_are_secure pdf_pages pdf_real_tools open_reveal_copy link_picker outside_asks_first spoofed_names killed_window_cleans_up read_only tools_doctor tools_setup_installs_missing tools_in_setup_and_installer"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
