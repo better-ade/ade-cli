@@ -9,7 +9,7 @@ farm() {   # $T/sys: the system's commands without the ones faked here; this tes
   python3 - "$T/sys" "$(command -v python3)" "$(command -v git)" <<'PY'
 import os, sys
 d = sys.argv[1]; os.makedirs(d, exist_ok=True)
-skip = set("claude gh brew apt-get apt sudo uname open xdg-open tmux yazi bat batcat glow pdftotext pdftoppm chafa code "
+skip = set("gitleaks claude gh brew apt-get apt sudo uname open xdg-open tmux yazi bat batcat glow pdftotext pdftoppm chafa code "
            "security pass gpg pbcopy xclip xsel wl-copy".split())
 for name, target in (("python3", sys.argv[2]), ("git", sys.argv[3])):
     os.symlink(target, os.path.join(d, name))
@@ -25,36 +25,41 @@ PY
 # the fakes: each logs "name args" to $CALLS. Sign-in state is a file: $T/claude.in, $T/gh.in.
 # gh auth login prints GitHub's one-time code lines, opens $GH_BROWSER when set, says whether it had the terminal,
 # and fails when $T/gh.fail exists. claude with no auth arguments is the guided session: it makes projects/$MAKE_PROJECT.
+# A18b: a fake fails once per line of $T/<name> (fails <name>: that line on stderr, then gone): install.fail, claude.fail,
+# brew.fail, gh.failn, repo.fail (with repo.half: after leaving a half-made clone), init.failn, session.fail; agent.fail
+# is the live test's message for as long as the file is there, and the sign-in removes it when login.fixes exists.
 fakes() {
   F="$T/fakebin"; mkdir -p "$F"; export CALLS="$T/calls" FT="$T"; : > "$CALLS"; farm
+  printf 'fails() { [ -s "$FT/$1" ] || return 1; head -1 "$FT/$1" >&2; sed 1d "$FT/$1" > "$FT/$1.n"; mv "$FT/$1.n" "$FT/$1"; }\n' > "$T/fails.sh"
   cat > "$F/claude" <<'STUB'
 #!/bin/bash
-echo "claude $*" >> "$CALLS"
+echo "claude $*" >> "$CALLS"; . "$FT/fails.sh"
 case "${1:-} ${2:-}" in
   "auth status") [ -f "$FT/claude.in" ] ;;
-  "auth login") [ -f "$FT/claude.fail" ] && exit 1; touch "$FT/claude.in" ;;
-  *) echo "(the guided Claude Code session runs here)"; [ -z "${SESSION_EXIT:-}" ] || exit "$SESSION_EXIT"
+  "auth login") fails claude.fail && exit 1; if [ -t 0 ] && [ -t 1 ]; then echo "claude had the terminal" >> "$CALLS"; fi
+    [ ! -f "$FT/login.fixes" ] || rm -f "$FT/agent.fail"; touch "$FT/claude.in" ;;
+  *) echo "(the guided Claude Code session runs here)"; [ -z "${SESSION_EXIT:-}" ] || exit "$SESSION_EXIT"; fails session.fail && exit 1
     [ -z "${MAKE_PROJECT:-}" ] || mkdir -p "projects/$MAKE_PROJECT" ;;
 esac
 STUB
   cat > "$F/gh" <<'STUB'
 #!/bin/bash
-echo "gh $*" >> "$CALLS"; env | grep -E '^GH_(TOKEN|ENTERPRISE_TOKEN|BROWSER)=' | sed 's/^/gh env /' >> "$CALLS"
+. "$FT/fails.sh"; echo "gh $*" >> "$CALLS"; env | grep -E '^GH_(TOKEN|ENTERPRISE_TOKEN|BROWSER)=' | sed 's/^/gh env /' >> "$CALLS"
 case "${1:-} ${2:-}" in
   "auth status") [ -f "$FT/gh.in" ] ;;
   "auth login") if [ -t 0 ] && [ -t 1 ]; then echo "gh had the terminal" >> "$CALLS"; fi
     echo "! First copy your one-time code: WDJB-MJHT"; echo "Open this URL to continue in your web browser: https://github.com/login/device"
     [ -z "${GH_BROWSER:-}" ] || "$GH_BROWSER" https://github.com/login/device
-    if [ -f "$FT/gh.fail" ]; then echo "error: authentication timed out" >&2; exit 1; fi
+    if [ -f "$FT/gh.fail" ] || fails gh.failn; then echo "error: authentication timed out" >&2; exit 1; fi
     touch "$FT/gh.in"; echo "Logged in as tester" ;;
   "api user") [ -f "$FT/gh.in" ] && printf '%s\n' "$(cat "$FT/gh.login" 2> /dev/null || echo tester)" ;;
-  "repo create") git clone -q "$FT/template" "$3" ;;
+  "repo create") if fails repo.fail; then [ ! -f "$FT/repo.half" ] || mkdir -p "$3/.git"; exit 1; fi; git clone -q "$FT/template" "$3" ;;
 esac
 STUB
   printf '#!/bin/bash\necho "xdg-open $*" >> "$CALLS"\n' > "$F/xdg-open"
-  printf '#!/bin/bash\necho "brew $*" >> "$CALLS"\n[ "$1 $2" = "install gh" ] && cp "$FT/gh.real" "$FT/fakebin/gh"\nexit 0\n' > "$F/brew"
+  printf '#!/bin/bash\n. "$FT/fails.sh"; echo "brew $*" >> "$CALLS"; fails brew.fail && exit 1\n[ "$1 $2" = "install gh" ] && cp "$FT/gh.real" "$FT/fakebin/gh"\nexit 0\n' > "$F/brew"
   printf '#!/bin/bash\nif [ $# -eq 0 ] || [ "$1" = -s ]; then echo Darwin; else exec "%s" "$@"; fi\n' "$(command -v uname)" > "$F/uname"
-  local c; for c in tmux yazi bat glow pdftotext pdftoppm chafa code; do printf '#!/bin/bash\nexit 0\n' > "$F/$c"; done   # the other tools: there
+  local c; for c in tmux yazi bat glow pdftotext pdftoppm chafa code gitleaks; do printf '#!/bin/bash\nexit 0\n' > "$F/$c"; done   # the other tools: there
   chmod +x "$F"/*; cp "$F/gh" "$T/gh.real"; cp "$F/claude" "$T/claude.fake"
   make_template; export ADE_HUB_TEMPLATE_URL="$T/template"; unset DISPLAY ADE_COMPUTER_MARKER
   mkdir -p "$T/cwd"
@@ -70,9 +75,24 @@ if [ "${1:-}" = --list ]; then printf '%-28s %s\n' devops-sre "DevOps / Site Rel
 printf 'init' >> "$FT/init.log"; printf ' [%s]' "$@" >> "$FT/init.log"; echo >> "$FT/init.log"
 [ -t 0 ] && echo "init had a terminal" >> "$FT/init.log"
 if [ -f "$FT/init.fail" ]; then echo "init: the persona files are missing" >&2; exit 1; fi
+. "$FT/fails.sh"; fails init.failn && exit 1
 n=""; while [ $# -gt 0 ]; do [ "$1" = --name ] && n="$2"; shift; done; printf 'HUB_NAME=%s\n' "$n" > hub.conf
+printf '# %s: the hub\n' "$n" > README.md; mkdir -p projects journal; echo first > journal/day.md; git config core.hooksPath .githooks   # rendered
 STUB
-  printf '#!/bin/bash\ncat > /dev/null; echo READY\n' > "$d/bin/agent"
+  echo "# ade-brain, the template" > "$d/README.md"
+  printf '#!/bin/bash\ncat > /dev/null; if [ -f "$FT/agent.fail" ]; then cat "$FT/agent.fail" >&2; exit 1; fi; echo READY\n' > "$d/bin/agent"
+  # bin/sync --yes as the hub's does it: commit what changed (the pre-commit hook path is the hub's), then push when
+  # there is a remote; $FT/sync.fail: one failure per line, before the commit; $FT/push.fail: the same, after it
+  cat > "$d/bin/sync" <<'STUB'
+#!/bin/bash
+. "$FT/fails.sh"; echo "sync $* gitleaks=$(command -v gitleaks > /dev/null && echo yes)" >> "$CALLS"
+fails sync.fail && exit 1
+git add -A; if git diff --cached --quiet; then echo "nothing to sync"; exit 0; fi
+git commit -qm "sync 2026-11-22" || exit 1
+if git remote get-url origin > /dev/null 2>&1; then if fails push.fail; then exit 1; fi; git push -q || { echo "push failed" >&2; exit 1; }; fi
+echo "synced: $(git log -1 --pretty='%h %s')"
+STUB
+  git -C "$d" config receive.denyCurrentBranch ignore   # the fake GitHub: pushes to it are taken
   printf '#!/bin/bash\n[ "${1:-}" = set ] && cat > /dev/null; exit 0\n' > "$d/bin/keys"
   printf '#!/bin/bash\nexit 0\n' > "$d/bin/chat"; printf '#!/bin/bash\necho "NAME FOLDER"\n' > "$d/bin/sessions"
   chmod +x "$d/bin/"*; commit_tag "$d" template
@@ -168,7 +188,8 @@ guide_github_sign_in() {   # AC4
   ! grep -qiE '(password|token)[^.]*: *$' "$T/out" || fail "never a password or token question"
   fresh; fakes; signed_in claude; touch "$T/gh.fail"
   G "" setup; rc=$?; assert_eq "$rc" 1 "a sign-in that does not finish stops"
-  assert_eq "$(last_line)" "ade: the GitHub sign-in did not finish; to try again, run ade setup" "one line, never GitHub's error text last"
+  assert_contains "$T/out" "The GitHub sign-in did not finish; your hub needs GitHub" "one plain line (A18b)"
+  assert_eq "$(last_line)" "ade: stopped (no answer); to come back, run ade setup" "never GitHub's error text last"
   assert_not_contains "$T/out" "Step 4" "and never a hub without GitHub"; assert_not_contains "$T/out" "no-github" "nor the way around it"
   rm "$T/gh.fail"; A setup < /dev/null; assert_eq "$?" 2 "no terminal: the sign-in is refused"
   [ "$(grep -c '^gh auth login' "$CALLS")" = 1 ] || fail "not run without a terminal"
@@ -186,7 +207,8 @@ hub_new_forgives_and_resumes() {   # AC5
   grep -qF "init [--persona] [staff-software-engineer] [--client] [Acme] [--owner] [Sam] [--name] [acme]" "$T/init.log" || { cat "$T/init.log"; fail "validated answers as flags"; }
   assert_not_contains "$T/init.log" "init had a terminal" "bin/init asks nothing"
   touch "$T/init.fail"; G "tech-lead\nAcme\nSam\n" hub new beta; rc=$?; assert_eq "$rc" 1 "bin/init failed"
-  assert_eq "$(last_line)" "ade: the hub's own set-up did not finish; run ade hub new beta again to pick up where it stopped" "one line, no placeholders"
+  assert_contains "$T/out" "The hub's set-up (bin/init) did not finish: init: the persona files are missing" "one plain line (A18b)"
+  assert_eq "$(last_line)" "ade: stopped (no answer); to come back, run ade hub new beta" "and how to come back, no placeholders"
   [ ! -e "$HOME/.config/ade/hubs" ] || ! grep -q beta "$HOME/.config/ade/hubs" || fail "a half-made hub is not saved"
   rm "$T/init.fail"; G "tech-lead\nAcme\nSam\n" hub new beta || { cat "$T/out"; fail "run again: it picks up"; }
   assert_eq "$(grep -c 'repo create beta' "$CALLS")" 1 "the repository is made once"; [ -f "$HOME/hubs/beta/hub.conf" ] || fail "the hub is made"
@@ -236,7 +258,7 @@ guide_in_computer() {   # AC7
 guide_happy_path() {   # AC8
   fresh; fakes; export MAKE_PROJECT=web
   talk "\n\nacme\nstaff software engineer\nAcme\nSam\n1\n\nn\n"; rc=$?
-  sed -e "s#$T#<T>#g" -e 's/ready ([0-9]*s)/ready (Ns)/' "$T/out" > "$T/screen"
+  sed -e "s#$T#<T>#g" -e 's/ready ([0-9]*s)/ready (Ns)/' -e 's/^synced: [0-9a-f]* /synced: <commit> /' "$T/out" > "$T/screen"
   if [ "${UPDATE_GOLDEN:-}" = 1 ]; then cp "$T/screen" "$REPO/tests/golden/guide-80.txt"; echo "golden guide-80 updated" >&2; fi
   diff -u "$REPO/tests/golden/guide-80.txt" "$T/screen" || fail "the first run matches tests/golden/guide-80.txt"
   assert_eq "$rc" 0 "a working hub"
@@ -275,24 +297,30 @@ guide_session_fails() {   # review 4: a guided session that exits non-zero is sa
   fresh; fakes; signed_in claude gh
   A hub new acme --persona tech-lead --client Acme --owner Sam < /dev/null || { cat "$T/out"; fail "hub"; }
   echo "HUB_ROOT_PROVIDER=anthropic" >> "$HOME/hubs/acme/hub.conf"
-  SESSION_EXIT=1 G "n\n" setup; rc=$?
-  assert_contains "$T/out" "Claude Code stopped early (exit 1); run ade setup to come back to this step." "said in one line"
+  SESSION_EXIT=1 G "\nn\n" setup; rc=$?   # A18b: Enter = go on, the step stays not done
+  assert_contains "$T/out" "Claude Code stopped early (exit 1)" "said in one line"; assert_contains "$T/out" "What now? [go-on]:" "asked"
+  for s in "  1) again  start it again" "  2) go-on  go on (this step stays not done)" "  3) stop   stop here"; do assert_contains "$T/out" "$s" "$s"; done
+  assert_contains "$T/out" "Going on; this step is not done: ade setup comes back to it." "go on"
   assert_contains "$T/out" "checked: no project yet" "then checked"
   assert_contains "$T/out" "Not finished: step 5 (Your first project); run ade setup to pick up there." "and the ending"
   assert_eq "$rc" 0 "the guide ran to its end"
   G "n\n" setup; assert_not_contains "$T/out" "stopped early" "a session that exits 0 is not"
+  echo "claude: crashed" > "$T/session.fail"; MAKE_PROJECT=web G "again\nn\n" setup; assert_eq "$?" 0 "start it again"
+  assert_eq "$(grep -c '^claude --' "$CALLS")" 4 "a second session"; assert_contains "$T/out" "checked: your first project is web" "which finished the step"
+  rm -rf "$HOME/hubs/acme/projects"; SESSION_EXIT=1 G "stop\n" setup; assert_eq "$?" 1 "stop"
+  assert_eq "$(last_line)" "What now? [go-on]: ade: stopped; to come back, run ade setup" "how to come back"
 }
 
 hub_new_resume_flags() {   # review 6: the resume line names --dir and --public, and running it again picks up
   fresh; fakes; signed_in claude gh; touch "$T/init.fail"; mkdir -p "$T/elsewhere"
   G "tech-lead\nAcme\nSam\n" hub new pub --public --dir "$T/elsewhere"; assert_eq "$?" 1 "bin/init failed"
-  assert_eq "$(last_line)" "ade: the hub's own set-up did not finish; run ade hub new pub --dir $T/elsewhere --public again to pick up where it stopped" "the whole command"
+  assert_eq "$(last_line)" "ade: stopped (no answer); to come back, run ade hub new pub --dir $T/elsewhere --public" "the whole command"
   assert_contains "$CALLS" "repo create pub --template better-ade/ade-brain --public --clone" "public"
   rm "$T/init.fail"; G "tech-lead\nAcme\nSam\n" hub new pub --public --dir "$T/elsewhere" || { cat "$T/out"; fail "picks up"; }
   assert_contains "$T/out" "Picking up the hub pub where its set-up stopped" "says so"; assert_eq "$(grep -c 'repo create pub' "$CALLS")" 1 "one repository"
   [ ! -e "$T/elsewhere/pub/.git/ade-hub-new" ] && [ -f "$T/elsewhere/pub/hub.conf" ] || fail "finished, marker gone"
   touch "$T/init.fail"; G "tech-lead\nAcme\nSam\n" hub new home1 --dir "$HOME/work"
-  assert_contains "$T/out" "run ade hub new home1 --dir ~/work again" "a folder in the home is written with ~"
+  assert_contains "$T/out" "run ade hub new home1 --dir ~/work" "a folder in the home is written with ~"
   rm "$T/init.fail"; mkdir -p "$T/cwd/hubs"; G "tech-lead\nAcme\nSam\n" hub new rel1 --dir hubs; [ -f "$T/cwd/hubs/rel1/hub.conf" ] || fail "a relative --dir"
   G "" hub new rel1 --dir hubs; assert_eq "$?" 2 "a finished hub is not picked up"
   A hub new rel2 --bogus; assert_eq "$?" 2 "an unknown flag"; assert_contains "$T/out" "usage: ade hub new <name>" "is answered with the usage"
@@ -304,7 +332,7 @@ guide_computer_relay() {   # review 6: the relay passes gh's exit code and outpu
   G "n\n" setup; rc=$?; assert_eq "$rc" 1 "gh's failure comes through the relay"
   assert_contains "$T/out" "error: authentication timed out" "gh's own output passes through"
   assert_contains "$T/out" "Your one-time code, large:" "the code is still shown large"
-  assert_eq "$(last_line)" "ade: the GitHub sign-in did not finish; to try again, run ade setup" "ade's line last"
+  assert_eq "$(last_line)" "ade: stopped (no answer); to come back, run ade setup" "ade's line last"
   assert_contains "$CALLS" "gh env GH_BROWSER=true" "no: the browser stays closed"; assert_not_contains "$CALLS" "xdg-open" "nothing opened"
   rm "$T/gh.fail"; unset ADE_COMPUTER_MARKER; G "" setup; assert_not_contains "$CALLS" "GH_BROWSER=xdg" "outside a computer ade sets no browser"
   [ "$(grep -c '^gh env GH_BROWSER' "$CALLS")" = 1 ] || fail "and none at all outside one"
@@ -323,6 +351,123 @@ guide_installs_claude() {   # review 6: step 1 with Claude Code missing, through
   G "y\n" setup; assert_eq "$?" 1 "a non-https installer"; assert_contains "$T/out" "must be an https URL" "is refused"
 }
 
-ALL="guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
+# A18b: each step's failure is one plain line, where the details are, and a numbered question (the table FAILS in ade)
+wide() {   # the failure exchange (the line said, the details, the choices, the question) fits 80 columns
+  local l; grep -q '^details: ' "$T/out" || fail "no failure exchange in $T/out"
+  while IFS= read -r l; do l="${l%%]: *}"; [ "${#l}" -le 80 ] || fail "wider than 80 columns: [$l]"; done < <(grep -A6 '^details: ' "$T/out")
+}   # (pty_run types ahead with the echo off, so the next line of the screen follows a question on its own line)
+stopped() { assert_eq "$1" 1 "stop: exit 1"; assert_eq "$(last_line | sed 's/^What now? [^:]*: //')" "ade: stopped; to come back, run ${2:-ade setup}" "and how to come back"; }
+guide_install_fails() {   # step 1: try again; the manual command; stop
+  fresh; fakes; rm "$F/claude"; mkdir -p "$T/inst"; fakes_claude_to "$T/claude.real"
+  printf '. "$FT/fails.sh"; fails install.fail && exit 3\nmkdir -p "$HOME/.local/bin"; cp "%s" "$HOME/.local/bin/claude"\n' "$T/claude.real" > "$T/inst/install.sh"
+  export ADE_CLAUDE_INSTALLER="file://$T/inst/install.sh" ADE_TEST_ALLOW_FILE_URLS=1
+  echo "curl: (6) could not resolve host" > "$T/install.fail"; G "y\n\n" setup
+  assert_contains "$T/out" "The Claude Code installer did not finish (exit 3)" "one plain line"; assert_contains "$T/out" "details: in the lines above, from the tool itself" "where"
+  for s in "  1) retry   try again" "  2) manual  show the command to install it yourself" "  3) stop    stop here" "What now? [retry]:"; do assert_contains "$T/out" "$s" "$s"; done
+  assert_contains "$T/out" "checked: Claude Code is installed" "Enter tried again, and it installed"; wide
+  rm -rf "$HOME/.local"; echo x > "$T/install.fail"; G "y\nmanual\n" setup; assert_eq "$?" 1 "manual: stops"
+  assert_contains "$T/out" "  curl -fsSL https://claude.ai/install.sh | bash" "the command"; assert_eq "$(last_line)" "ade: then run ade setup again (in a new terminal, so claude is found)" "and what next"
+  echo x > "$T/install.fail"; G "y\nstop\n" setup; stopped $?
+  printf '#!/bin/bash\nexit 0\n' > "$T/inst/install.sh"; G "y\nstop\n" setup; stopped $?
+  assert_contains "$T/out" "The installer ran, but claude is not on PATH yet" "an installer that installs nothing"
+}
+guide_claude_sign_in_fails() {   # step 2: sign in again; an API key instead; stop
+  fresh; fakes; printf 'Login cancelled\nLogin cancelled\n' > "$T/claude.fail"; G "\n\n\n" setup
+  assert_contains "$T/out" "The Claude sign-in did not finish" "one plain line"
+  for s in "  1) sign-in  sign in again" "  2) key      use an API key instead" "  3) stop     stop here" "What now? [sign-in]:"; do assert_contains "$T/out" "$s" "$s"; done
+  assert_eq "$(grep -c '^claude auth login' "$CALLS")" 3 "Enter signs in again, each time"; assert_contains "$T/out" "checked: signed in to Claude (account)" "until it works"; wide
+  fresh; fakes; echo x > "$T/claude.fail"; G "\nkey\n" setup; assert_contains "$T/out" "checked: your key is asked at step 4, once your hub is made" "a key instead"
+  assert_contains "$T/out" "Step 3 of 6" "and on"
+  fresh; fakes; echo x > "$T/claude.fail"; G "\nstop\n" setup; stopped $?; assert_not_contains "$T/out" "Step 3 of 6" "no further"
+}
+guide_gh_fails() {   # step 3: gh does not install (try again; manual; stop); its sign-in does not finish (again; stop)
+  fresh; fakes; signed_in claude; rm "$F/gh"; printf 'Error: no bottle\nError: no bottle\n' > "$T/brew.fail"
+  G "y\ny\n\ny\n" setup; assert_contains "$T/out" "The GitHub CLI (gh) is not installed yet; your hub needs it" "one plain line"
+  for s in "  1) retry   try again" "  2) manual  show the command to install it yourself" "  3) stop    stop here"; do assert_contains "$T/out" "$s" "$s"; done
+  assert_eq "$(grep -c '^brew install gh' "$CALLS")" 3 "Enter tried again"; assert_contains "$T/out" "checked: signed in to GitHub as tester" "then signed in"; wide
+  assert_not_contains "$T/out" "no-github" "GitHub stays required"; assert_not_contains "$T/out" "go-on" "no going on without it"
+  fresh; fakes; signed_in claude; rm "$F/gh"; printf 'x\nx\n' > "$T/brew.fail"; G "y\ny\nmanual\n" setup; assert_eq "$?" 1 "manual: stops"
+  assert_contains "$T/out" "  brew install gh" "the command"; assert_eq "$(last_line)" "ade: then run ade setup" "and what next"
+  fresh; fakes; signed_in claude; rm "$F/gh"; printf 'x\nx\n' > "$T/brew.fail"; G "y\ny\nstop\n" setup; stopped $?
+  fresh; fakes; signed_in claude; echo x > "$T/gh.failn"; G "\n" setup
+  for s in "The GitHub sign-in did not finish; your hub needs GitHub" "  1) sign-in  sign in again" "  2) stop     stop here" "What now? [sign-in]:"; do assert_contains "$T/out" "$s" "$s"; done
+  assert_eq "$(grep -c '^gh auth login' "$CALLS")" 2 "Enter signs in again"; assert_contains "$T/out" "checked: signed in to GitHub as tester" "and it worked"
+  fresh; fakes; signed_in claude; echo x > "$T/gh.failn"; G "stop\n" setup; stopped $?; assert_not_contains "$T/out" "Step 4" "never a hub without GitHub"
+}
+guide_repo_fails() {   # step 4: the name is taken; not signed in or no permission; another error; never a half-made hub
+  fresh; fakes; signed_in claude gh; echo "GraphQL: Name already exists on this account (createRepository)" > "$T/repo.fail"
+  G "acme\n\nacme2\ntech-lead\nAcme\nSam\n" setup
+  assert_contains "$T/out" "GitHub already has a repository named acme on your account" "one plain line"; assert_contains "$T/out" "details: ~/.config/ade/last-failure" "where"
+  for s in "  1) name   pick another name" "  2) retry  try again" "  3) stop   stop here" "What now? [name]:"; do assert_contains "$T/out" "$s" "$s"; done
+  grep -q "Name already exists" "$HOME/.config/ade/last-failure" || fail "gh's own text is kept there"; assert_not_contains "$T/out" "GraphQL" "not on the screen"
+  [ -f "$HOME/hubs/acme2/hub.conf" ] && [ ! -e "$HOME/hubs/acme" ] || fail "the other name is the hub"; wide
+  echo "error: not logged in to github.com; run gh auth login" > "$T/repo.fail"; G "\ntech-lead\nAcme\nSam\n" hub new b1 || { cat "$T/out"; fail "sign in again"; }
+  assert_contains "$T/out" "GitHub refused: not signed in, or no permission to make b1" "said"; assert_contains "$T/out" "What now? [sign-in]:" "the default"
+  assert_contains "$T/out" "  1) sign-in  sign in to GitHub again" "choice 1"; assert_eq "$(grep -c '^gh auth login' "$CALLS")" 1 "GitHub's own sign-in"
+  [ -f "$HOME/hubs/b1/hub.conf" ] || fail "then the repository"
+  echo "fatal: unable to access the network" > "$T/repo.fail"; touch "$T/repo.half"; G "\ntech-lead\nAcme\nSam\n" hub new c1 || { cat "$T/out"; fail "try again"; }
+  assert_contains "$T/out" "GitHub did not make the repository c1: fatal: unable to access the network" "the reason"; assert_contains "$T/out" "What now? [retry]:" "the default"
+  [ -f "$HOME/hubs/c1/hub.conf" ] || fail "the half-made clone was cleared and the second try made it"
+  echo x > "$T/repo.fail"; G "stop\n" hub new d1; stopped $? "ade hub new d1"; [ ! -e "$HOME/hubs/d1" ] || fail "no half-made hub is left"
+  echo "name already exists" > "$T/repo.fail"; G "\nb1\ne2\n" hub new e1; assert_contains "$T/out" "~/hubs/b1 is taken; type another name" "a taken folder is asked again"
+  assert_eq "$(last_line)" "ade: stopped (no answer); to come back, run ade hub new e2" "the command names the new name"
+}
+guide_init_fails() {   # step 4: the hub's own set-up: try again from where it stopped; stop
+  fresh; fakes; signed_in claude gh; echo "init: the disk is full" > "$T/init.failn"
+  G "tech-lead\nAcme\nSam\n\n" hub new i1 || { cat "$T/out"; fail "try again"; }
+  assert_contains "$T/out" "The hub's set-up (bin/init) did not finish: init: the disk is full" "one plain line"
+  for s in "details: ~/.config/ade/last-failure" "  1) retry  try again from where it stopped" "  2) stop   stop here" "What now? [retry]:"; do assert_contains "$T/out" "$s" "$s"; done
+  assert_eq "$(grep -c '^init \[--persona\] \[tech-lead\]' "$T/init.log")" 2 "the same answers, not asked again"; assert_eq "$(grep -c 'repo create i1' "$CALLS")" 1 "one repository"
+  assert_eq "$(cat "$HOME/.config/ade/hub")" "$HOME/hubs/i1" "then saved"; wide
+  echo x > "$T/init.failn"; G "tech-lead\nAcme\nSam\nstop\n" hub new i2; stopped $? "ade hub new i2"
+  ! grep -q i2 "$HOME/.config/ade/hubs" || fail "a half-made hub is not saved"; [ -f "$HOME/hubs/i2/.git/ade-hub-new" ] || fail "it is marked, to pick up"
+}
+guide_live_test_fails() {   # the owner's case: the Claude account is at its limit when the everything agent is picked
+  fresh; fakes; signed_in claude gh; mkdir -p "$HOME/.local/agent-out"; : > "$HOME/.local/agent-out/live.err"
+  printf "agent: live test of anthropic:haiku failed: the engine exited with 1: You've hit your weekly limit · resets Nov 25 at 2am (Asia/Manila); details: %s\n" "$HOME/.local/agent-out/live.err" > "$T/agent.fail"
+  talk "acme\ntech-lead\nAcme\nSam\n1\n\x03\n" setup; assert_eq "$?" 130 "Ctrl-C leaves"
+  assert_eq "$(last_line)" "ade: stopped; to come back, run ade setup" "with the line on how to come back"
+  touch "$T/login.fixes"; talk "1\n\n\n" setup; sed -e "s#$T#<T>#g" -e 's/ready ([0-9]*s)/ready (Ns)/' "$T/out" > "$T/screen"; cp "$T/screen" "$T/out"
+  local l; while IFS= read -r l; do [ "${#l}" -le 80 ] || fail "wider than 80 columns: [$l]"; done < "$T/out"
+  [ -z "${SHOW_EXCHANGE:-}" ] || cat "$T/screen" >&2
+  assert_contains "$T/out" "This Claude account has reached its limit; it resets Nov 25 at 2am (Asia/Manila)" "one plain line"
+  assert_contains "$T/out" "details: ~/.local/agent-out/live.err" "where the details are"; assert_not_contains "$T/out" "live test of" "no raw dump"
+  assert_contains "$T/out" "What now? [sign-in]:" "asked, the default signs in"; assert_contains "$CALLS" "claude had the terminal" "Claude Code's own sign-in, on the terminal"
+  assert_contains "$T/out" "anthropic: ready (Ns)" "then the test again"; assert_contains "$T/out" "everything agent: anthropic" "and on"
+  fresh; fakes; signed_in claude gh; echo "agent: boom" > "$T/agent.fail"
+  G "acme\ntech-lead\nAcme\nSam\n1\ngo-on\n\nn\n" setup; assert_contains "$T/out" "checked: your hub is acme (~/hubs/acme); anthropic not tested" "go on: said at the check"
+  G "" setup; grep -E '\[x\] 4\. Your hub +acme \(~/hubs/acme\); anthropic not tested' "$T/out" > /dev/null || { cat "$T/out"; fail "and in the list"; }
+}
+
+guide_first_save() {   # A18b: the hub as bin/init rendered it is committed and pushed, the hub's own way (bin/sync --yes)
+  fresh; fakes; signed_in claude gh; local h="$HOME/hubs/s1" tpl="$T/template" before b; b="$(git -C "$T/template" symbolic-ref --short HEAD)"
+  G "tech-lead\nAcme\nSam\n" hub new s1 || { cat "$T/out"; fail "hub new"; }
+  assert_contains "$T/out" "Saving the hub's first version to your private GitHub repository (bin/sync):" "said before it happens"
+  assert_contains "$T/out" "synced: " "bin/sync's own line"; assert_contains "$CALLS" "sync --yes gitleaks=yes" "the hub's own way, with its secret scan"
+  assert_eq "$(git -C "$tpl" show "$b:README.md")" "# s1: the hub" "GitHub shows the hub's README, not the template's"
+  for f in hub.conf journal/day.md; do git -C "$tpl" cat-file -e "$b:$f" || fail "the first commit holds $f"; done
+  assert_eq "$(git -C "$h" status --porcelain)" "" "nothing is left uncommitted"
+  assert_eq "$(git -C "$h" log -1 --format='%an <%ae> / %cn <%ce>')" "t <t@t> / t <t@t>" "the person's own git identity"
+  ! git -C "$h" log -1 --format=%B | grep -qiE "co-authored|generated|claude|anthropic" || fail "no AI attribution in the commit"
+  ! grep -qE "push.*(-f|--force)" "$ADE" || fail "ade never force-pushes"
+  before="$(git -C "$tpl" rev-parse "$b")"; A hub new local2 --no-github --persona tech-lead --client c --owner o < /dev/null || { cat "$T/out"; fail "--no-github"; }
+  assert_contains "$T/out" "Saving the hub's first version (a commit here; no GitHub, so nothing is pushed):" "said"
+  assert_eq "$(git -C "$HOME/hubs/local2" status --porcelain)" "" "committed"; assert_eq "$(git -C "$tpl" rev-parse "$b")" "$before" "nothing pushed with --no-github"
+  echo "error: failed to push some refs" > "$T/push.fail"; G "tech-lead\nAcme\nSam\n\n" hub new s2 || { cat "$T/out"; fail "try again"; }
+  assert_contains "$T/out" "The hub's first version was not saved: error: failed to push some refs" "a failed push, in one line"
+  for s in "details: ~/.config/ade/last-failure" "  1) retry  try again" "  2) go-on  go on (save it later, with the command shown)" "  3) stop   stop here" "What now? [retry]:"; do assert_contains "$T/out" "$s" "$s"; done
+  assert_eq "$(git -C "$tpl" show "$b:README.md")" "# s2: the hub" "try again pushed the commit that was made"; wide
+  echo x > "$T/push.fail"; G "tech-lead\nAcme\nSam\ngo-on\n" hub new s3; assert_eq "$?" 0 "go on: the hub is made"
+  assert_contains "$T/out" "Going on; to save it later: cd ~/hubs/s3 && bin/sync --yes && git push" "with the command for later"
+  [ -n "$(git -C "$HOME/hubs/s3" rev-list '@{u}..HEAD')" ] || fail "the commit is kept, to push later"; assert_eq "$(cat "$HOME/.config/ade/hub")" "$HOME/hubs/s3" "the hub is saved in ade"
+  echo "fatal: unable to auto-detect email address; Please tell me who you are" > "$T/sync.fail"; G "tech-lead\nAcme\nSam\nstop\n" hub new s4; stopped $? "ade hub new s4"
+  assert_contains "$T/out" "git has no name and email yet: git config --global user.name and user.email" "no git identity: said plainly"
+  rm "$F/gitleaks"; : > "$CALLS"; G "tech-lead\nAcme\nSam\n" hub new s5 || { cat "$T/out"; fail "no gitleaks is not an error"; }
+  assert_contains "$T/out" "Not saved yet: the hub's secret scan (gitleaks) is not set up here, and ade" "no secret scan: said"
+  assert_contains "$T/out" "does not commit without it. Later (install gitleaks first): cd ~/hubs/s5 && bin/sync --yes && git push" "with the command"
+  assert_not_contains "$CALLS" "sync --yes" "and nothing is committed without it"; [ -n "$(git -C "$HOME/hubs/s5" status --porcelain)" ] || fail "left as it was"
+}
+
+ALL="guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

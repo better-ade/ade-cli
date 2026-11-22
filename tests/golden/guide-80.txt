@@ -39,6 +39,8 @@ The kind of teammate this hub's main agent acts as (pick the closest):
 Kind of teammate (1-4): staff software engineer
 Who this hub works for (a client or your team; shown in the hub): Acme
 Owner (your name, as it should appear in the hub): Sam
+Saving the hub's first version to your private GitHub repository (bin/sync):
+synced: <commit> sync 2026-11-22
 default hub: ~/hubs/acme
 Your everything agent (the orchestrator) is the one agent you talk to; it hands
 work to the others. Pick the AI service it uses (one; later: ade setup --top):

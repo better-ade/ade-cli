@@ -553,8 +553,31 @@ cmd_hub() {
 # has not finished is marked (.git/ade-hub-new, never committed), so ade hub new <name> again picks up there (A18).
 # shellcheck disable=SC2088  # a literal ~ for the person to read
 tilde() { case "$1" in "$HOME") printf '~' ;; "$HOME"/*) printf '~/%s' "${1#"$HOME"/}" ;; *) printf '%s' "$1" ;; esac; }
+# hub_first_save <hub> <gh 0|1> <--private|--public>: the hub as bin/init rendered it (its own README, hub.conf's
+# neighbours, the first folders) is committed and pushed the hub's own way, bin/sync --yes: hub files only, the
+# person's git identity, the hub's pre-commit secret scan. Never without that scan (gitleaks, and the hooks path
+# bin/init sets), never a forced push; with --no-github there is no remote and so no push. A push that failed after
+# the commit is finished with a plain git push. A hub without bin/sync is left as it is.
+hub_first_save() {
+  local hub="$1" why later; later="cd $(tilde "$1") && bin/sync --yes && git push"
+  [ -x "$hub/bin/sync" ] || return 0
+  if ! command -v gitleaks > /dev/null 2>&1 || [ "$(git -C "$hub" config core.hooksPath)" != .githooks ]; then
+    echo "Not saved yet: the hub's secret scan (gitleaks) is not set up here, and ade"
+    echo "does not commit without it. Later (install gitleaks first): $later"; return 0
+  fi
+  if [ "$2" = 1 ]; then echo "Saving the hub's first version to your ${3#--} GitHub repository (bin/sync):"
+  else echo "Saving the hub's first version (a commit here; no GitHub, so nothing is pushed):"; fi
+  until run_logged "$hub" env HUB="$hub" ./bin/sync --yes &&
+    { [ -z "$(git -C "$hub" rev-list '@{u}..HEAD' 2> /dev/null)" ] || run_logged "$hub" git push -q; }; do
+    why="The hub's first version was not saved: $FAIL_LINE"
+    case "$FAIL_TEXT" in *"tell me who you are"*|*"user.email"*|*"user.name"*) why="git has no name and email yet: git config --global user.name and user.email" ;; esac
+    failed first-save "$why" "$FAIL_FILE"
+    [ "$CHOICE" = retry ] || { echo "Going on; to save it later: $later"; return 0; }
+  done
+}
+hub_again() { printf 'ade hub new %s' "$1"; [ "$2" = "$HOME/hubs" ] || printf ' --dir %s' "$(tilde "$2")"; [ "$3" != --public ] || printf ' --public'; }   # <name> <dir> <vis>
 hub_new() {
-  local name="${1:-}" vis=--private dir="$HOME/hubs" gh=1 target persona="" client="" owner="" resume=0 v why; [ $# -gt 0 ] && shift
+  local name="${1:-}" vis=--private dir="$HOME/hubs" gh=1 target persona="" client="" owner="" resume=0 v why kind own=0; [ $# -gt 0 ] && shift
   while [ $# -gt 0 ]; do case "$1" in
     --private|--public) vis="$1"; shift ;;
     --persona|--client|--owner) [ $# -ge 2 ] && [ -n "$2" ] || die 2 "$1 needs a value"
@@ -567,15 +590,26 @@ hub_new() {
   matches "$name" '^[a-z0-9][a-z0-9-]{0,63}$' || die 2 "hub names are lower-case letters, digits and - (start with a letter or digit, at most 64; e.g. acme-sre)"
   case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
   target="$dir/$name"
-  [ -n "$ASK_AGAIN" ] || ASK_AGAIN="ade hub new $name$([ "$dir" = "$HOME/hubs" ] || printf ' --dir %s' "$(tilde "$dir")")$([ "$vis" = --public ] && printf ' --public')"
+  [ -n "$ASK_AGAIN" ] || own=1
+  [ "$own" = 0 ] || ASK_AGAIN="$(hub_again "$name" "$dir" "$vis")"
   if [ -e "$target" ]; then
     [ -f "$target/.git/ade-hub-new" ] || die 2 "$target already exists; pick another name or --dir"
     resume=1; echo "Picking up the hub $name where its set-up stopped ($(tilde "$target"))."
   elif [ "$gh" = 1 ]; then
     github_ready || exit $?
     mkdir -p "$dir" || die 1 "cannot create $dir"
-    (cd "$dir" && gh repo create "$name" --template "$ADE_HUB_TEMPLATE" "$vis" --clone) ||
-      die 1 "GitHub did not make the repository $name (the reason is above); pick another name, or run $ASK_AGAIN again"
+    until run_logged "$dir" gh repo create "$name" --template "$ADE_HUB_TEMPLATE" "$vis" --clone; do
+      [ ! -d "$target" ] || rm -rf -- "$target"   # a clone this try left half-made (the folder was not there before it)
+      case "$FAIL_TEXT" in
+        *"already exists"*) kind="repo-taken"; why="GitHub already has a repository named $name on your account" ;;
+        *"not logged in"*|*"gh auth login"*|*authenticat*|*credentials*|*permission*|*forbidden*|*"http 401"*|*"http 403"*|*"not accessible"*|*saml*)
+          kind="repo-auth"; why="GitHub refused: not signed in, or no permission to make $name" ;;
+        *) kind="repo-create"; why="GitHub did not make the repository $name: $FAIL_LINE" ;;
+      esac
+      failed "$kind" "$why" "$FAIL_FILE"
+      case "$CHOICE" in sign-in) gh_login || true ;;
+        name) ask_hub_name "$dir"; name="$ANSWER"; target="$dir/$name"; [ "$own" = 0 ] || ASK_AGAIN="$(hub_again "$name" "$dir" "$vis")" ;; esac
+    done
   else
     mkdir -p "$dir" || die 1 "cannot create $dir"
     git clone -q "$ADE_HUB_TEMPLATE_URL" "$target" || die 1 "could not clone $ADE_HUB_TEMPLATE_URL"
@@ -597,10 +631,12 @@ hub_new() {
   elif [ -z "$persona" ]; then ask_text "The kind of teammate this hub's main agent acts as:"; persona="$ANSWER"; fi
   [ -n "$client" ] || { ask_text "Who this hub works for (a client or your team; shown in the hub):"; client="$ANSWER"; }
   [ -n "$owner" ] || { ask_text "Owner (your name, as it should appear in the hub):"; owner="$ANSWER"; }
-  (cd "$target" && HUB="$target" && export HUB && ./bin/init --persona "$persona" --client "$client" --owner "$owner" --name "$name" < /dev/null) &&
-    is_hub "$target" || die 1 "the hub's own set-up did not finish; run $ASK_AGAIN again to pick up where it stopped"
+  until run_logged "$target" env HUB="$target" ./bin/init --persona "$persona" --client "$client" --owner "$owner" --name "$name" && is_hub "$target"; do
+    failed hub-init "The hub's set-up (bin/init) did not finish${FAIL_LINE:+: $FAIL_LINE}" "${FAIL_LINE:+$FAIL_FILE}"
+  done
   rm -f "$target/.git/ade-hub-new"
   target="$(cd "$target" && pwd -P)"; remember_hub "$target"
+  hub_first_save "$target" "$gh" "$vis"
   echo "default hub: $(tilde "$target")"; [ "${GUIDE_ON:-0}" = 1 ] || echo "next: ade (what to do next)"
 }
 
@@ -765,20 +801,76 @@ ask_secret() {   # ask_secret <prompt>: a hidden answer into SECRET (not echoed,
   echo; [ "$rc" = 0 ] || die 1 "setup stopped: no answer"
 }
 yes_no() { ask_yn "$1" n; }
+
+# When a step of the guide fails (A18b): one plain line saying what went wrong, where the details are, then a numbered
+# question, the same everywhere. FAILS has one row per kind of failure: kind|default|choice=what it does;... A new step
+# adds its row and calls failed. "stop" (exit 1), the end of input (1) and Ctrl-C (130) leave ade with the line on how
+# to come back. A tool that owns the terminal (a sign-in, an installer, a session) keeps its own lines on the screen;
+# a tool that asks nothing runs through run_logged, and its lines go to ~/.config/ade/last-failure when it fails.
+FAILS='
+live-top-account|retry|sign-in=sign in with a different Claude account;retry=try again;another=use another AI service;go-on=go on without the test
+live-top-key|retry|key=enter the key again;retry=try again;another=use another AI service;go-on=go on without the test
+live-top-check|retry|key=enter the key again;retry=try again;another=use another AI service
+live-focus-account|retry|sign-in=sign in with a different Claude account;retry=try again;skip=leave this service out
+live-focus-key|retry|key=enter the key again;retry=try again;skip=leave this service out
+install|retry|retry=try again;manual=show the command to install it yourself;stop=stop here
+sign-in|sign-in|sign-in=sign in again;key=use an API key instead;stop=stop here
+gh-sign-in|sign-in|sign-in=sign in again;stop=stop here
+repo-taken|name|name=pick another name;retry=try again;stop=stop here
+repo-auth|sign-in|sign-in=sign in to GitHub again;retry=try again;stop=stop here
+repo-create|retry|retry=try again;name=pick another name;stop=stop here
+hub-init|retry|retry=try again from where it stopped;stop=stop here
+first-save|retry|retry=try again;go-on=go on (save it later, with the command shown);stop=stop here
+session|go-on|again=start it again;go-on=go on (this step stays not done);stop=stop here
+telegram|retry|token=enter the token again;retry=try again;skip=skip Telegram;stop=stop here
+key-store|key|key=enter it again;stop=stop here
+'
+# plain <text>: text from another tool as one line ade may print: ASCII only, no control character, key-shaped text hidden
+plain() { printf '%s' "$1" | LC_ALL=C tr -cd ' -~' | tr -s ' ' | cut -c1-4000 | redact; }
+# failed <kind> <what went wrong> [where the details are] [default] [one more line]: the answer in CHOICE (never stop)
+failed() {
+  local row o opts=() bye="stopped; to come back, run ${ASK_AGAIN:-the same command again}"
+  row="$(printf '%s\n' "$FAILS" | awk -F '|' -v k="$1" '$1 == k { print $2 "|" $3; exit }')"
+  printf '%s\n' "$(plain "$2")" | cut -c1-80; printf 'details: %s\n' "${3:-in the lines above, from the tool itself}" | cut -c1-80
+  [ -z "${5:-}" ] || echo "$5"
+  while IFS= read -r o; do [ -z "$o" ] || opts+=("${o%%=*}|${o#*=}"); done <<EOF
+$(printf '%s' "${row#*|}" | tr ';' '\n')
+EOF
+  trap 'echo; die 130 "$bye"' INT
+  ask_choice "What now?" "${4:-${row%%|*}}" "${opts[@]}" || die 1 "$bye"
+  trap - INT; [ "$CHOICE" != stop ] || die 1 "$bye"
+}
+# run_logged <folder> <command...>: a tool that asks nothing, run in that folder with no input. Its lines are shown when
+# it works; when it fails they go to ~/.config/ade/last-failure (0600, key-shaped text hidden), FAIL_LINE is its last
+# line and FAIL_TEXT all of it in lower case, for the caller to tell one failure from another.
+# shellcheck disable=SC2088  # a literal ~ for the person to read
+FAIL_FILE="~/.config/ade/last-failure"; FAIL_LINE=""; FAIL_TEXT=""
+run_logged() {
+  local d="$1" out rc; shift; FAIL_LINE=""; FAIL_TEXT=""
+  out="$( (cd "$d" && "$@") 2>&1 < /dev/null)"; rc=$?
+  if [ "$rc" = 0 ]; then [ -z "$out" ] || printf '%s\n' "$out" | no_ctl; return 0; fi
+  printf '%s\n' "$out" | no_ctl | LC_ALL=C redact | write_conf_file last-failure
+  FAIL_LINE="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1)"; [ -n "$FAIL_LINE" ] || FAIL_LINE="exit $rc"
+  FAIL_TEXT="$(printf '%s' "$out" | LC_ALL=C tr 'A-Z' 'a-z')"; return "$rc"
+}
 hub_run() { local hub="$1" s="$2"; shift 2; [ -x "$hub/bin/$s" ] || die 2 "this hub has no bin/$s; update it"; ( HUB="$hub"; export HUB; "$hub/bin/$s" "$@" ); }
 
 store_key() {   # store_key <hub> <tool>: hidden prompt, then the hub's bin/keys set <tool> on stdin; 1 = skipped
-  local hub="$1" tool="$2"
-  ask_secret "Paste the $tool key (hidden; empty skips):"
-  [ -n "$SECRET" ] || { SECRET=""; return 1; }
-  printf '%s\n' "$SECRET" | hub_run "$hub" keys set "$tool" > /dev/null; local rc=$?
-  SECRET=""; [ "$rc" = 0 ] || die 1 "bin/keys could not store the $tool key"
+  local hub="$1" tool="$2" rc
+  while :; do
+    ask_secret "Paste the $tool key (hidden; empty skips):"
+    [ -n "$SECRET" ] || { SECRET=""; return 1; }
+    printf '%s\n' "$SECRET" | hub_run "$hub" keys set "$tool" > /dev/null; rc=$?; SECRET=""
+    [ "$rc" != 0 ] || break
+    failed key-store "The $tool key was not stored (the hub's bin/keys set $tool, exit $rc)"
+  done
   record_key "$hub" "$tool"
   echo "$tool key stored in the hub's key store"
 }
 
 # live_test <hub> <provider>: one tiny read-only task in a throwaway folder through the hub's bin/agent --live-test.
-# Prints "<p>: ready (Ns)" or "<p>: failed (<reason>)"; returns 0 only when ready.
+# Prints "<p>: ready (Ns)" or "<p>: failed (<reason>)" (not with a third argument: the caller says it, live_failed);
+# returns 0 only when ready. LIVE_RAW is the engine's last line as it came.
 SCRUB_VARS="ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_CUSTOM_HEADERS CLAUDE_CODE_OAUTH_TOKEN
   CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_VERTEX DEEPSEEK_API_KEY GEMINI_API_KEY GOOGLE_API_KEY ZAI_API_KEY GLM_API_KEY
   TELEGRAM_BOT_TOKEN"
@@ -786,25 +878,80 @@ SCRUB_VARS="ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN ANTHROPIC_BASE_URL ANTHROPIC_
 redact() { sed -E 's#bot[0-9]+:[A-Za-z0-9_-]+#bot<hidden>#g; s#(sk|pk|ak|key)-[A-Za-z0-9_-]{8,}#<hidden key>#g; s#[A-Za-z0-9_-]{32,}#<hidden>#g'; }
 live_test() {
   local hub="$1" p="$2" tmp out rc t0 why
-  tmp="$(mk_tmp)" || { echo "$p: failed (no temp folder)"; return 1; }
+  LIVE_RAW="no temp folder"
+  tmp="$(mk_tmp)" || { [ -n "${3:-}" ] || echo "$p: failed (no temp folder)"; return 1; }
   t0=$(date +%s)
   # run from the throwaway folder only; no provider key or backend switch from this shell reaches the test
   out="$(cd "$tmp" && { unset $SCRUB_VARS; printf '%s\n' "$LIVE_TASK" | AGENT_TIMEOUT=120 hub_run "$hub" agent --live-test "$p" --dir "$tmp"; } 2>&1)"; rc=$?
   rm_tmp "$tmp"
   if [ "$rc" = 0 ] && printf '%s\n' "$out" | tr -d '\r' | grep -qx '[[:space:]]*READY[[:space:]]*'; then
     echo "$p: ready ($(( $(date +%s) - t0 ))s)"; return 0; fi
-  why="$(printf '%s\n' "$out" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -1 | redact | cut -c1-200)"
-  [ "$rc" = 0 ] && [ -n "$why" ] && why="no READY line; it said: $why"
-  echo "$p: failed (${why:-exit $rc})"; return 1
+  LIVE_RAW="$(printf '%s\n' "$out" | tr -d '\r' | grep -v '^[[:space:]]*$' | tail -1)"
+  why="$(printf '%s\n' "$LIVE_RAW" | redact | cut -c1-200)"
+  [ "$rc" = 0 ] && [ -n "$why" ] && { why="no READY line; it said: $why"; LIVE_RAW="no READY line; it said: $LIVE_RAW"; }
+  [ -n "$LIVE_RAW" ] || LIVE_RAW="exit $rc"
+  [ -n "${3:-}" ] || echo "$p: failed (${why:-exit $rc})"; return 1
+}
+# live_explain <provider> <account|key>: the failed test in plain words, from LIVE_RAW: LIVE_LINE (a usage limit and when
+# it resets, a sign-in problem, else the engine's reason), LIVE_KIND (limit, sign-in, other) and LIVE_DETAILS (the
+# file the hub named when it is there, its folder when the name was hidden, else the command that shows the message)
+LIVE_RAW=""; LIVE_LINE=""; LIVE_KIND=other; LIVE_DETAILS=""
+LIMIT_RE='(hit|reached|exceeded|over) [a-z0-9 -]*limit|usage limit|rate limit|limit reached|out of (credits|quota)'
+SIGNIN_RE='not (signed|logged) in|/login|(sign-in|login|session|token) (has |is )?(expired|revoked)|authentication|unauthori[sz]ed|invalid (api )?key|key was rejected|(^|[^0-9])401([^0-9]|$)'
+RESETS_RE='[Rr]esets? ([A-Za-z0-9 :,]*[A-Za-z0-9]( \([A-Za-z0-9_/+-]+\))?)'
+PATH_RE='^/[A-Za-z0-9_./@%+=:,-]+$'
+live_explain() {
+  local p="$1" raw msg low d when=""
+  raw="$(printf '%s' "$LIVE_RAW" | LC_ALL=C tr -cd ' -~' | tr -s ' ' | cut -c1-4000)"
+  msg="$(plain "${raw%%; details: *}")"; msg="${msg#agent: }"
+  case "$msg" in "live test of "*" failed: "*) msg="${msg#live test of * failed: }" ;; esac
+  low="$(printf '%s' "$msg" | tr 'A-Z' 'a-z')"
+  if matches "$low" "$LIMIT_RE"; then LIVE_KIND=limit
+    if [ "$2" = account ]; then LIVE_LINE="This Claude account has reached its limit"; else LIVE_LINE="The $p key has reached its limit"; fi
+    matches "$msg" "$RESETS_RE" && when="${BASH_REMATCH[1]}"
+    [ $((${#LIVE_LINE} + ${#when} + 12)) -le 80 ] || when="${when%% (*}"
+    [ -z "$when" ] || LIVE_LINE="$LIVE_LINE; it resets $when"
+  elif matches "$low" "$SIGNIN_RE"; then LIVE_KIND=sign-in
+    if [ "$2" = account ]; then LIVE_LINE="Claude Code is not signed in, or its sign-in has expired"; else LIVE_LINE="The $p key was not accepted"; fi
+  else LIVE_KIND=other; LIVE_LINE="$p: ${msg:-the live test failed}"; fi
+  d=""; case "$raw" in *"; details: /"*) d="/${raw##*; details: /}" ;; esac
+  LIVE_DETAILS="ade setup --test $p shows the engine's own message"
+  if matches "$d" "$PATH_RE" && [ -f "$d" ]; then LIVE_DETAILS="$(tilde "$d")"
+  elif matches "${d%/*}" "$PATH_RE" && [ -d "${d%/*}" ]; then LIVE_DETAILS="the newest file in $(tilde "${d%/*}")"; fi
+}
+# live_failed <hub> <provider> <account|key|""> <top|focus>: says why, asks, and does it. 0 = the test passed after
+# all; 1 = another service (top) or left out (focus); 3 = go on without the test (the everything agent only, and
+# never GLM or Muse: story A5 lets only a tested service into a role)
+live_failed() {
+  local hub="$1" p="$2" how="$3" role="$4" kind note def
+  [ -n "$how" ] || { if [ "$p" = anthropic ] && ! key_stored "$hub" anthropic; then how=account; else how=key; fi; }
+  while :; do kind="live-$role-$how"; note=""
+    case "$role:$p" in top:glm|top:muse) kind="live-top-check"; note="$p cannot be the everything agent until its live check passes" ;;
+      focus:*) note="A focus agent uses a service only once its test passed, so $p cannot go on untested." ;; esac
+    live_explain "$p" "$how"; def=retry; [ "$LIVE_KIND" = other ] || def="$how"; [ "$def" != account ] || def=sign-in
+    failed "$kind" "$LIVE_LINE" "$LIVE_DETAILS" "$def" "$note"
+    case "$CHOICE" in
+      sign-in) claude_login || { echo "the Claude sign-in did not finish"; continue; } ;;
+      key) unsign "$p"; sign_in "$hub" "$p" key || continue ;;
+      another|skip) return 1 ;; go-on) return 3 ;;
+    esac
+    live_test "$hub" "$p" quiet && return 0
+  done
 }
 
+# claude_login: Claude Code's own sign-in, on the person's terminal, as step 2 of the guide runs it; ade reads, stores
+# and prints nothing of it. 1 = it did not finish (or an agent asked: a person signs in)
+claude_login() {
+  if agent_context; then echo "a person signs in to Claude, at a terminal; an agent cannot"; return 1; fi
+  claude auth login
+}
 claude_signed_in() { if [ -n "${1:-}" ]; then hub_claude "$1" auth status; else claude auth status; fi > /dev/null 2>&1; }   # [hub]
 key_stored() { hub_run "$1" keys 2> /dev/null | awk -v n="$2" '$1 == n && $2 == "stored" { f = 1 } END { exit !f }'; }
 
 # sign_in <hub> <provider> [account|key]: account = Claude Code's own login (ade stores nothing); else a key
-SIGNED=""
+SIGNED=""; SIGN_HOW=""   # SIGN_HOW: account or key, when sign_in settled it for Claude Code
 sign_in() {
-  local hub="$1" p="$2" how="${3:-}"
+  local hub="$1" p="$2" how="${3:-}"; SIGN_HOW=""
   case " $SIGNED " in *" $p "*) return 0 ;; esac
   if [ "$p" = anthropic ]; then
     if [ -z "$how" ]; then
@@ -812,14 +959,16 @@ sign_in() {
       ask_choice "Claude Code: sign in with" account "account|your Claude account" "key|an Anthropic API key"; how="$CHOICE"
     fi
     if [ "$how" = account ]; then
-      claude_signed_in || claude auth login || { echo "anthropic: sign-in did not finish"; return 1; }
-      SIGNED="$SIGNED $p"; return 0
+      until claude_signed_in || claude auth login; do failed sign-in "The Claude sign-in did not finish"; [ "$CHOICE" = sign-in ] || { how=key; break; }; done
+      [ "$how" = key ] || { SIGNED="$SIGNED $p"; SIGN_HOW=account; return 0; }
     fi
+    SIGN_HOW=key
   fi
   if [ "$p" = gemini ] && command -v "${ADE_GEMINI_CLI:-gemini}" > /dev/null 2>&1; then
     ask_choice "Gemini: sign in with" account "account|your Google account in the Gemini CLI" "key|a Gemini API key"
     case "$CHOICE" in key) ;; *) echo "The Gemini CLI opens: pick \"Login with Google\", then leave it (/quit); ade stores nothing."
-      "${ADE_GEMINI_CLI:-gemini}" || { echo "gemini: sign-in did not finish"; return 1; }; SIGNED="$SIGNED $p"; return 0 ;; esac
+      until "${ADE_GEMINI_CLI:-gemini}"; do failed sign-in "The Gemini sign-in did not finish"; [ "$CHOICE" = sign-in ] || break; done
+      [ "$CHOICE" = key ] || { SIGNED="$SIGNED $p"; return 0; } ;; esac
   fi
   store_key "$hub" "$p" || { echo "$p: skipped (no key)"; return 1; }
   SIGNED="$SIGNED $p"
@@ -830,7 +979,7 @@ READY=""
 provider_ready() {   # sign in, then the live test once per provider; READY collects the ones that passed
   case " $READY " in *" $2 "*) echo "$2: ready (tested above)"; return 0 ;; esac
   sign_in "$@" || return 1
-  live_test "$1" "$2" || { unsign "$2"; return 1; }
+  live_test "$1" "$2" quiet || live_failed "$1" "$2" "${3:-}" focus || { unsign "$2"; return 1; }
   READY="$READY $2"
 }
 
@@ -851,7 +1000,7 @@ PY
 }
 
 setup_top() {   # the everything agent: exactly one; GLM and Muse only after their live check passes
-  local hub="$1" p how
+  local hub="$1" p how rc old
   while :; do
     echo "Your everything agent (the orchestrator) is the one agent you talk to; it hands"
     echo "work to the others. Pick the AI service it uses (one; later: ade setup --top):"
@@ -861,20 +1010,27 @@ setup_top() {   # the everything agent: exactly one; GLM and Muse only after the
       claude-account) p=anthropic; how=account ;; anthropic-key) p=anthropic; how=key ;; *) p="$CHOICE" ;;
     esac
     sign_in "$hub" "$p" $how || continue
-    if live_test "$hub" "$p"; then READY="$READY $p"; conf_set "$hub" HUB_ROOT_PROVIDER "$p"
-      conn_record "$hub" top "$p" "${how:-key}" "$(conf_get "$hub" HUB_ROOT_MODEL)"
-      [ "${how:-key}" = account ] && record_account "$hub"; record_services "$hub"
-      local old; old="$(conf_get "$hub" HUB_PROVIDERS_ALLOWED)"   # the new top plus the old list
+    how="${SIGN_HOW:-$how}"; rc=0; live_test "$hub" "$p" quiet || { live_failed "$hub" "$p" "${how:-key}" top; rc=$?; }
+    [ "$rc" != 1 ] || { unsign "$p"; continue; }
+    conf_set "$hub" HUB_ROOT_PROVIDER "$p"
+    conn_record "$hub" top "$p" "${how:-key}" "$(conf_get "$hub" HUB_ROOT_MODEL)"
+    [ "${how:-key}" = account ] && record_account "$hub"; record_services "$hub"
+    if [ "$rc" = 0 ]; then READY="$READY $p"; untested "$hub" ""
+      old="$(conf_get "$hub" HUB_PROVIDERS_ALLOWED)"   # the new top plus the old list
       conf_set "$hub" HUB_PROVIDERS_ALLOWED "$(printf '%s\n' $p $old | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//')"
       echo "everything agent: $p"; return 0; fi
-    unsign "$p"
-    case "$p" in glm|muse) echo "$p cannot be the everything agent until its live check passes" ;;
-      *) echo "$p failed its live test; pick it again once fixed, or another" ;; esac
+    # chosen, not tested: recorded as that (HUB_PROVIDERS_UNTESTED) and kept out of the roles, which take tested ones only
+    untested "$hub" "$p"; drop_role "$hub" "$p"
+    echo "everything agent: $p (not tested; to test it later: ade setup --test)"
+    echo "Until its test passes, your focus agents do not use $p."; return 0
   done
 }
+# untested <hub> <provider or "">: HUB_PROVIDERS_UNTESTED in hub.conf, the everything agent chosen without a passed live
+# test (empty: none); written only when it changes
+untested() { [ "$(conf_get "$1" HUB_PROVIDERS_UNTESTED)" = "$2" ] || conf_set "$1" HUB_PROVIDERS_UNTESTED "$2"; }
 
 setup_focus() {   # focus agents: several; each signed in and live-tested; only ready ones enter the roles
-  local hub="$1" p allowed="" top
+  local hub="$1" p allowed="" top unt
   echo "Your focus agents each do one piece of work. Pick the AI services they may use;"
   echo "each one is signed in and tried once, so you know it works:"
   local ASK_MULTI=1
@@ -882,33 +1038,41 @@ setup_focus() {   # focus agents: several; each signed in and live-tested; only 
     "deepseek|DeepSeek" "glm|GLM (needs the live check)" "muse|Muse (needs the live check)"
   ASK_MULTI=0
   for p in $CHOICE; do provider_ready "$hub" "$p" || true; done
-  top="$(conf_get "$hub" HUB_ROOT_PROVIDER)"
+  top="$(conf_get "$hub" HUB_ROOT_PROVIDER)"; unt="$(conf_get "$hub" HUB_PROVIDERS_UNTESTED)"
+  [ -z "$unt" ] || case " $READY " in *" $unt "*) untested "$hub" ""; unt="" ;; esac   # it passed here
+  [ "$top" != "$unt" ] || top=""   # an everything agent that is not tested is in no role
   for p in $top $READY; do case " $allowed " in *" $p "*) ;; *) allowed="${allowed:+$allowed }$p" ;; esac; done
   conf_set "$hub" HUB_PROVIDERS_ALLOWED "$allowed"
   for p in $READY; do   # the sign-in kind: an account when Claude Code (or the Gemini CLI) is signed in without a stored key
     case "$p" in anthropic|gemini) if key_stored "$hub" "$p"; then conn_record "$hub" focus "$p" key; else conn_record "$hub" focus "$p" account; fi ;;
       *) conn_record "$hub" focus "$p" key ;; esac
   done
-  echo "AI services your agents use: $allowed (change it later; ade roles shows it)"
+  echo "AI services your agents use: ${allowed:-none yet} (change it later; ade roles shows it)"
 }
 
 setup_telegram() {
-  local hub="$1"
+  local hub="$1" rc step=token
   yes_no "Do you want to reach your main agent from Telegram?" || { echo "Telegram skipped (later: ade setup --telegram)"; return 0; }
   echo "1. In Telegram, open @BotFather and send /newbot."
   echo "2. Give the bot a name; BotFather replies with its token."
   echo "3. Paste the token below; it goes only to the hub's key store."
-  ask_secret "Bot token (hidden):"
-  [ -n "$SECRET" ] || { echo "Telegram skipped (no token)"; return 0; }
-  printf '%s\n' "$SECRET" | hub_run "$hub" keys set telegram > /dev/null; local rc=$?; SECRET=""
-  [ "$rc" = 0 ] || die 1 "bin/keys could not store the Telegram token"
-  record_key "$hub" telegram
-  hub_run "$hub" chat setup telegram || return $?
+  while :; do
+    if [ "$step" = token ]; then
+      ask_secret "Bot token (hidden):"
+      [ -n "$SECRET" ] || { echo "Telegram skipped (no token)"; return 0; }
+      printf '%s\n' "$SECRET" | hub_run "$hub" keys set telegram > /dev/null; rc=$?; SECRET=""
+      [ "$rc" = 0 ] || { failed key-store "The Telegram token was not stored (the hub's bin/keys set telegram, exit $rc)"; continue; }
+      record_key "$hub" telegram
+    fi
+    hub_run "$hub" chat setup telegram; rc=$?; [ "$rc" != 0 ] || break
+    failed telegram "The Telegram set-up did not finish (the hub's bin/chat setup telegram, exit $rc)"
+    case "$CHOICE" in skip) echo "Telegram skipped (later: ade setup --telegram)"; return 0 ;; *) step="$CHOICE" ;; esac
+  done
   record_channel "$hub" telegram; record_services "$hub"
 }
 
 setup_check() {   # one line per step; reads only
-  local hub="" n=0 keys="" p ch d
+  local hub="" n=0 keys="" p ch d unt
   if command -v claude > /dev/null 2>&1; then echo "claude code: installed ($(command -v claude))"; else echo "claude code: missing"; fi
   hub="$(find_hub 2> /dev/null)" || hub=""
   if command -v claude > /dev/null 2>&1 && claude_signed_in; then echo "sign-in: signed in (account)"
@@ -917,19 +1081,26 @@ setup_check() {   # one line per step; reads only
     if [ -n "$keys" ]; then echo "sign-in: signed in (key: $keys)"; else echo "sign-in: not signed in"; fi
   fi
   if [ -z "$hub" ]; then echo "hub: none (ade hub new <name>)"; echo "projects: none"; echo "channel: none"; return 0; fi
-  echo "hub: $hub"
+  unt="$(conf_get "$hub" HUB_PROVIDERS_UNTESTED)"; echo "hub: $hub${unt:+ ($unt: not tested; ade setup --test)}"
   for d in "$hub"/projects/*/; do [ -d "$d" ] && n=$((n + 1)); done; echo "projects: $n"
   ch="$(conf_get "$hub" HUB_CHANNELS)"; echo "channel: ${ch:-none}"
 }
 
-setup_test() {   # --test [provider|telegram]: re-run live tests; changes nothing
-  local hub what="${1:-}" p rc=0; hub="$(find_hub)" || exit $?
+# setup_test: --test [provider|telegram]: re-run live tests; changes nothing, but for an everything agent that was
+# chosen without its test (A18b): once it passes, it is no longer recorded as untested and enters the roles
+setup_test() {
+  local hub what="${1:-}" p rc=0 unt old; hub="$(find_hub)" || exit $?; unt="$(conf_get "$hub" HUB_PROVIDERS_UNTESTED)"
   case "$what" in
     telegram) hub_run "$hub" chat test telegram; return $? ;;
-    "") what="$(conf_get "$hub" HUB_PROVIDERS_ALLOWED)"; [ -n "$what" ] || what=anthropic ;;
+    "") what="$(conf_get "$hub" HUB_PROVIDERS_ALLOWED) $unt"; [ -n "${what// /}" ] || what=anthropic ;;
     *) case " $LIVE_PROVIDERS " in *" $what "*) ;; *) die 2 "unknown provider $what (known: $LIVE_PROVIDERS, telegram)" ;; esac ;;
   esac
-  for p in $what; do live_test "$hub" "$p" || rc=1; done
+  for p in $what; do live_test "$hub" "$p" || { rc=1; continue; }
+    [ "$p" = "$unt" ] || continue
+    untested "$hub" ""; old="$(conf_get "$hub" HUB_PROVIDERS_ALLOWED)"
+    conf_set "$hub" HUB_PROVIDERS_ALLOWED "$(printf '%s\n' $p $old | awk 'NF && !seen[$0]++' | tr '\n' ' ' | sed 's/ $//')"
+    echo "$p: tested now; your focus agents may use it"
+  done
   return $rc
 }
 
@@ -983,13 +1154,22 @@ sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 1)
 PY
 # github_ready: gh installed (after a yes, from the package manager) and signed in (gh's browser flow), else one line
 # saying how to come back: exit 2 without a terminal or in an agent session, 1 when it did not finish
+# gh_login: GitHub's own sign-in on the person's terminal (GH_LOGIN_BROWSER: in an ADE Computer, what opens the address)
+GH_LOGIN_BROWSER=""
+gh_login() {
+  if agent_context; then echo "a person signs in to GitHub, at a terminal; an agent cannot"; return 1; fi
+  if in_computer; then GH_BROWSER="${GH_LOGIN_BROWSER:-true}" python3 -I -c "$GH_RELAY" gh auth login --hostname "$GH_HOST" --git-protocol https --web
+  else gh auth login --hostname "$GH_HOST" --git-protocol https --web; fi
+}
 github_ready() {
-  local browser=""
   if ! command -v gh > /dev/null 2>&1; then
     echo "The GitHub CLI (gh) is not installed; ade installs it with your package manager."
-    tools_install gh || true; hash -r
-    command -v gh > /dev/null 2>&1 || { local rc=1; agent_context || ! [ -t 0 ] && rc=2
-      die "$rc" "your hub needs the GitHub CLI (gh); once it is installed, run $ASK_AGAIN"; }
+    while :; do tools_install gh || true; hash -r
+      command -v gh > /dev/null 2>&1 && break
+      if agent_context || ! [ -t 0 ]; then die 2 "your hub needs the GitHub CLI (gh); once it is installed, run $ASK_AGAIN"; fi
+      failed install "The GitHub CLI (gh) is not installed yet; your hub needs it"
+      [ "$CHOICE" = retry ] || { echo "To install it yourself, run (macOS; other systems: https://cli.github.com):"; echo "  brew install gh"; die 1 "then run $ASK_AGAIN"; }
+    done
   fi
   gh_signed_in && return 0
   echo "Your hub needs GitHub: it is a private repository on your GitHub account,"
@@ -1000,11 +1180,9 @@ github_ready() {
   echo "This runs GitHub's own sign-in (gh auth login --web): it shows a one-time code"
   echo "to type at github.com/login/device, on this machine or any other device."
   echo "ade never asks for a password or a token, and never sees one."
-  if in_computer; then browser=true   # gh opens nothing unless the person asks for this computer's browser
-    [ -n "${DISPLAY:-}" ] && ask_yn "Open the GitHub address in this computer's browser?" y && browser=xdg-open
-    GH_BROWSER="$browser" python3 -I -c "$GH_RELAY" gh auth login --hostname "$GH_HOST" --git-protocol https --web
-  else gh auth login --hostname "$GH_HOST" --git-protocol https --web; fi
-  gh_signed_in || die 1 "the GitHub sign-in did not finish; to try again, run $ASK_AGAIN"
+  if in_computer; then GH_LOGIN_BROWSER=true   # gh opens nothing unless the person asks for this computer's browser
+    [ -n "${DISPLAY:-}" ] && ask_yn "Open the GitHub address in this computer's browser?" y && GH_LOGIN_BROWSER=xdg-open; fi
+  until { gh_login; gh_signed_in; }; do failed gh-sign-in "The GitHub sign-in did not finish; your hub needs GitHub"; done
 }
 
 # The guide (A18): ade setup walks from nothing to a working hub. The steps are listed with their state; each step
@@ -1028,7 +1206,7 @@ guide_state() {   # <step>: its state in a few words; 0 when it is done (an opti
     github) command -v gh > /dev/null 2>&1 || { echo "GitHub CLI not installed"; return 1; }
       gh_signed_in && { a="$(gh_account)"; echo "signed in${a:+ as $a}"; return 0; }; echo "not signed in" ;;
     hub) [ -n "$hub" ] || { echo "none yet"; return 1; }
-      [ -n "$(conf_get "$hub" HUB_ROOT_PROVIDER)" ] && { echo "$(hub_label "$hub") ($(tilde "$hub"))"; return 0; }
+      [ -n "$(conf_get "$hub" HUB_ROOT_PROVIDER)" ] && { a="$(conf_get "$hub" HUB_PROVIDERS_UNTESTED)"; echo "$(hub_label "$hub") ($(tilde "$hub"))${a:+; $a not tested}"; return 0; }
       echo "$(hub_label "$hub"): its agents are not chosen yet" ;;
     project) [ -n "$hub" ] && p="$(first_project "$hub")" && { echo "$p"; return 0; }; echo "none yet" ;;
     telegram) [ -n "$hub" ] && case " $(conf_get "$hub" HUB_CHANNELS) " in *" telegram "*) echo on; return 0 ;; esac; echo off ;;
@@ -1063,37 +1241,49 @@ guide_install_claude() {
   local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"   # file:// only for tests
   case "$ADE_CLAUDE_INSTALLER" in https://*) ;; file://*) [ "$proto" != "=https" ] || die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;;
     *) die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;; esac
+  local rc why
   yes_no "Claude Code is not installed. Install it now? This runs: curl -fsSL $ADE_CLAUDE_INSTALLER | bash" ||
     die 1 "install Claude Code yourself, then run ade setup again: $CLAUDE_INSTALL_CMD"
-  curl --proto "$proto" --proto-redir "$proto" --tlsv1.2 -fsSL "$ADE_CLAUDE_INSTALLER" | bash || die 1 "the Claude Code installer failed; try: $CLAUDE_INSTALL_CMD"
-  PATH="$HOME/.local/bin:$PATH"; command -v claude > /dev/null 2>&1 || die 1 "claude is still not on PATH; open a new terminal and run ade setup again"
+  PATH="$HOME/.local/bin:$PATH"
+  while :; do
+    curl --proto "$proto" --proto-redir "$proto" --tlsv1.2 -fsSL "$ADE_CLAUDE_INSTALLER" | bash; rc=$?; hash -r
+    why="The installer ran, but claude is not on PATH yet"; [ "$rc" = 0 ] || why="The Claude Code installer did not finish (exit $rc)"
+    if [ "$rc" = 0 ] && command -v claude > /dev/null 2>&1; then break; fi
+    failed install "$why"
+    [ "$CHOICE" = retry ] || { echo "To install it yourself, run:"; echo "  $CLAUDE_INSTALL_CMD"; die 1 "then run ade setup again (in a new terminal, so claude is found)"; }
+  done
   claude_update
+}
+ask_hub_name() {   # <folder>: a hub name into ANSWER, asked until it is valid and free in that folder
+  while :; do
+    ask_text "Name for your hub (lower-case letters, digits and -, e.g. acme-sre):"
+    if ! matches "$ANSWER" '^[a-z0-9][a-z0-9-]{0,63}$'; then ask_say "lower-case letters, digits and - only, at most 64; type it again"
+    elif [ -e "$1/$ANSWER" ]; then ask_say "$(tilde "$1/$ANSWER") is taken; type another name"; else return 0; fi
+  done
 }
 guide_new_hub() {   # a hub whose set-up stopped is picked up; else a name, asked until it is a free, valid one
   local d name=""
   for d in "$HOME"/hubs/*/; do [ -f "$d.git/ade-hub-new" ] && { name="$(basename "$d")"; break; }; done
-  while [ -z "$name" ]; do
-    ask_text "Name for your hub (lower-case letters, digits and -, e.g. acme-sre):"; name="$ANSWER"
-    if ! matches "$name" '^[a-z0-9][a-z0-9-]{0,63}$'; then ask_say "lower-case letters, digits and - only, at most 64; type it again"; name=""
-    elif [ -e "$HOME/hubs/$name" ]; then ask_say "$(tilde "$HOME/hubs/$name") is taken; type another name"; name=""; fi
-  done
+  [ -n "$name" ] || { ask_hub_name "$HOME/hubs"; name="$ANSWER"; }
   (hub_new "$name") || exit $?
 }
 guide_run() {   # <step>: the step itself; it stops ade (exit) when it cannot finish
-  local hub
+  local hub rc
   case "$1" in
     claude-code) guide_install_claude ;;
     claude-sign-in) ask_choice "How do you use Claude?" account "account|your Claude account (Pro, Max, Team or Enterprise)" \
         "key|an API key, which you will be asked for at step 4"
       [ "$CHOICE" = key ] && return 0
       agent_context && die 2 "a person signs in to Claude; an agent cannot; then run ade setup"
-      claude auth login || die 1 "the Claude sign-in did not finish; to try again, run ade setup" ;;
+      until claude auth login; do failed sign-in "The Claude sign-in did not finish"; [ "$CHOICE" = sign-in ] || return 0; done ;;
     github) github_ready ;;
     hub) guide_hub > /dev/null || guide_new_hub
       hub="$(find_hub)" || exit $?
       [ -n "$(conf_get "$hub" HUB_ROOT_PROVIDER)" ] || { setup_top "$hub"; setup_focus "$hub"; } ;;
-    project) ( cmd_claude -- --permission-mode default "$SETUP_PROMPT" ) ||
-        echo "Claude Code stopped early (exit $?); run ade setup to come back to this step." ;;
+    project) while :; do ( cmd_claude -- --permission-mode default "$SETUP_PROMPT" ); rc=$?; [ "$rc" != 0 ] || break
+        failed session "Claude Code stopped early (exit $rc)"
+        [ "$CHOICE" != go-on ] || { echo "Going on; this step is not done: ade setup comes back to it."; break; }
+      done ;;
     telegram) hub="$(find_hub)" || exit $?; setup_telegram "$hub" ;;
   esac
 }
