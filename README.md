@@ -142,6 +142,24 @@ flowchart TD
 <sub>* GLM and Muse stay off until their live check passes. `ade setup --check` reports each step and changes nothing;
 `ade setup --test [provider|telegram]` re-runs the live tests.</sub>
 
+## Files, viewer and links ([A15](docs/stories/A15-files-viewer-links.md))
+
+In `ade ui`, `prefix e` opens the explorer in a popup and `prefix l` lists every file path (`path`, `path:line`,
+`path:line:col`, Markdown links) and URL in the current pane and its last 2000 lines; a pick opens in `ade view` at its
+line (resolved against that agent's folder), a URL in your browser. Outside `ade ui`: `ade files`, `ade view src/a.ts:42`.
+
+| Key | Explorer (`ade files`) | Viewer (`ade view`: images, PDFs) |
+|---|---|---|
+| `j` `k` / arrows | move | `j` `k` next and previous page |
+| Enter / `l`, `h` | open, up a folder | |
+| `/` | search names under this folder | search the PDF's text |
+| `n` `p` `g` | | next, previous, go to page |
+| `o` `f` `y` | open in the default app, reveal in Finder (or the folder), copy the path | the same |
+| `q` | quit | quit |
+
+Over SSH, `o`, `f` and `y` print the path and an `scp` line instead, and PDFs are always text. A missing extra
+(`yazi`, `bat`, `glow`, `poppler`, `chafa`) is named once, with `ade setup --tools` to install it.
+
 ## A ticket's path
 
 ```mermaid
@@ -193,6 +211,9 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade reset [--keys] [--hub <path>]` | Undo `ade setup` here: stop orchestrators, remove the chat and monitor services, the `ade@ade-skills` entry and `~/.config/ade/`; `--keys` forgets setup's keys (one question each); `--hub` moves that hub to the Trash | **built** (A9) |
 | `ade uninstall [--keys] [--hub <path>]` | `ade reset`, then remove the installed `ade` (never a checkout) and print how to reinstall | **built** (A9) |
 | `ade restore [--check] [--label <name>]` | Compare `.ade/connections.json` (names only, committed) with this machine and walk each gap with a yes: the Claude account, keys (hidden prompt, live test), plugins, Telegram (token, re-pair), services | **built** (A10) |
+| `ade files [<folder>]` | A directory explorer over the hub and its projects: name search (`/`), live preview, `o` open in the default app, `f` reveal in Finder (or the Linux file manager), `y` copy the path; `yazi` when installed, else a built-in browser (bash + python3) | **built** (A15) |
+| `ade view <path[:line[:col]]>` | Code at the line (`bat`, else `less -N`), Markdown (`glow`, else plain), images (chafa or the terminal's protocol on iTerm2, WezTerm, kitty, Ghostty; else its size), PDFs (page images on a graphics terminal, else `pdftotext` text; `n`/`p` page, `g` go to, `/` search); `o`, `f`, `y` | **built** (A15) |
+| `ade setup --tools [required\|extras]` | Install what is missing (git, python3, tmux, gh; the viewer extras yazi, bat, glow, poppler, chafa) with Homebrew or apt, after one yes at a terminal; `ade doctor` lists each tool | **built** (A15) |
 | `ade update [--check \| --rollback \| --auto on\|off]` | ade itself (download, sha256 against the release's `release.json`, checked in a temp folder, the old one kept as `.ade.prev`, one rename; `--rollback` swaps them back), the hub (`git pull --ff-only`, `bin/method sync`), ade-skills plugins, Claude Code, `ade ui` reloaded in place; nothing is stopped; one notify line | **built** (A11) |
 
 Exit codes: `0` success, `1` a failure while working (a fetch or a copy), `2` a usage problem or a missing hub, script
@@ -242,6 +263,13 @@ In plain words:
   a key.
 - **No skipped permissions.** Agents run with Claude Code's normal permission checks. The planned `ade claude` refuses
   `--dangerously-skip-permissions` anywhere in its arguments (A4).
+- **Viewing only reads.** `ade files`, `ade view` and the link picker never edit, move or delete. A path outside the
+  hub and its project checkouts, or a link that leads out of them, opens only after you say yes at the terminal (an
+  agent cannot answer that). File names and contents never send control characters to your terminal, and `o` never
+  runs a program.
+- **Tools are installed only after a yes.** `install.sh`, `ade setup` and `ade setup --tools` show the exact `brew
+  install` or `sudo apt-get install -y` line and run it only after you answer yes at the terminal; nothing is piped to
+  a shell.
 - **Nothing of yours is deleted.** `ade clean` removes only ade's and the hub's own markers, temp folders and dead tmux
   sessions, and worktrees whose branch is merged and that have no changes. `ade reset --hub` never deletes a hub: after
   you type its name, and only when everything in it is committed and pushed, it moves it to the Trash (macOS: Finder or

@@ -1,6 +1,8 @@
 # A15: files, viewer, PDF, open/reveal, and every file link viewable
 
-Status: Ready for development (2026-11-21). Risk: medium (read-only). Depends on A6 (ade ui).
+Status: In review (2026-11-22). Risk: high (raised by the builder from medium: `ade setup --tools` and `install.sh` run
+the package manager, with sudo on Linux, after a yes; the viewer enforces what may be opened without a question).
+Depends on A6 (ade ui).
 Owner's intent (2026-11-21): a directory explorer, file viewer and PDF viewer in the CLI, with open in the directory
 or Finder, and every file link viewable there. Verification command: `bash tests/run.sh`.
 

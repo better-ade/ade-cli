@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- `ade files [<folder>]`, `ade view <path[:line[:col]]>` and `ade ui` keys `prefix e` (files) and `prefix l` (the file
+  paths and URLs in this pane, opened in `ade view` at their line or in the browser) (A15): a read-only explorer with
+  name search and preview (yazi when installed, else built in), code with bat or `less -N`, Markdown with glow,
+  images and PDF pages inline on graphics terminals (else size or text; `n`, `p`, `g`, `/`), `o` open, `f` reveal,
+  `y` copy the path (over SSH the path and an `scp` line). Paths outside the hub and its checkouts, and escaping
+  links, ask first at a terminal; no control character is drawn. `ade setup --tools [required|extras]`, `ade setup`'s
+  first steps and `install.sh` install missing tools with Homebrew or apt after one yes at a terminal; `ade doctor`
+  lists every tool.
 - Update notifications and auto-update (A12): once a day per component in use (ade-cli, ade-brain, ade-method,
   ade-skills, ade-agent-registry) ade reads its `release.json` (2 s at most; offline = tomorrow); a banner once per new
   version (security: every command), a badge in `ade ui`'s tab bar, one Telegram line through the hub's `bin/chat send`.

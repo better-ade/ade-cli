@@ -76,17 +76,18 @@ key_table() {   # AC5
   fresh; ui_fixture; bash "$ADE" ui --detach > /dev/null 2>&1 || fail "ui"
   C="$HOME/.config/ade/ui-$S.tmux.conf"; [ -f "$C" ] || fail "conf written"
   grep -q "^tmux source-file $C" "$TMUX_LOG" || fail "conf loaded"
-  for k in "n run-shell" "a run-shell" "t display-popup" "p run-shell" "f run-shell" "? display-popup"; do
+  for k in "n run-shell" "a run-shell" "t display-popup" "p run-shell" "f run-shell" "? display-popup" "e display-popup" "l run-shell"; do
     grep -q "^bind-key -T prefix $k" "$C" || fail "binds $k"; done
   grep -q "ui --menu new" "$C" && grep -q "ui --menu approve" "$C" && grep -q "ui --tickets" "$C" && grep -q "ui --menu preview" "$C" \
-    && grep -q "ui --sidebar" "$C" && grep -q "ui --keys" "$C" || fail "each key runs its menu or popup"
+    && grep -q "ui --sidebar" "$C" && grep -q "ui --keys" "$C" && grep -q "ade' files\"$" "$C" && grep -q "ui --menu links #{pane_id}" "$C" \
+    || fail "each key runs its menu or popup"
   bash "$ADE" ui --menu new > /dev/null 2>&1; grep "display-menu" "$TMUX_LOG" | tail -1 > "$T/m"
   for f in projects/api projects/web ops/db; do assert_contains "$T/m" "$f" "folder list: $f"; done
   bash "$ADE" ui --menu role projects/api > /dev/null 2>&1; grep "display-menu" "$TMUX_LOG" | tail -1 > "$T/m"
   assert_contains "$T/m" "work --role builder projects/api" "role list runs ade work"
   bash "$ADE" ui --sidebar > /dev/null 2>&1; grep -q "split-window -h -d -l 44" "$TMUX_LOG" || fail "f opens the sidebar"
   bash "$ADE" ui --sidebar > /dev/null 2>&1; grep -q "kill-pane -t %9" "$TMUX_LOG" || fail "f again closes it"
-  bash "$ADE" ui --keys < /dev/null > "$T/out"; for k in n a t p f "?"; do grep -q "^  prefix $k " "$T/out" || fail "help names $k"; done
+  bash "$ADE" ui --keys < /dev/null > "$T/out"; for k in n a t p f e l "?"; do grep -q "^  prefix $k " "$T/out" || fail "help names $k"; done
 }
 
 approve_popup() {   # AC6

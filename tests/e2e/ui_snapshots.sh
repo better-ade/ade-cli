@@ -43,6 +43,8 @@ for SIZE in 120x36 80x24; do
   key n; shot menu-new "New agent"; o send-keys -t o q; sleep 0.5
   key a; shot menu-approve "Approve a ticket"; o send-keys -t o q; sleep 0.5
   key p; shot preview "step two"; o send-keys -t o Enter; sleep 0.5
+  key e; shot files "ade files"; o send-keys -t o q; sleep 0.5
+  key l; shot links "no file paths or links"; o send-keys -t o Enter; sleep 0.5
   o kill-server; tmux -L snap kill-server; sleep 0.5
 done
 [ "$rc" = 0 ] && echo && echo "e2e ui snapshots: ok"; exit "$rc"

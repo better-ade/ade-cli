@@ -1,0 +1,24 @@
+orc┌──────────────────────────────────────────────────────────────────────┐
+   │ade files · hub                                                       │
+   │.claude/                    │ settings.json                           │
+   │bin/                                                                  │
+   │ops/                                                                  │
+   │projects/                                                             │
+   │hub.conf                                                              │
+   │PLAN.md                                                               │
+   │                                                                      │
+   │                                                                      │
+   │                                                                      │
+   │                                                                      │
+   │                                                                      │
+   │                                                                      │
+   │                                                                      │
+   │                                                                      │
+   │                                                                      │
+   │                                                                      │
+   │                                                                      │
+   │j/k move · Enter open · h up · / search · o open · f reveal · y copy p│
+   └──────────────────────────────────────────────────────────────────────┘
+
+
+● 0 orchestrator  ⟳ 1 projects/api · builder · 1.2 ✉2  ○ 2 ops/db  [+ new]

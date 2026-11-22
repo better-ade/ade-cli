@@ -32,8 +32,11 @@ table() {
     hub) echo "R|hub new X --no-github --persona p --client c --owner o"; echo "R|hub use X" ;;
     claude) echo "D1|claude X"; echo "R|claude -- --resume X --dangerously-skip-permissions"
       echo "R|orchestrator new okname --hub $H --channel X" ;;
-    setup) echo "R|setup --test X" ;;
-    ui) echo "R|ui --tab-name X"; echo "R|ui --menu role X"; echo "S|ui --preview X"; echo "F|ui --menu new" ;;
+    setup) echo "R|setup --test X"; echo "R|setup --tools X" ;;
+    ui) echo "R|ui --tab-name X"; echo "R|ui --menu role X"; echo "S|ui --preview X"; echo "F|ui --menu new"
+      echo "R|ui --menu links X"; echo "R|ui --links X" ;;
+    files) echo "R|files X"; echo "R|files --act open X"; echo "R|files --act url X" ;;
+    view) echo "R|view X"; echo "R|view --cwd X x" ;;
     agent) echo "R|agent add X" ;;
     skills) echo "R|skills add X"; echo "R|skills enable X"; echo "R|skills disable X"; echo "S|skills search X" ;;
     clean) echo "R|clean X" ;;
