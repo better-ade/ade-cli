@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.4
 - The guide's Telegram step finishes, one step at a time. The token is asked once (the hub's own prompt no longer
   shows as a second one). Then `ade` does each step it can, said before and checked after: bun (after a yes, as
   `ade setup --tools` installs), the Telegram plugin (`claude plugin install ... --scope user`), the hub's test
