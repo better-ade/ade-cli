@@ -155,3 +155,32 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - Installed versions: ade-cli the stamped version; ade-brain the hub's `VERSION`; ade-method the project's
   `.ade/method-version`; ade-skills and ade-agent-registry their pins, when in use.
 - Needed from the hub: `bin/chat send <text>` sends one line on the hub's channel (Telegram); faked in tests.
+
+## `ade files`, `ade view`, the link picker and the tools ade installs (A15)
+- Roots (no question): the hub's physical path, every checkout in `projects/*/ACCESS.md` and `ops/*/ACCESS.md`
+  (`| Repo | Checkout | Branch |`, absolute or `~/`), and the git top level of the working folder (`ade view --cwd
+  <folder>` sets it). Anything else, or a link under a root whose target is not, needs a yes typed at a terminal
+  (refused in an agent session or without a terminal, exit 2). `/`, the home folder and any parent of it are never a
+  root, whatever ACCESS.md says; a folder opened after a yes is listed, never previewed, and a yes to one of those wide
+  folders allows nothing under it. Read-only: nothing is written outside ade's temp folders, with one exception:
+  `~/.config/ade/hints` (below). Pagers run with `LESSSECURE=1` and an empty `LESSOPEN` (bat's pager is always
+  `less -RF`, glow's `less -r`). The built-in browser is the explorer; yazi only with `ADE_FILES=yazi`, and yazi is neither read-only nor held to the hub and its projects (it deletes, renames, moves, runs commands and walks anywhere without asking).
+- `ade view <path[:line[:col]]>`: a name that exists wins over a `:line` suffix; relative to the working folder.
+- `ade files --act open|reveal|copy <absolute path>` and `--act url <http(s) URL>`: what `o`, `f`, `y` and a picked
+  link run (macOS `open --`, `open -R --`, `pbcopy`; Linux `xdg-open <path>`, `xdg-open <folder>`, `wl-copy`, `xclip
+  -selection clipboard` or `xsel --clipboard --input`); over SSH (`SSH_CONNECTION`, `SSH_CLIENT` or `SSH_TTY`) the
+  path and `scp -s '<host>:<real path>' .` instead. `open` opens documents only: an allow list of extensions (pdf,
+  images, text and Markdown, office files, audio, video), compared without case on the real path; refused: anything
+  else, an executable, a folder, and anything inside a bundle (`.app`, `.prefPane`, `.kext`, ...). `copy` puts the
+  path on the clipboard shell-quoted when it holds anything outside `[A-Za-z0-9_./@%+=:,-]`. `url` takes printable
+  ASCII only. Messages show names with control, C1, bidi and zero-width characters (and non-UTF-8 bytes) as `?`.
+- `ade ui`: `prefix e` = `display-popup -E -w 90% -h 90% "ade files"`; `prefix l` = `run-shell "ade ui --menu links
+  #{pane_id}"`, which writes `pane` (`capture-pane -p -J -S -2000`) and `cwd` (`#{pane_current_path}`) into an
+  `$TMPDIR/ade.*` folder and runs `ade ui --links <folder>` in a popup; that folder is removed after.
+- `~/.config/ade/hints`: one tool name per line, each missing viewer tool's hint shown once (the one file A15 writes
+  outside ade's temp folders).
+- Tools: required `git python3 tmux gh`; extras `yazi bat glow poppler chafa` (bat may be `batcat`; poppler =
+  `pdftotext` and `pdftoppm`). Homebrew packages: `git python tmux gh yazi bat glow poppler chafa`. apt (Ubuntu 24.04):
+  `git python3 tmux gh bat poppler-utils chafa`; yazi and glow are not in apt and are not downloaded (their release
+  pages are named). Installs run only after one yes at a terminal: `brew install <pkgs>`, `[sudo] apt-get install -y
+  <pkgs>`; never in an agent session; never a script piped to a shell. V2's `ade server install` uses the apt list.

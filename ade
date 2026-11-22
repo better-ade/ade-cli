@@ -37,11 +37,15 @@ Orchestrators (one per hub, run by the hub's bin/chat):
 Hubs:
   ui          ade ui [--detach]: one tmux window, a tab per agent (keys: prefix ? in it)
   dash        ade dash [--once]: the fleet panel (agents, tickets, last events)
-  setup       ade setup [--check | --test [provider|telegram] | --top | --telegram]: sign in, providers, Telegram, hub, guided session
+  setup       ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]: tools, sign in, providers, Telegram, hub, guided session
   claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root; with a folder, ade work <folder>
   hub         ade hub new <name> [--private|--public] [--dir <folder>] [--no-github] [--persona P --client C --owner O]
               | ade hub list | ade hub use <path>
   (none)      ade alone: the hub, its sessions and what to do next
+
+Files (read-only; a path outside the hub and its projects asks first):
+  files       ade files [<folder>]: explore the hub and its projects, with name search and preview (ADE_FILES=yazi: yazi, neither read-only nor held to the hub)
+  view        ade view <path[:line[:col]]>: code at the line, Markdown, images and PDFs; o open, f reveal, y copy the path
 
 Housekeeping (each lists what it would do first; nothing of yours is deleted):
   clean       ade clean [--yes]: stale locks, old markers, cursors and temp folders, dead ade tmux sessions, clean merged worktrees
@@ -795,11 +799,14 @@ cmd_setup() {
   case "$mode" in
     --check) [ $# -eq 1 ] || die 2 "usage: ade setup --check"; setup_check; return 0 ;;
     --test) [ $# -le 2 ] && { [ $# -eq 1 ] || [ -n "$2" ]; } || die 2 "usage: ade setup --test [provider|telegram]"; setup_test "${2:-}"; exit $? ;;
+    --tools) { [ $# -eq 1 ] || { [ $# -eq 2 ] && { [ "$2" = required ] || [ "$2" = extras ]; }; }; } || die 2 "usage: ade setup --tools [required|extras]"
+      setup_tools "${2:-}"; return ;;
     --top|--telegram) [ $# -eq 1 ] || die 2 "usage: ade setup $mode"; hub="$(find_hub)" || exit $?
       if [ "$mode" = --top ]; then setup_top "$hub"; else setup_telegram "$hub"; fi; return ;;
     "") ;;
-    *) die 2 "usage: ade setup [--check | --test [provider|telegram] | --top | --telegram]" ;;
+    *) die 2 "usage: ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]" ;;
   esac
+  setup_tools_steps
   if ! command -v claude > /dev/null 2>&1; then
     local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"   # file:// only for tests
     case "$ADE_CLAUDE_INSTALLER" in https://*) ;; file://*) [ "$proto" != "=https" ] || die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;;
@@ -1012,6 +1019,8 @@ UI_KEYS="  prefix n   new agent: pick a folder, then a role
   prefix t   tickets ready and waiting
   prefix p   preview the current agent's plan
   prefix f   show or hide the fleet sidebar (ade dash)
+  prefix e   files: explore and view the hub and its projects
+  prefix l   links: open a file path or URL shown in this pane
   prefix ?   this help
   prefix 0-9, Left, Right   switch tabs
   prefix d   detach (agents keep running)"
@@ -1038,6 +1047,8 @@ bind-key -T prefix t display-popup -E -w 80% -h 60% "$run ui --tickets"
 bind-key -T prefix p run-shell "$run ui --menu preview #{window_index}"
 bind-key -T prefix f run-shell "$run ui --sidebar"
 bind-key -T prefix ? display-popup -E -w 66 -h 16 "$run ui --keys"
+bind-key -T prefix e display-popup -E -w 90% -h 90% "$run files"
+bind-key -T prefix l run-shell "$run ui --menu links #{pane_id}"
 bind-key -T prefix Left previous-window
 bind-key -T prefix Right next-window
 CONF
@@ -1073,7 +1084,13 @@ ui_menu() {   # ui_menu new|role <folder>|approve|preview <index>
       f="$(ui_tmux display-message -p -t ":${1:-0}" '#{window_name}' 2> /dev/null)"; f="${f%%:*}"
       [ "${1:-0}" != 0 ] && [ -n "$f" ] || f=.
       ui_tmux display-popup -E -w 90% -h 90% "$run ui --preview $f" ;;
-    *) die 2 "usage: ade ui --menu new|role <folder>|approve|preview <index>" ;;
+    links)   # the pane and its last 2000 lines into a temp folder, then the picker in a popup (it removes the folder)
+      matches "${1:-}" '^%[0-9]+$' || die 2 "not a pane: $(printf '%s' "${1:-}" | no_ctl)"
+      d="$(mk_tmp)" || die 1 "could not make a temp folder"; sq "$d" > /dev/null
+      ui_tmux capture-pane -p -J -S -2000 -t "$1" > "$d/pane" 2> /dev/null || : > "$d/pane"
+      ui_tmux display-message -p -t "$1" '#{pane_current_path}' > "$d/cwd" 2> /dev/null || : > "$d/cwd"
+      ui_tmux display-popup -E -w 90% -h 80% "$run ui --links $(sq "$d")" || rm_tmp "$d" ;;
+    *) die 2 "usage: ade ui --menu new|role <folder>|approve|preview <index>|links <pane>" ;;
   esac
 }
 
@@ -1087,6 +1104,15 @@ ui_preview() {   # the agent's plan: <folder>/PLAN.md, else its STATE.md; glow w
   return 0
 }
 
+ui_links() {   # <the folder ui --menu links made>: the paths and URLs in that capture, picked by number
+  local d="$1" cwd=""
+  case "$d" in "$TMP_ROOT"/ade.?*) ;; *) die 2 "usage: ade ui --links <the folder ade ui --menu links made>" ;; esac
+  case "$d" in */..|*/../*) die 2 "usage: ade ui --links <the folder ade ui --menu links made>" ;; esac
+  [ -f "$d/pane" ] || die 2 "no pane capture in $(printf '%s' "$d" | no_ctl)"
+  [ -f "$d/cwd" ] && IFS= read -r cwd < "$d/cwd"
+  [ -n "$cwd" ] && [ -d "$cwd" ] || cwd="$( (find_hub) 2> /dev/null)" || cwd="$PWD"
+  ROOTS="$(files_roots "$cwd")"; files_py pick "$d/pane" "$cwd"; rm_tmp "$d"
+}
 ui_sidebar() {
   local id; need_tmux
   id="$(ui_tmux list-panes -F '#{pane_id} #{pane_title}' 2> /dev/null | awk '$2 == "ade-dash" { print $1; exit }')"
@@ -1105,6 +1131,7 @@ cmd_ui() {
     --menu) shift; ui_menu "$@"; return ;;
     --preview) ui_preview "${2:-}"; return ;;
     --sidebar) ui_sidebar; return ;;
+    --links) ui_links "${2:-}"; return ;;
     --keys) echo "ade ui keys:"; echo "$UI_KEYS"; [ -t 0 ] && read -r _; return 0 ;;
     --tickets) hub="$(find_hub)" || exit $?; d="$(mk_tmp)" || die 1 "could not make a temp folder"; ui_data "$hub" "$d"
       ui_render dash "$d" | awk '/^TICKETS/ { on = 1 } /^EVENTS/ { on = 0 } on'; rm_tmp "$d"; [ -t 0 ] && read -r _; return 0 ;;
@@ -2339,6 +2366,614 @@ update_badge() {   # the number of components with a newer release, for ade ui's
   echo "$n"
 }
 
+# ade files, ade view and the link picker (story A15): read-only. The roots are the hub, the checkouts its ACCESS.md
+# files list and the project of the working folder; a path outside them, or a link leading out of them, opens only
+# after a yes typed at a terminal (never an agent or a pipe). Names and contents are data: no control character
+# reaches the screen, and a path reaches a tool after "--", or absolute for the ones without it (xdg-open).
+# The tools ade installs (Homebrew or apt, after a yes): .ade/context/hub-interface.md.
+FILES_USAGE="usage: ade files [<folder>]"
+VIEW_USAGE="usage: ade view <path[:line[:col]]>"
+ROOTS=""
+files_roots() {   # [folder]: physical paths of the hub, its checkouts and that folder's git project, one per line
+  local hub f c b top
+  if hub="$( (find_hub) 2> /dev/null)"; then
+    (cd "$hub" && pwd -P)
+    for f in "$hub"/projects/*/ACCESS.md "$hub"/ops/*/ACCESS.md; do
+      [ -f "$f" ] || continue
+      while IFS="$TAB" read -r c b; do
+        # shellcheck disable=SC2088  # a literal ~ in ACCESS.md is expanded here on purpose
+        case "$c" in "~/"*) c="$HOME/${c#\~/}" ;; esac
+        [ -n "$c" ] && [ -d "$c" ] && (cd "$c" && pwd -P)
+      done <<EOF
+$(access_rows "$f")
+EOF
+    done
+  fi
+  top="$(cd "${1:-.}" 2> /dev/null && git rev-parse --show-toplevel 2> /dev/null)" && (cd "$top" && pwd -P)
+  return 0
+}
+on_ssh() { [ -n "${SSH_CONNECTION:-}${SSH_CLIENT:-}${SSH_TTY:-}" ]; }
+# files_confirm <question>: a yes typed at a terminal; anything else exits 2 with nothing opened
+files_confirm() {
+  agent_context && die 2 "$1: ade asks a person at a terminal first; refused inside a Claude Code session (an agent cannot answer for you); nothing opened"
+  { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || die 2 "$1: ade asks a person at a terminal first; refused without one; nothing opened"
+  tty_confirm "$1. Open it anyway?" || die 2 "nothing opened"
+}
+# files_target <path[:line[:col]]> <folder it is relative to>: FT_PATH FT_LINE, then (after a yes when it leads out of
+# the roots) FT_KIND (dir pdf image markdown text binary unreadable) FT_CTL (control characters in it) FT_OPENABLE (o may open it: a document)
+# FT_SHOWN and FT_SHOWN_REAL are the names as Python's shown() draws them (control, C1, bidi and zero-width characters
+# and bytes that are not UTF-8 become ?): every message that names a file uses them, never the raw name
+files_target() {
+  local out w
+  out="$(files_py where "$1" "$2")" || exit 2
+  IFS="$US" read -r FT_PATH FT_LINE w FT_REAL FT_SHOWN FT_SHOWN_REAL <<EOF
+$out
+EOF
+  [ "$w" != missing ] || die 2 "no such file or folder: $FT_SHOWN"
+  case "$w" in
+    out) files_confirm "$FT_SHOWN is outside the hub and its projects" ;;
+    link-out) files_confirm "$FT_SHOWN is a link to $FT_SHOWN_REAL, outside the hub and its projects" ;;
+  esac
+  IFS="$US" read -r FT_KIND FT_CTL FT_OPENABLE <<EOF
+$(files_py kind "$FT_PATH")
+EOF
+  [ "$FT_KIND" != unreadable ] || die 1 "cannot read $FT_SHOWN (not a readable regular file)"
+}
+hint_once() {   # <tool> <what ade does without it>: one line, the first time only (~/.config/ade/hints)
+  [ -f "$CONF_DIR/hints" ] && grep -qxF -- "$1" "$CONF_DIR/hints" && return 0
+  echo "ade: $1 is not installed, so $2; ade setup --tools installs it (said once)" >&2
+  { [ -f "$CONF_DIR/hints" ] && cat "$CONF_DIR/hints"; echo "$1"; } | write_conf_file hints
+}
+
+cmd_files() {
+  [ "${1:-}" = --act ] && { shift; files_act "$@"; return; }
+  [ $# -le 1 ] || die 2 "$FILES_USAGE"
+  local d
+  if [ $# -eq 1 ]; then d="$1"; [ -n "$d" ] || die 2 "$FILES_USAGE"; else d="$( (find_hub) 2> /dev/null)" || d="$PWD"; fi
+  ROOTS="$(files_roots .)"; files_target "$d" "$PWD"
+  [ "$FT_KIND" = dir ] || die 2 "not a folder: $FT_SHOWN (ade view shows a file)"
+  files_explore "$FT_PATH"
+}
+# files_explore <folder>: the built-in browser (read-only, held to the roots), on a terminal only. yazi only when the
+# user asks for it with ADE_FILES=yazi: it is neither read-only nor held to the hub and its projects
+YAZI_WARNING="yazi is neither read-only nor held to the hub and its projects: it can delete, rename, move and run commands, and walks anywhere without asking"
+files_explore() {
+  { [ -t 0 ] && [ -t 1 ]; } || die 2 "ade files needs a terminal (ade view <file> prints one file)"
+  if [ "${ADE_FILES:-}" = yazi ]; then
+    if command -v yazi > /dev/null 2>&1; then echo "ade: ADE_FILES=yazi: $YAZI_WARNING (not read-only)" >&2; yazi -- "$1"; return; fi
+    echo "ade: ADE_FILES=yazi, but yazi is not installed; the built-in browser instead" >&2
+  fi
+  files_py explore "$1"
+}
+
+cmd_view() {
+  local cwd="" arg="" n=0
+  while [ $# -gt 0 ]; do case "$1" in
+    --cwd) [ $# -ge 2 ] && [ -n "$2" ] && [ -d "$2" ] || die 2 "$VIEW_USAGE (--cwd needs a folder)"; cwd="$(cd -- "$2" && pwd)"; shift 2 ;;
+    --) shift; [ $# -eq 1 ] || die 2 "$VIEW_USAGE"; arg="$1"; n=$((n + 1)); shift ;;
+    *) arg="$1"; n=$((n + 1)); shift ;;
+  esac; done
+  [ "$n" = 1 ] && [ -n "$arg" ] || die 2 "$VIEW_USAGE"
+  ROOTS="$(files_roots "${cwd:-.}")"; files_target "$arg" "${cwd:-$PWD}"
+  case "$FT_KIND" in
+    dir) files_explore "$FT_PATH" ;;
+    text|markdown) view_text ;;
+    *)   # the page folder is ade's: made here, removed here even when the window is closed (Python removes it too)
+      view_traps; VIEW_TMP="$(mk_tmp)" || die 1 "could not make a temp folder"
+      ADE_SHOW_TMP="$VIEW_TMP" files_py show "$FT_KIND" "$FT_PATH" "$FT_OPENABLE"; local rc=$?
+      rm_tmp "$VIEW_TMP"; trap - HUP TERM INT; return $rc ;;
+  esac
+}
+# view_text: code at its line (bat, else less -N), Markdown through glow (else plain), from a copy without control
+# characters when the file holds any (removed again even when the window is closed: HUP, TERM, INT). Every pager is
+# less in secure mode (LESSSECURE=1: no v, !, |, :e; no LESSOPEN preprocessor), whatever PAGER says
+VIEW_TMP=""
+view_traps() { trap 'rm_tmp "$VIEW_TMP"; exit 129' HUP; trap 'rm_tmp "$VIEW_TMP"; exit 143' TERM; trap 'rm_tmp "$VIEW_TMP"; exit 130' INT; }
+view_text() {
+  local src="$FT_PATH" b l="$FT_LINE" rc
+  if [ "$FT_CTL" = 1 ]; then
+    view_traps; VIEW_TMP="$(mk_tmp)" || die 1 "could not make a temp folder"; src="$VIEW_TMP/$(basename "$FT_PATH")"; no_ctl < "$FT_PATH" > "$src"
+    echo "ade: this file holds control characters; they are not shown" >&2
+  fi
+  LESSSECURE=1; LESSOPEN=""; LESSCLOSE=""; export LESSSECURE LESSOPEN LESSCLOSE
+  if [ "$FT_KIND" = markdown ] && [ "$l" = 0 ] && command -v glow > /dev/null 2>&1; then PAGER="less -r" glow -p -- "$src"; rc=$?
+  elif b="$(tool_bin bat)"; then
+    if [ "$l" -gt 0 ]; then "$b" --style=numbers --highlight-line "$l" --pager "less -RF +${l}g" -- "$src"; else "$b" --style=numbers --pager "less -RF" -- "$src"; fi; rc=$?
+  elif [ "$FT_KIND" = markdown ] && [ "$l" = 0 ]; then hint_once glow "Markdown is shown as plain text"; less -- "$src"; rc=$?
+  else
+    hint_once bat "code has no syntax colours (less -N)"
+    if [ "$l" -gt 0 ]; then less -N "+${l}g" -- "$src"; else less -N -- "$src"; fi; rc=$?
+  fi
+  rm_tmp "$VIEW_TMP"; trap - HUP TERM INT; return $rc
+}
+
+# files_act open|reveal|copy|url <absolute path, or an http(s) URL>: the default app (never a program), the file
+# manager, the clipboard, the browser; over SSH the path and a copy command instead
+files_act() {
+  [ $# -eq 2 ] || die 2 "usage: ade files --act open|reveal|copy|url <path>"
+  local act="$1" p="$2" shown
+  case "$act" in
+    url)   # plain printable ASCII only: no space, control, bidi or zero-width character can hide where it goes
+      case "$p" in http://?*|https://?*) ;; *) die 2 "not a web link (http or https)" ;; esac
+      [ -z "$(printf '%s' "$p" | LC_ALL=C tr -d '!-~')" ] || die 2 "a web link must be plain ASCII (no spaces, control, bidi or zero-width characters); nothing opened"
+      FT_PATH="$p"; FT_SHOWN="$p" ;;
+    open|reveal|copy) case "$p" in /*) ;; *) die 2 "not an absolute path" ;; esac
+      ROOTS="$(files_roots .)"; files_target "$p" / ;;
+    *) die 2 "usage: ade files --act open|reveal|copy|url <path>" ;;
+  esac
+  shown="$FT_SHOWN"
+  if on_ssh; then
+    echo "over SSH: $shown"
+    [ "$act" = url ] || echo "to copy it to this computer: scp -s $(shq "$(uname -n 2> /dev/null || echo host):$FT_REAL") ."
+    return 0
+  fi
+  [ "$act" = open ] && [ "$FT_OPENABLE" != 1 ] &&
+    die 2 "$shown: o opens documents only (PDF, images, text, office, audio, video), never a program or a file that installs, mounts, unpacks or points elsewhere; f shows it in its folder"
+  case "$act" in
+    copy) clip_copy "$FT_PATH" && echo "copied the path: $shown" ;;
+    *) if on_macos; then
+        case "$act" in url) open "$FT_PATH" ;; open) open -- "$FT_PATH" ;; reveal) open -R -- "$FT_PATH" ;; esac
+      else
+        command -v xdg-open > /dev/null 2>&1 || die 2 "xdg-open is not installed (xdg-utils); the path: $shown"
+        if [ "$act" = reveal ]; then xdg-open "$(dirname "$FT_PATH")"; else xdg-open "$FT_PATH"; fi
+      fi ;;
+  esac
+}
+clip_copy() {   # <path>: onto the clipboard on stdin (pbcopy, wl-copy, xclip, xsel), shell-quoted unless it is plain; none: say so
+  local c v="$1"
+  [ -z "$(printf '%s' "$v" | LC_ALL=C tr -d 'A-Za-z0-9_./@%+=:,-')" ] || v="$(shq "$v")"
+  if on_macos && command -v pbcopy > /dev/null 2>&1; then c=pbcopy
+  elif [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-copy > /dev/null 2>&1; then c=wl-copy
+  elif command -v xclip > /dev/null 2>&1; then c="xclip -selection clipboard"
+  elif command -v xsel > /dev/null 2>&1; then c="xsel --clipboard --input"
+  else echo "no clipboard tool here (pbcopy, wl-copy, xclip or xsel); the path: ${FT_SHOWN:-$1}"; return 1; fi
+  printf '%s' "$v" | $c   # c: one of the commands above, split into its words on purpose
+}
+
+# the tools ade uses: the required ones (checked by install.sh and ade setup) and the viewer extras (one step in ade
+# setup); ade setup --tools installs what is missing with Homebrew (macOS) or apt (Ubuntu), after a yes at a terminal
+REQUIRED_TOOLS="git python3 tmux gh"
+EXTRA_TOOLS="yazi bat glow poppler chafa"
+tool_bin() { local c; for c in "$1" $([ "$1" = bat ] && echo batcat); do command -v "$c" 2> /dev/null && return 0; done; return 1; }   # Ubuntu names bat batcat
+tool_present() { case "$1" in poppler) command -v pdftotext && command -v pdftoppm ;; *) tool_bin "$1" ;; esac > /dev/null 2>&1; }
+tools_missing() { local t out=""; for t in "$@"; do tool_present "$t" || out="${out:+$out }$t"; done; echo "$out"; }
+tool_what() {
+  case "$1" in
+    git) echo "required: hubs and projects are git repositories" ;; python3) echo "required: ade reads JSON with it" ;;
+    tmux) echo "required: ade ui" ;; gh) echo "required: ade hub new on GitHub" ;;
+    yazi) echo "extra: ade files with ADE_FILES=yazi; not read-only" ;; bat) echo "extra: syntax colours in ade view, else less -N" ;;
+    glow) echo "extra: Markdown rendered in ade view, else plain text" ;; poppler) echo "extra: PDF pages in ade view (pdftotext, pdftoppm)" ;;
+    chafa) echo "extra: images on more terminals" ;;
+  esac
+}
+tool_pkg() { case "$1:$2" in brew:python3) echo python ;; apt:poppler) echo poppler-utils ;; apt:yazi|apt:glow) ;; *) echo "$2" ;; esac; }   # <brew|apt> <tool>
+tools_report() {   # ade doctor: each tool, installed or missing
+  local t; echo "ade tools:"
+  for t in $REQUIRED_TOOLS $EXTRA_TOOLS; do
+    if tool_present "$t"; then printf '  %-8s installed\n' "$t"; else printf '  %-8s missing (%s)\n' "$t" "$(tool_what "$t")"; fi
+  done
+  [ -z "$(tools_missing $REQUIRED_TOOLS $EXTRA_TOOLS)" ] || echo "  ade setup --tools installs what is missing"
+}
+tools_install() {   # <tool>...: one question at a terminal, then brew install or apt-get install -y; 1 = not installed
+  local m="" t p pkgs="" cmd rc
+  if on_macos; then command -v brew > /dev/null 2>&1 && m=brew; elif command -v apt-get > /dev/null 2>&1; then m=apt; fi
+  if [ -z "$m" ]; then
+    if on_macos; then echo "Homebrew is not installed (https://brew.sh), so ade cannot install: $*"
+    else echo "no apt-get here, so ade cannot install: $*; use your package manager"; fi
+    return 1
+  fi
+  for t in "$@"; do p="$(tool_pkg "$m" "$t")"
+    if [ -n "$p" ]; then pkgs="${pkgs:+$pkgs }$p"; else echo "$t: not in apt; get it from https://github.com/$( [ "$t" = yazi ] && echo sxyazi/yazi || echo charmbracelet/glow)/releases (ade works without it)"; fi
+  done
+  [ -n "$pkgs" ] || return 1
+  if [ "$m" = brew ]; then cmd="brew install $pkgs"; elif [ "$(id -u)" = 0 ]; then cmd="apt-get install -y $pkgs"; else cmd="sudo apt-get install -y $pkgs"; fi
+  if agent_context; then echo "ade installs nothing from an agent session; run it yourself at a terminal: $cmd"; return 1; fi
+  { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || { echo "to install them, run at a terminal: $cmd (or ade setup --tools)"; return 1; }
+  tty_confirm "Install $pkgs now? This runs: $cmd" || { echo "nothing installed (later: ade setup --tools)"; return 1; }
+  $cmd < /dev/tty; rc=$?   # cmd: ade's own words (the package names above), split on purpose
+  if [ "$rc" = 0 ]; then echo "installed: $pkgs"; return 0; fi
+  echo "$cmd failed (exit $rc)$([ "$m" = apt ] && echo '; when apt cannot find a package, run apt-get update first')"; return 1
+}
+setup_tools() {   # [required|extras]: ade setup --tools; what is missing, after one yes
+  local req ext
+  req="$(tools_missing $REQUIRED_TOOLS)"; ext="$(tools_missing $EXTRA_TOOLS)"
+  case "${1:-}" in required) ext="" ;; extras) req="" ;; esac
+  [ -n "$req$ext" ] || { echo "tools: everything ade uses is installed"; return 0; }
+  [ -n "$req" ] && echo "missing tools ade needs: $req"
+  [ -n "$ext" ] && echo "missing viewer extras (ade works without them): $ext"
+  case " $ext " in *" yazi "*) echo "  ade files uses yazi only with ADE_FILES=yazi: $YAZI_WARNING." ;; esac
+  # shellcheck disable=SC2086  # tool names, one word each
+  tools_install $req $ext
+}
+setup_tools_steps() {   # the first steps of ade setup: the required tools, then the viewer extras as one yes/no
+  local req ext
+  req="$(tools_missing $REQUIRED_TOOLS)"; ext="$(tools_missing $EXTRA_TOOLS)"
+  # shellcheck disable=SC2086
+  [ -n "$req" ] && { echo "missing tools ade needs: $req"; tools_install $req || true; }
+  # shellcheck disable=SC2086
+  [ -n "$ext" ] && { echo "The viewer extras (ade files and ade view work without them): $ext"
+    case " $ext " in *" yazi "*) echo "  ade files uses yazi only with ADE_FILES=yazi: $YAZI_WARNING." ;; esac
+    tools_install $ext || true; }
+  return 0
+}
+
+# files_py <op> [args]: where, kind, explore, show, pick. Run with -I (never a module from the folder being browsed);
+# stdin stays the terminal. It opens files for reading only and writes only in its own temp folder.
+files_py() {
+  local src; IFS= read -r -d '' src <<'PY' || true
+import base64, glob, os, re, select, shutil, signal, subprocess, sys, tempfile, termios, time
+for s in (sys.stdout, sys.stderr): s.reconfigure(encoding="utf-8", errors="replace")
+CHILD = []   # the tool running now (pdftoppm, chafa): stopped before a temp folder is removed
+def _closed(n, _):   # a closed window (HUP) or a kill (TERM): the finally blocks still run, once
+    for _s in (signal.SIGHUP, signal.SIGTERM): signal.signal(_s, signal.SIG_IGN)
+    raise SystemExit(128 + n)
+def run(cmd, **kw):   # a tool, remembered while it runs (an interruption leaves it for drop() to stop)
+    c = subprocess.Popen(cmd, **kw); CHILD.append(c); rc = c.wait(); CHILD.remove(c); return rc
+def drop(d):   # stop the running tool, then remove the folder (it may still have been writing into it)
+    for c in list(CHILD):
+        try: c.kill(); c.wait()
+        except OSError: pass
+    for _ in range(20):
+        shutil.rmtree(d, ignore_errors=True)
+        if not os.path.exists(d): return
+        time.sleep(0.05)
+for _s in (signal.SIGHUP, signal.SIGTERM): signal.signal(_s, _closed)
+sys.stdin.reconfigure(encoding="utf-8", errors="replace")
+op, A = sys.argv[1], sys.argv[2:]
+ADE = [os.environ.get("ADE_BASH") or "bash", os.environ.get("ADE_SELF") or "ade"]
+HOME = os.path.realpath(os.path.expanduser("~"))
+def wide(r): return r in ("", "/", HOME) or HOME.startswith(r.rstrip("/") + "/")   # /, the home folder or a parent of it
+ROOTS = [r.rstrip("/") for r in os.environ.get("ADE_ROOTS", "").split("\n") if r and not wide(r)]   # never wide
+TMP = os.environ.get("ADE_TMP_ROOT") or "/tmp"
+# drawn as ?: C0, DEL, C1, zero-width and bidi controls (a name that reads as another), and bytes that are not UTF-8
+CTL = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f\u200b-\u200f\u202a-\u202e\u2066-\u2069\udc80-\udcff]")
+BAD = re.compile(rb"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
+IMG = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic")
+# o opens documents only (an allow list, compared without case on the real path); nothing in a program's folder
+DOC = {".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".txt", ".text", ".md", ".markdown",
+       ".rtf", ".csv", ".tsv", ".log", ".json", ".yaml", ".yml", ".toml", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx",
+       ".odt", ".ods", ".odp", ".pages", ".numbers", ".mp3", ".m4a", ".aac", ".wav", ".flac", ".ogg", ".opus", ".mp4", ".m4v",
+       ".mov", ".mkv", ".webm", ".avi"}
+PROG = {".app", ".command", ".tool", ".terminal", ".pkg", ".mpkg", ".prefpane", ".saver", ".kext", ".scptd", ".workflow",
+        ".action", ".bundle", ".plugin", ".framework", ".appex", ".xpc", ".qlgenerator", ".mdimporter", ".dmg", ".zip",
+        ".fileloc", ".webloc", ".inetloc", ".url", ".mobileconfig", ".desktop", ".appimage", ".jar", ".scpt", ".applescript"}
+def in_program(real): return any(os.path.splitext(c)[1].lower() in PROG for c in real.split("/") if c)
+def openable(p):   # a regular, non-executable document file, not inside a bundle, by its real path
+    real = os.path.realpath(p)
+    if in_program(real) or not os.path.isfile(real) or os.access(real, os.X_OK): return False
+    return os.path.splitext(real)[1].lower() in DOC
+AGENT = any(os.environ.get(v) for v in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID"))
+def shown(s): return CTL.sub("?", s)
+def inside(p): return any(p == r or p.startswith(r + "/") for r in ROOTS)
+def where(p):   # in, out (not under a root) or link-out (a link under a root that leads out), and the real path
+    real = os.path.realpath(p)
+    if inside(real): return "in", real
+    lex = os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p))
+    return ("link-out" if inside(lex) and os.path.islink(lex) else "out"), real
+def kind(p):
+    if os.path.isdir(p): return "dir"
+    if not os.path.isfile(p): return "unreadable"   # a pipe, a socket or a device: never opened (a pipe would block)
+    try:
+        with open(p, "rb") as f: head = f.read(8192)
+    except OSError: return "unreadable"
+    ext = os.path.splitext(p)[1].lower()
+    if head.startswith(b"%PDF") or ext == ".pdf": return "pdf"
+    if ext in IMG or head.startswith((b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"GIF87a", b"GIF89a")): return "image"
+    if b"\0" in head: return "binary"
+    return "markdown" if ext in (".md", ".markdown") else "text"
+def human(n):
+    for u in ("bytes", "KB", "MB", "GB"):
+        if n < 1024 or u == "GB": return ("%d %s" % (n, u)) if u == "bytes" else ("%.1f %s" % (n, u))
+        n /= 1024.0
+def dims(p):
+    try:
+        with open(p, "rb") as f: h = f.read(32)
+    except OSError: return ""
+    if h.startswith(b"\x89PNG") and len(h) >= 24: return "%dx%d png" % (int.from_bytes(h[16:20], "big"), int.from_bytes(h[20:24], "big"))
+    if h[:6] in (b"GIF87a", b"GIF89a"): return "%dx%d gif" % (int.from_bytes(h[6:8], "little"), int.from_bytes(h[8:10], "little"))
+    return os.path.splitext(p)[1].lstrip(".").lower() or "image"
+def size():   # the terminal's size; one that reports none (a bare pty): COLUMNS and LINES, else 80x24
+    try: c, r = os.get_terminal_size(sys.stdout.fileno())
+    except OSError: c, r = 0, 0
+    env = lambda k, d: int(os.environ[k]) if os.environ.get(k, "").isdigit() else d
+    return (c or env("COLUMNS", 80)), (r or env("LINES", 24))
+def rel(p):   # a path as the root it is under names it (hub/projects/api), else whole
+    real = os.path.realpath(p)
+    for r in sorted(ROOTS, key=len, reverse=True):
+        if real == r or real.startswith(r + "/"): return os.path.basename(r) + real[len(r):]
+    return p
+def fit(s, n):   # a title that fits: the start is dropped, never the file name
+    return s if len(s) <= n else "…" + s[len(s) - n + 1:]
+def hyper(p, text):   # OSC 8: a file:// link where the terminal draws them (never inside tmux)
+    e = os.environ.get
+    if not sys.stdout.isatty() or e("TMUX") or not (e("TERM_PROGRAM") in ("iTerm.app", "WezTerm", "ghostty", "vscode") or e("VTE_VERSION") or e("KITTY_WINDOW_ID") or e("WT_SESSION")):
+        return text
+    return "\x1b]8;;file://%s\x1b\\%s\x1b]8;;\x1b\\" % (re.sub(r"[^A-Za-z0-9/._~-]", lambda m: "".join("%%%02X" % b for b in m.group(0).encode()), p), text)
+def gfx():   # how this terminal draws an image: chafa, chafa-symbols (in tmux), iterm, kitty or none (over SSH always none)
+    e = os.environ.get; chafa = shutil.which("chafa")
+    if e("SSH_CONNECTION") or e("SSH_CLIENT") or e("SSH_TTY"): return "none"
+    if e("TMUX"): return "chafa-symbols" if chafa else "none"
+    if e("TERM_PROGRAM") in ("iTerm.app", "WezTerm") or e("LC_TERMINAL") == "iTerm2": return "chafa" if chafa else "iterm"
+    if e("TERM_PROGRAM") == "ghostty" or e("TERM", "") in ("xterm-kitty", "xterm-ghostty") or e("KITTY_WINDOW_ID"): return "chafa" if chafa else "kitty"
+    return "none"
+def render(img, mode, cols, rows):
+    if mode.startswith("chafa"):
+        sys.stdout.flush()
+        return run(["chafa", "--size", "%dx%d" % (cols, max(4, rows - 4))] + (["--format", "symbols"] if mode == "chafa-symbols" else []) + ["--", img]) == 0
+    with open(img, "rb") as f: data = f.read()
+    if mode == "iterm":
+        sys.stdout.write("\x1b]1337;File=inline=1;size=%d;preserveAspectRatio=1:%s\x07\r\n" % (len(data), base64.b64encode(data).decode())); return True
+    if mode == "kitty" and data.startswith(b"\x89PNG"):
+        b = base64.b64encode(data).decode(); parts = [b[i:i + 4096] for i in range(0, len(b), 4096)]
+        for i, c in enumerate(parts): sys.stdout.write("\x1b_G%sm=%d;%s\x1b\\" % ("f=100,a=T," if i == 0 else "", 0 if i == len(parts) - 1 else 1, c))
+        sys.stdout.write("\r\n"); return True
+    return False
+
+class Term:   # the terminal in cbreak mode, read one key at a time; typed-ahead keys are kept (TCSANOW)
+    def __init__(s): s.fd = sys.stdin.fileno(); s.old = termios.tcgetattr(s.fd)
+    def raw(s):
+        a = termios.tcgetattr(s.fd); a[3] &= ~(termios.ICANON | termios.ECHO); a[6][termios.VMIN] = 1; a[6][termios.VTIME] = 0
+        termios.tcsetattr(s.fd, termios.TCSANOW, a)
+    def cooked(s): termios.tcsetattr(s.fd, termios.TCSANOW, s.old)
+    def ready(s): return select.select([s.fd], [], [], 0.05)[0]
+    def key(s):
+        b = os.read(s.fd, 1)
+        if not b or b in (b"\x04", b"\x03"): return "quit"
+        if b == b"\x1b":
+            if s.ready() and os.read(s.fd, 1) in (b"[", b"O") and s.ready():
+                return {b"A": "up", b"B": "down", b"C": "right", b"D": "left"}.get(os.read(s.fd, 1), "")
+            return "esc"
+        if b in (b"\r", b"\n"): return "enter"
+        if b in (b"\x7f", b"\x08"): return "back"
+        return b.decode("latin-1")
+    def line(s, prompt):   # a line typed at the bottom row; esc or ^D cancel (None)
+        buf = ""
+        while True:
+            cols, rows = size()
+            sys.stdout.write("\x1b[%d;1H\x1b[K%s%s" % (rows, prompt, shown(buf)[-(cols - len(prompt) - 1):])); sys.stdout.flush()
+            k = s.key()
+            if k == "enter": return buf
+            if k in ("esc", "quit"): return None
+            if k == "back": buf = buf[:-1]
+            elif len(k) == 1 and k.isprintable(): buf += k
+    def ask(s, text):   # y at the bottom row; an agent session never answers
+        if AGENT: return False
+        cols, rows = size()
+        sys.stdout.write("\x1b[%d;1H\x1b[K%s [y/N] " % (rows, shown(text)[:max(10, cols - 8)])); sys.stdout.flush()
+        return s.key() in ("y", "Y")
+
+def act(t, a, p):   # o f y through ade files --act (its checks, its tools); the last lines it printed
+    t.cooked(); sys.stdout.write("\r\n"); sys.stdout.flush()
+    r = subprocess.run(ADE + ["files", "--act", a, p], stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    t.raw()
+    msg = [l for l in r.stdout.decode("utf-8", "replace").splitlines() if l.strip()]
+    return shown(" · ".join(msg[-2:])) if msg else ""
+ACTS = {"o": "open", "f": "reveal", "y": "copy"}
+
+def label(name, p):
+    s = shown(name)
+    if os.path.islink(p):
+        w, _ = where(p)
+        return s + ("" if w == "in" else " (outside: not followed)") + " -> " + shown(os.readlink(p))
+    return s + ("/" if os.path.isdir(p) else "")
+def listing(d):
+    try: names = os.listdir(d)
+    except OSError: return None
+    names = sorted((n for n in names if n != ".git"), key=lambda n: (not os.path.isdir(os.path.join(d, n)), n.lower()))
+    return [(label(n, os.path.join(d, n)), os.path.join(d, n)) for n in names]
+def preview(p, h):
+    w, real = where(p)
+    if w == "link-out": return ["a link out of the hub and its projects:", shown(real), "", "not followed; Enter asks first"]
+    if w != "in": return ["no preview outside the hub and its projects", "", "Enter asks first"]
+    if os.path.isdir(p):
+        items = listing(p)
+        return ["(cannot read this folder)"] if items is None else ([l for l, _ in items][:h] or ["(empty folder)"])
+    k = kind(p); n = os.path.getsize(p) if os.path.isfile(p) else 0
+    if k == "pdf": return ["PDF document, %s" % human(n), "", "Enter shows its pages"]
+    if k == "image": return ["image %s, %s" % (dims(p), human(n)), "", "Enter shows it; o opens it"]
+    if k in ("binary", "unreadable"): return ["%s file, %s" % (k, human(n)), "", "o opens it in its app"]
+    with open(p, "rb") as f: head = f.read(65536)
+    return [shown(l.decode("utf-8", "replace").expandtabs(4)) for l in head.splitlines()[:h]]
+def search(base, word):   # names under base that hold the word; links are listed, never entered; 3 s at most
+    out, wl, t0 = [], word.lower(), time.time()
+    for dp, dns, fns in os.walk(base):
+        dns[:] = sorted(d for d in dns if d != ".git")
+        for n in sorted(dns + fns):
+            if wl in n.lower():
+                p = os.path.join(dp, n); out.append((label(os.path.relpath(p, base), p), p))
+        if len(out) >= 500 or time.time() - t0 > 3: break
+    return out
+
+ALLOWED = []   # folders outside the roots a yes let the explorer list (never previewed)
+def allowed(real): return any(real == a or real.startswith(a + "/") for a in ALLOWED)
+def explore(start):
+    w, real = where(start)
+    if w != "in" and not wide(real): ALLOWED.append(real)   # ade files asked before it started here
+    t = Term(); cur = start; ents = listing(cur) or []; res = None; sel = top = 0; msg = ""; q = ""
+    def draw():
+        cols, rows = size(); h = max(1, rows - 2); items = res if res is not None else ents
+        lw = cols if cols < 70 else max(24, cols * 2 // 5)
+        tail = "  · search: " + shown(q) if res is not None else ""
+        title = "ade files · " + fit(shown(rel(cur)), max(8, cols - 12 - len(tail))) + tail
+        pv = preview(items[sel][1], h) if items and cols >= 70 else []
+        out = ["\x1b[H\x1b[2J\x1b[1m" + (title[:cols] if in_program(os.path.realpath(cur)) else hyper(cur, title[:cols])) + "\x1b[0m\r\n"]
+        for i in range(h):
+            j = top + i; left = items[j][0][:lw - 1].ljust(lw - 1) if j < len(items) else ("(empty folder)" if i == 0 and not items else "").ljust(lw - 1)
+            ln = ("\x1b[7m" + left + "\x1b[0m") if j == sel and j < len(items) else left
+            if i < len(pv): ln += " │ " + pv[i][:cols - lw - 2]
+            out.append(ln.rstrip() + "\r\n")
+        out.append((msg or "j/k move · Enter open · h up · / search · o open · f reveal · y copy path · q quit")[:cols])
+        sys.stdout.write("".join(out)); sys.stdout.flush()
+    def enter(d, came=None):
+        nonlocal cur, ents, sel, top, res, msg
+        w, real = where(d)
+        if w != "in" and not allowed(real):
+            if not t.ask("%s outside the hub and its projects. Open it anyway?" % ("%s is" % shown(d) if w == "out" else "%s is a link to %s," % (shown(d), shown(real)))):
+                msg = "refused inside an agent session" if AGENT else "not opened"; return
+            if not wide(real): ALLOWED.append(real)   # listed from now on, never previewed; never /, home or a parent of it
+        items = listing(d)
+        if items is None: msg = "cannot read %s" % shown(d); return
+        cur, ents, res, top = d, items, None, 0
+        sel = next((i for i, (_, p) in enumerate(items) if p == came), 0)
+    sys.stdout.write("\x1b[?1049h\x1b[?25l"); t.raw()
+    try:
+        while True:
+            items = res if res is not None else ents
+            sel = max(0, min(sel, len(items) - 1)); _, rows = size(); h = max(1, rows - 2)
+            top = min(max(top, sel - h + 1), sel)
+            draw(); msg = ""; k = t.key()
+            p = items[sel][1] if items else None
+            if k in ("q", "quit") or (k == "esc" and res is None): break
+            elif k in ("j", "down"): sel += 1
+            elif k in ("k", "up"): sel -= 1
+            elif k == "esc": res = None; sel = 0
+            elif k in ("h", "left", "back"):
+                if res is not None: res = None; sel = 0
+                elif os.path.dirname(cur) != cur: enter(os.path.dirname(cur), cur)
+            elif k == "/":
+                q = t.line("/ ") or ""
+                if q:
+                    found = search(cur, q)
+                    if found: res, sel, top = found, 0, 0
+                    else: msg = "no name under this folder holds %s" % shown(q)
+            elif k in ("enter", "l", "right") and p:
+                if os.path.isdir(p): enter(p)
+                else:
+                    t.cooked(); sys.stdout.write("\x1b[?1049l\x1b[?25h"); sys.stdout.flush()
+                    rc = subprocess.call(ADE + ["view", "--", p])
+                    if rc not in (0, 130): sys.stdout.write("(ade view exit %d; a key returns) " % rc); sys.stdout.flush(); t.raw(); t.key()
+                    sys.stdout.write("\x1b[?1049h\x1b[?25l"); t.raw()
+            elif k in ACTS and p: msg = act(t, ACTS[k], p)
+    finally:
+        t.cooked(); sys.stdout.write("\x1b[?25h\x1b[?1049l"); sys.stdout.flush()
+
+def show(k, p, prog):   # a PDF (pages, n/p, g, /), an image or a binary file, with o f y
+    name = os.path.basename(p); tty = sys.stdin.isatty() and sys.stdout.isatty(); mode = gfx() if tty else "none"
+    n = os.path.getsize(p); pages = [""]; note = ""
+    if k == "pdf":
+        if not shutil.which("pdftotext"):
+            print("ade: pdftotext is not installed (poppler), so ade cannot show %s; ade setup --tools installs it (o opens it in your PDF app)" % shown(name))
+            if not tty: return 2
+        else:
+            r = subprocess.run(["pdftotext", "-layout", "--", p, "-"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+            if r.returncode != 0: print("ade: pdftotext could not read %s" % shown(name)); return 1
+            pages = r.stdout.decode("utf-8", "replace").split("\f")
+            if len(pages) > 1 and not pages[-1].strip(): pages.pop()
+            if mode != "none" and not shutil.which("pdftoppm"): note = "pdftoppm (poppler) is not installed: text pages; ade setup --tools installs it"
+    if not tty:
+        if k != "pdf": print("%s: %s, %s (ade view on a terminal: o opens it)" % (shown(name), "image " + dims(p) if k == "image" else k + " file", human(n))); return 0
+        for i, pg in enumerate(pages): print("--- %s · page %d/%d ---\n%s" % (shown(name), i + 1, len(pages), shown(pg).rstrip("\n")))
+        return 0
+    t = Term(); i = 0; msg = note; tmp = ""
+    try:
+        tmp = os.environ.get("ADE_SHOW_TMP") or tempfile.mkdtemp(prefix="ade.", dir=TMP); t.raw()
+        while True:
+            cols, rows = size(); drawn = False
+            head = "%s · page %d/%d" % (shown(name), i + 1, len(pages)) if k == "pdf" else "%s · %s, %s" % (shown(name), "image " + dims(p) if k == "image" else k + " file", human(n))
+            sys.stdout.write("\x1b[H\x1b[2J\x1b[1m" + (hyper(p, fit(head, cols)) if prog == "1" and k != "binary" else fit(head, cols)) + "\x1b[0m\r\n")
+            if k == "pdf" and mode != "none" and shutil.which("pdftoppm") and pages != [""]:
+                for f in glob.glob(os.path.join(tmp, "*.png")): os.remove(f)
+                run(["pdftoppm", "-f", str(i + 1), "-l", str(i + 1), "-png", "-r", "110", "--", p, os.path.join(tmp, "page")], stderr=subprocess.DEVNULL)
+                got = sorted(glob.glob(os.path.join(tmp, "page*.png")))
+                drawn = bool(got) and render(got[0], mode, cols, rows)
+            elif k == "image" and mode != "none": drawn = render(p, mode, cols, rows)
+            if not drawn:
+                if k == "pdf": sys.stdout.write("".join(shown(l.expandtabs(4))[:cols] + "\r\n" for l in pages[i].splitlines()[:rows - 3]))
+                elif k == "image": sys.stdout.write("image: %s, %s (o to open)\r\n" % (dims(p), human(n)))
+                else: sys.stdout.write("%s file: %s (o opens it in its app, f shows it in its folder)\r\n" % (k, human(n)))
+            keys = ("n next · p previous · g go to page · / search · " if k == "pdf" else "") + "o open · f reveal · y copy path · q quit"
+            sys.stdout.write("\x1b[%d;1H\x1b[K%s" % (rows, (msg or keys)[:cols])); sys.stdout.flush(); msg = ""
+            c = t.key()
+            if c in ("q", "quit", "esc"): break
+            if k == "pdf" and c in ("n", " ", "right", "j", "down"): i = min(len(pages) - 1, i + 1)
+            elif k == "pdf" and c in ("p", "left", "k", "up", "b"): i = max(0, i - 1)
+            elif k == "pdf" and c == "g":
+                s = (t.line("page: ") or "").strip()
+                if s.isdigit() and 1 <= int(s) <= len(pages): i = int(s) - 1
+                elif s: msg = "no page %s (1-%d)" % (shown(s), len(pages))
+            elif k == "pdf" and c == "/":
+                s = (t.line("search: ") or "").strip().lower()
+                if s:
+                    hit = next((j % len(pages) for j in range(i + 1, i + 1 + len(pages)) if s in pages[j % len(pages)].lower()), None)
+                    if hit is None: msg = "not found: %s" % shown(s)
+                    else: i = hit; msg = "found on page %d" % (hit + 1)
+            elif c in ACTS: msg = act(t, ACTS[c], p)
+    finally:
+        if tmp: drop(tmp)
+        try: t.cooked(); sys.stdout.write("\r\n"); sys.stdout.flush()
+        except (OSError, termios.error): pass
+    return 0
+
+URL = re.compile(r"https?://[^\s<>\"'`()\[\]{}]+")
+MD = re.compile(r"\[[^\]\n]*\]\(([^)\s]+)\)")
+PATH = re.compile(r"(?<![\w/.~:-])((?:~/|\.{1,2}/|/)?[\w.@+-]+(?:/[\w.@+-]+)*)(?::(\d+)(?::(\d+))?)?")
+def find_links(text, cwd):   # files that exist (path, path:line, path:line:col, Markdown links) and http(s) URLs, in order
+    found, seen = [], set()
+    def is_file(tok): return os.path.isfile(os.path.join(cwd, os.path.expanduser(tok) if tok.startswith("~/") else tok))
+    def add(pos, k, d):
+        if (k, d) not in seen: seen.add((k, d)); found.append((pos, k, d))
+    for no, line in enumerate(text.splitlines()):
+        line = CTL.sub(" ", line); taken = [False] * len(line)
+        def take(m):
+            if any(taken[m.start():m.end()]): return False
+            taken[m.start():m.end()] = [True] * (m.end() - m.start()); return True
+        for m in MD.finditer(line):
+            take(m); tg = m.group(1).strip("<>")
+            if URL.fullmatch(tg): add((no, m.start()), "url", tg)
+            else:
+                f = tg.split("#", 1)[0]; mm = re.fullmatch(r"(.+?)(?::\d+){0,2}", f)
+                if f and mm and is_file(mm.group(1)): add((no, m.start()), "file", f)
+        for m in URL.finditer(line):
+            if take(m): add((no, m.start()), "url", m.group(0).rstrip(".,;:!?"))
+        for m in PATH.finditer(line):
+            tok = m.group(1).rstrip(".")
+            if ("/" in tok or "." in tok.lstrip(".")) and is_file(tok) and take(m):
+                add((no, m.start()), "file", tok + (":" + m.group(2) if m.group(2) else "") + (":" + m.group(3) if m.group(2) and m.group(3) else ""))
+    found.sort(); return [(k, d) for _, k, d in found][-60:]
+def pick(pane, cwd):
+    with open(pane, encoding="utf-8", errors="replace") as f: items = find_links(f.read(), cwd)
+    if not items:
+        print("no file paths or links in this pane")
+        if sys.stdin.isatty():
+            try: input("(Enter closes) ")
+            except EOFError: pass
+        return 0
+    while True:
+        print("Paths and links in this pane (a file opens in ade view, a link in your browser):")
+        for i, (k, d) in enumerate(items, 1): print("  %2d  %s" % (i, shown(d)))
+        try: s = input("Open which? (a number; Enter closes) ").strip()
+        except EOFError: return 0
+        if not s: return 0
+        if not s.isdigit() or not 1 <= int(s) <= len(items): print("no such number: %s" % shown(s)); continue
+        k, d = items[int(s) - 1]
+        subprocess.call(ADE + (["files", "--act", "url", d] if k == "url" else ["view", "--cwd", cwd, "--", d]))
+
+try:
+    if op == "where":
+        arg, cwd = A[0], A[1] or os.getcwd()
+        def absp(a): return os.path.normpath(os.path.join(cwd, os.path.expanduser(a) if a == "~" or a.startswith("~/") else a))
+        p, line = absp(arg), 0
+        if not os.path.lexists(p):
+            m = re.fullmatch(r"(.+?):(\d{1,9})(?::\d{1,9})?", arg)
+            if m and os.path.lexists(absp(m.group(1))): p, line = absp(m.group(1)), int(m.group(2))
+        if "\n" in p or "\x1f" in p: sys.exit("ade: a name with a line break is not supported: %s" % shown(p))
+        w, real = where(p) if os.path.lexists(p) else ("missing", p)
+        fields = (os.fsencode(p), str(line).encode(), w.encode(), os.fsencode(real), shown(p).encode(), shown(real).encode())
+        sys.stdout.buffer.write(b"\x1f".join(fields) + b"\n")   # the names as bytes, as they are on disk
+    elif op == "kind":
+        p = A[0]; k = kind(p); ctl = "0"
+        if k in ("text", "markdown"):
+            with open(p, "rb") as f: ctl = "1" if any(BAD.search(c) for c in iter(lambda: f.read(1 << 20), b"")) else "0"
+        print("\x1f".join((k, ctl, "1" if openable(p) else "0")))
+    elif op == "explore": explore(A[0])
+    elif op == "show": sys.exit(show(A[0], A[1], A[2]))
+    elif op == "pick": sys.exit(pick(A[0], A[1]))
+except KeyboardInterrupt:
+    sys.exit(130)
+PY
+  ADE_ROOTS="$ROOTS" ADE_SELF="$(ade_self)" ADE_BASH="$BASH" ADE_TMP_ROOT="$TMP_ROOT" python3 -I -c "$src" "$@"
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -2358,7 +2993,10 @@ case "$cmd" in
   chat) if [ "${1:-}" = setup ] && [ $# -ge 2 ]; then   # the channel is recorded once its setup succeeds
       h="$(find_hub)" || exit $?; hub_run "$h" chat "$@" || exit $?; record_channel "$h" "$2"; exit 0; fi
     run_hub chat "$@" ;;
-  dispatch|notify|method|keys|models|roles|doctor|sync|context) run_hub "$cmd" "$@" ;;
+  dispatch|notify|method|keys|models|roles|sync|context) run_hub "$cmd" "$@" ;;
+  doctor) tools_report; run_hub doctor "$@" ;;
+  files) cmd_files "$@" ;;
+  view) cmd_view "$@" ;;
   ui) cmd_ui "$@" ;;
   dash) cmd_dash "$@" ;;
   status) run_hub sessions "$@" ;;
