@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.2
 - The guided first run (A18): `ade` with no hub lists the steps with their state and, at a terminal, asks
   `Set up now? [Y/n]`; `ade setup` is the guide, one step at a time (Claude Code, sign in to Claude, sign in to
   GitHub, your hub, your first project, Telegram), each said before it runs and checked after, resuming where you
