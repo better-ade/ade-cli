@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.0
 - `ade files [<folder>]`, `ade view <path[:line[:col]]>` and `ade ui` keys `prefix e` (files) and `prefix l` (the file
   paths and URLs in this pane, opened in `ade view` at their line or in the browser) (A15): a read-only explorer with
   name search and preview (yazi only with `ADE_FILES=yazi`, and then neither read-only nor held to the hub), code with
@@ -20,8 +20,8 @@
   be ade-cli's, for that version; its url is ignored; never a downgrade). The day's check runs in a detached job
   (2 s for all components; no command waits); the auto-install runs detached, only from a terminal and never in an
   agent session; `ade update --auto on|off` switches it.
-- `ade update [--check]` (A11): replaces ade by one rename after the new file passes `ade version` (a running ade keeps
-- `ade update [--check | --rollback]` (A11; the previous ade is kept as `.ade.prev`, untracked hub files never block): replaces ade by one rename after the new file passes `ade version` (a running ade keeps
+- `ade update [--check | --rollback]` (A11; the previous ade is kept as `.ade.prev`, untracked hub files never
+  block): replaces ade by one rename after the new file passes `ade version` (a running ade keeps
   its code; `ade dash` re-execs on a new version), pulls the hub with `--ff-only` (local changes or a merge refuse),
   runs `bin/method sync`, `claude plugin update` for ade-skills plugins and `claude update`, reloads `ade ui` with
   `tmux source-file`, restarts an orchestrator on new chat code only when it is idle (else later), and sends one
