@@ -40,9 +40,22 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - tmux: ade's own server (`tmux -L ade`, `ADE_TMUX_SOCKET`), session `ade-<HUB_NAME>`, config
   `~/.config/ade/ui-<session>.tmux.conf`, theme `~/.config/ade/theme` (`bg fg accent orchestrator busy idle blocked
   unread` = `#rrggbb` or a tmux colour word; anything else falls back to the default).
-- `ade work` while the session runs exports `AGENT_TERMINAL=tmux` and `ADE_UI_SESSION=<session>` (unless the caller set
-  `AGENT_TERMINAL`); bin/work's tmux mode (V1) then opens a window in that session named `<folder>` or
-  `<folder>:<ticket>` (`ade ui --tab-name <folder> [ticket]` prints the name).
+- `ade work` (tabs, never a window): unless `ADE_UI=off`, the caller chose a terminal (`AGENT_TERMINAL`; `tmux`
+  counts only together with `ADE_UI_SESSION`, as tab 0 has them), the ADE app (`ADE_HOOK_BIN` executable with
+  `ADE_HOOK_PORT`, `ADE_HOOK_TOKEN`, `ADE_PTY_ID`) or no tmux, `ade` makes the session when it is not there and runs
+  `bin/work` with `AGENT_TERMINAL=tmux`, `ADE_UI_SESSION=<session>` and `TMUX=<socket path of ade's tmux server>`
+  (so the hub's plain `tmux` reaches that server). The session name is `ade-<HUB_NAME>-<6 hex>`; the hub's tmux mode
+  (V1) looks for `ade-<HUB_NAME>`, does not find it, and opens a detached session of its own, so `ade` moves every
+  session that appeared during `bin/work` into its session as a window named `<folder>` (`rename-window`,
+  `move-window -d`). **Needed from the hub:** bin/work's tmux mode should open its window in `$ADE_UI_SESSION` when
+  that is set (then there is nothing to move). Tab 0 is `ade claude`, or `ade ui --place` (it waits for Enter, then
+  runs `ade claude`) when a process with `--remote-control <HUB_NAME>` already runs (`pgrep -f`).
+- `ade claude` with no arguments, at a terminal, outside an agent session and outside the session, is `ade ui`
+  (tab 0 runs the orchestrator, the person is attached); the same exceptions as `ade work`.
+- `ade` alone is `ade ui` at a terminal when the hub is set up (`claude` on PATH, `HUB_ROOT_PROVIDER` set, a folder
+  under `projects/`), outside an agent session, the ADE app and ade's tmux server, unless `ADE_UI=off`; `ade home`
+  is the summary (hub, `bin/sessions`, next commands).
+- `ade ui --tab-name <folder> [ticket]` prints a tab's name: `<folder>` or `<folder>:<ticket>`.
 - `bin/sessions` columns as today; a row's ticket is its NAME when that differs from the folder's last part; STATUS
   `busy`, `idle` or `blocked`.
 - `bin/inbox --count <session name|main>` (C6): the number of unread events, `0` once read.

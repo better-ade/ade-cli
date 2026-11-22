@@ -18,6 +18,7 @@ fresh() {
   export ADE_NO_UPDATE_CHECK=1 ADE_NO_AUTO_UPDATE=1   # never a real release check (test_releases.sh unsets them)
   drop_t; T="$(mktemp -d "${TMPDIR:-/tmp}/ade-test.XXXXXX")"; T="$(cd "$T" && pwd -P)"; trap drop_t EXIT
   export ADE_NO_CLAUDE_UPDATE=1   # the Claude Code update step is tested on its own (test_update.sh)
+  export ADE_UI=off   # ade work and ade claude never reach a real tmux server from a test (test_ui.sh turns tabs on, with its fake)
   export HOME="$T/home"; mkdir -p "$HOME"
   export GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 }

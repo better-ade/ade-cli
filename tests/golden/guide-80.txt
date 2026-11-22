@@ -77,4 +77,4 @@ Telegram skipped (later: ade setup --telegram)
 checked: Telegram is off
 
 All set: your hub acme is ready (~/hubs/acme).
-next: ade claude (your everything agent), or ade (what to do next)
+next: type ade to open your workspace (your main agent, and a tab per agent)

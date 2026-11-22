@@ -205,7 +205,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 
 | Command | What it does | Status |
 |---|---|---|
-| `ade work <folder> [--role <r>]` | Start or resume a focus agent (hub `bin/work`) | **built** (A1) |
+| `ade work <folder> [--role <r>]` | Start or resume a focus agent (hub `bin/work`), as a tab of the hub's `ade ui` session and never a new window: the session is made when it is not there (`ade ui` shows it). `ADE_UI=off`, no tmux or the ADE app: the hub's own way | **built** (A1, A6) |
 | `ade status` | List sessions (hub `bin/sessions`) | **built** (A1) |
 | `ade dispatch …` | Hand a task to an agent (hub `bin/dispatch`) | **built** (A1) |
 | `ade notify …` | Send a notification (hub `bin/notify`) | **built** (A1) |
@@ -228,8 +228,9 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `curl … \| bash` | One-line install of the tagged release | **built** (A3) |
 | `ade hub new <name> [--private\|--public] [--dir <d>]` | Create a hub from the ade-brain template, run its `bin/init`, make it the default | **built** (A3) |
 | `ade hub list` · `ade hub use <path>` | The hubs `ade` knows; switch the default | **built** (A3) |
-| `ade` (no arguments) | Say what to do next: the hub, its status and the next commands | **built** (A3) |
-| `ade claude [<folder>] [-- args]` | Claude Code at the hub root as the orchestrator; with a folder, `ade work <folder>` | **built** (A4) |
+| `ade` (no arguments) | Your workspace: at a terminal with tmux and a hub that is set up, the tab view (`ade ui`: the main agent as tab 0, a tab per agent). Set-up not finished: the guide's steps and its offer. Without a terminal or tmux, in an agent session, with `ADE_UI=off` or inside the tab view: the summary below | **built** (A3, A6) |
+| `ade home` | The hub, its sessions and what to do next (what `ade` alone printed before; `ade status` is the hub's sessions only) | **built** (A3) |
+| `ade claude [<folder>] [-- args]` | Claude Code at the hub root as the orchestrator: at a terminal with tmux, as tab 0 of the hub's `ade ui` session, so focus work opens as tabs beside it (`ADE_UI=off`, or `ade claude -- <args>`: in this terminal); with a folder, `ade work <folder>` | **built** (A4, A6) |
 | `ade setup [--check\|--test\|--top\|--telegram]` | The guide (A18): Claude Code, Claude and GitHub sign-in, the hub and its providers, the first project, Telegram; resumes where you are | **built** (A5, A18; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade ui [--detach]` · `ade dash [--once]` | One tmux window, a tab per agent with state icons; fleet sidebar; popups for new agent, approve, tickets, plan preview, help | **built** (A6; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade skills list\|enable\|disable\|search` | Skills and plugins on the fly, with a reload hint to running sessions | **built** (A7) |
