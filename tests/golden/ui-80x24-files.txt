@@ -17,7 +17,7 @@ orc┌────────────────────────�
    │                                                                      │
    │                                                                      │
    │                                                                      │
-   │j/k move · Enter open · h up · / search · o open · f reveal · y copy p│
+   │j/k · Enter open · h up · / search · o app · c code · f reveal · y cop│
    └──────────────────────────────────────────────────────────────────────┘
 
 

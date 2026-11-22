@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+- Visual Studio Code for code viewing: `c` in `ade files`, in the viewer's own screens and in the link picker (a
+  number then `c`) opens the file at its line and column (`code --goto <path>:<line>:<col>`, the path one argument,
+  never a shell string) and a folder as a folder; `ade view --code <path[:line[:col]]>` does it from the command
+  line; `ADE_VIEWER=code` makes `ade view` open code and text files there by default at a terminal, while images,
+  PDFs and Markdown keep the built-in viewer. A path outside the hub and its projects asks first, as `o` does. No
+  `code` command: one line and the built-in viewer, never an error; a `code` inside the hub or project being viewed
+  is never run; over SSH with no display the path is offered. `ade setup --tools` installs it with the other extras
+  (Homebrew cask `visual-studio-code`; on Linux it names Microsoft's page and adds no repository) and `ade doctor`
+  lists it.
+
 ## 0.2.2
 - The guided first run (A18): `ade` with no hub lists the steps with their state and, at a terminal, asks
   `Set up now? [Y/n]`; `ade setup` is the guide, one step at a time (Claude Code, sign in to Claude, sign in to

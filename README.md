@@ -162,11 +162,21 @@ line (resolved against that agent's folder), a URL in your browser. Outside `ade
 | `/` | search names under this folder | search the PDF's text |
 | `n` `p` `g` | | next, previous, go to page |
 | `o` `f` `y` | open in the default app, reveal in Finder (or the folder), copy the path | the same |
+| `c` | open the file (or folder) in Visual Studio Code | the same |
 | `q` | quit | quit |
 
 Over SSH, `o`, `f` and `y` print the path and an `scp` line instead, and PDFs are always text. A missing extra
 (`bat`, `glow`, `poppler`, `chafa`) is named once, with `ade setup --tools` to install it. `ADE_FILES=yazi` swaps the
 explorer for yazi, which is not read-only and not held to the hub's folders.
+
+Visual Studio Code: `c` in the explorer, in the viewer's own screens (PDF, image, binary) and in the link picker
+(a number then `c`) opens the file with `code --goto <path>:<line>:<col>`, a folder as a folder;
+`ade view --code <path[:line[:col]]>` does it from the command line, and `ADE_VIEWER=code` makes `ade view` open code
+and text files there by default, at a terminal (images, PDFs and Markdown keep the built-in viewer). A code file
+shown by `ade view` is in the pager (`less`), which owns the keys: there, use `--code` or `ADE_VIEWER=code`. A path
+outside the hub and its projects asks first; without the `code` command one line says so (`ade setup --tools`
+installs Visual Studio Code) and the built-in viewer is used; a `code` that lies inside the hub or project is never
+run; over SSH with no display (and outside Visual Studio Code's own terminal) the path is offered instead.
 
 ## A ticket's path
 
@@ -220,8 +230,8 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade uninstall [--keys] [--hub <path>]` | `ade reset`, then remove the installed `ade` (never a checkout) and print how to reinstall | **built** (A9) |
 | `ade restore [--check] [--label <name>]` | Compare `.ade/connections.json` (names only, committed) with this machine and walk each gap with a yes: the Claude account, keys (hidden prompt, live test), plugins, Telegram (token, re-pair), services | **built** (A10) |
 | `ade files [<folder>]` | A directory explorer over the hub and its projects: name search (`/`), live preview, `o` open in the default app, `f` reveal in Finder (or the Linux file manager), `y` copy the path; a built-in browser (bash + python3), read-only and held to the hub's folders; `ADE_FILES=yazi` uses yazi instead, which yazi is neither read-only nor held to the hub and its projects (it deletes, renames, moves, runs commands and walks anywhere without asking) | **built** (A15) |
-| `ade view <path[:line[:col]]>` | Code at the line (`bat`, else `less -N`), Markdown (`glow`, else plain), images (chafa or the terminal's protocol on iTerm2, WezTerm, kitty, Ghostty; else its size), PDFs (page images on a graphics terminal, else `pdftotext` text; `n`/`p` page, `g` go to, `/` search); `o`, `f`, `y` | **built** (A15) |
-| `ade setup --tools [required\|extras]` | Install what is missing (git, python3, tmux, gh; the viewer extras yazi, bat, glow, poppler, chafa) with Homebrew or apt, after one yes at a terminal; `ade doctor` lists each tool | **built** (A15) |
+| `ade view <path[:line[:col]]>` | Code at the line (`bat`, else `less -N`), Markdown (`glow`, else plain), images (chafa or the terminal's protocol on iTerm2, WezTerm, kitty, Ghostty; else its size), PDFs (page images on a graphics terminal, else `pdftotext` text; `n`/`p` page, `g` go to, `/` search); `o`, `f`, `y`, `c`; `--code` and `ADE_VIEWER=code` open Visual Studio Code | **built** (A15) |
+| `ade setup --tools [required\|extras]` | Install what is missing (git, python3, tmux, gh; the viewer extras yazi, bat, glow, poppler, chafa and Visual Studio Code) with Homebrew or apt, after one yes at a terminal; `ade doctor` lists each tool | **built** (A15) |
 | `ade update [--check \| --rollback \| --auto on\|off]` | ade itself (download, sha256 against the release's `release.json`, checked in a temp folder, the old one kept as `.ade.prev`, one rename; `--rollback` swaps them back), the hub (`git pull --ff-only`, `bin/method sync`), ade-skills plugins, Claude Code, `ade ui` reloaded in place; nothing is stopped; one notify line | **built** (A11) |
 
 Exit codes: `0` success, `1` a failure while working (a fetch or a copy), `2` a usage problem or a missing hub, script
