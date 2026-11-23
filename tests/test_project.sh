@@ -74,7 +74,7 @@ n=$#; url=""; dest=""; clone=0
 for a in "$@"; do [ "$a" = clone ] && clone=1; done
 if [ "$clone" = 1 ] && [ "$n" -ge 3 ]; then url="${*:n-1:1}"; dest="${*:n:1}"; fi
 case "$url" in
-  https://*|http://*|git@*|ssh://*)
+  *://*|*@*:*)   # anything that is not a local path: never the network
     echo "git clone $url $dest" >> "$FT/net.log"
     [ ! -f "$FT/clone.fail" ] || { echo "fatal: repository not found" >&2; exit 128; }
     "$REAL_GIT" init -q "$dest" && "$REAL_GIT" -C "$dest" symbolic-ref HEAD refs/heads/main && "$REAL_GIT" -C "$dest" remote add origin "$url" &&
@@ -228,11 +228,48 @@ credentials_stripped() {   # AC4: a remote with user:token@ is shown and stored 
   assert_contains "$H/projects/priv/ACCESS.md" "| https://github.com/acme/priv | $T/src/priv |" "the stored remote has no credentials"
   assert_contains "$H/projects/priv2/ACCESS.md" "| https://github.com/acme/priv2 |" "a URL given with them"
   assert_contains "$H/projects/p3/ACCESS.md" "| https://github.com/acme/p3 |" "a token alone"
-  assert_contains "$T/out" "the credentials in that URL are left out" "says so"
+  assert_contains "$T/out" "that URL is used without its credentials or query" "says so"
   for s in SECRETTOKEN HIDDENVALUE TOKENALONE NOTAURL; do
     ! grep -rqF "$s" "$T/out" "$H" "$HOME" "$T/net.log" || fail "$s was printed, stored or cloned with"
   done
   assert_contains "$T/net.log" "git clone https://github.com/acme/priv2.git " "cloned without them"
+}
+
+credential_forms() {   # AC4 (review B2): every form a credential can take in a remote; inputs from a file, secrets built here
+  proj_fixture; mkdir -p "$HOME/Project"; K="FAKE$(printf '%s' pw)$$"; n=0
+  printf '%s\n' "HTTPS://user:${K}@host.example/o/r1" "https://user:pa/ss${K}@host.example/o/r2.git" "https://user:p@ss${K}@host.example/o/r3.git" \
+    "user:${K}@host.example:o/r4.git" "ssh://user:${K}@host.example:22/o/r5.git" "https://${K}@host.example/o/r6" \
+    "Git+SSH://user:${K}@host.example/o/r7" "https://host.example/o/r8.git?token=${K}" "https://host.example/o/r9#${K}" > "$T/remotes"
+  # each as a local repo's configured remote: stored and shown without it
+  while IFS= read -r u; do n=$((n + 1)); mkrepo "$T/src/l$n"; git -C "$T/src/l$n" config remote.origin.url "$u"
+    run "$T/none" project add "$T/src/l$n" --no-init; is 0 "a local repo whose remote is line $n"
+    ! grep -rqF "$K" "$T/out" "$H" "$HOME" || { grep -rF "$K" "$T/out" "$H" | head -3; fail "line $n: the credential was printed or stored"; }
+    r="$(awk -F'|' -v c="$T/src/l$n" '{ x = $3; gsub(/^ +| +$/, "", x) } x == c { y = $2; gsub(/^ +| +$/, "", y); print y }' "$H/projects/l$n/ACCESS.md")"
+    case "$r" in "https://host.example/o/r$n"|"(remote hidden: it held a credential)") ;; *) fail "line $n: the stored remote is [$r]" ;; esac
+    case "$r" in *@*) fail "line $n: a userinfo is left in [$r]" ;; esac
+  done < "$T/remotes"
+  assert_contains "$H/projects/l1/ACCESS.md" "| https://host.example/o/r1 |" "an uppercase scheme"
+  assert_contains "$H/projects/l2/ACCESS.md" "| https://host.example/o/r2 |" "a / in the password"
+  assert_contains "$H/projects/l3/ACCESS.md" "| https://host.example/o/r3 |" "an @ in the password"
+  assert_contains "$H/projects/l4/ACCESS.md" "| https://host.example/o/r4 |" "scp-like with a password"
+  assert_contains "$H/projects/l8/ACCESS.md" "| https://host.example/o/r8 |" "a query"
+  # each given as the URL to clone: cloned without it (no userinfo password, no query), or refused with one line
+  : > "$T/net.log"; n=0
+  while IFS= read -r u; do n=$((n + 1))
+    run "$T/none" project add "$u" --no-init
+    ! grep -rqF "$K" "$T/out" "$H" "$HOME" "$T/net.log" || { grep -rF "$K" "$T/out" "$T/net.log" | head -3; fail "line $n as a URL: the credential was printed, stored or cloned with"; }
+  done < "$T/remotes"
+  assert_not_contains "$T/net.log" "?" "no clone carries a query"
+  assert_contains "$T/net.log" "/o/r8.git $HOME/Project/r8" "the query is dropped before the clone"
+  assert_contains "$T/net.log" "git clone user@host.example:o/r4.git $HOME/Project/r4" "scp-like: its user name only"
+  assert_contains "$T/net.log" "git clone ssh://user@host.example:22/o/r5.git $HOME/Project/r5" "ssh: its user name only"
+  [ "$(wc -l < "$T/net.log" | tr -d ' ')" = 9 ] || fail "each of the nine is cloned once"
+  [ -d "$H/projects/r1" ] && [ -d "$H/projects/r3" ] && [ -d "$H/projects/r4" ] && [ -d "$H/projects/r8" ] || { cat "$T/out"; fail "the URLs are still cloned and added"; }
+  # last line of defence: a remote that still looks like it holds a userinfo is hidden, never written
+  mkrepo "$T/src/odd"; git -C "$T/src/odd" config remote.origin.url "weird;user:${K}@[host]:x"
+  run "$T/none" project add "$T/src/odd" --no-init; is 0 "a remote ade cannot read"
+  ! grep -rqF "$K" "$T/out" "$H" || fail "an unreadable remote's credential was printed or stored"
+  assert_contains "$H/projects/odd/ACCESS.md" "| (remote hidden: it held a credential) | $T/src/odd |" "hidden"
 }
 
 init_offered_never_overwrites() {   # AC5: one yes/no per repo; ade init never overwrites
@@ -420,7 +457,7 @@ project_help() {   # AC10: ade project alone prints the help
   (cd "$T/cwd" && bash "$ADE" project add "$T/cwd" < "$T/none") > "$T/out" 2>&1; assert_eq "$?" 2 "no hub: nothing added"
 }
 
-ALL="adds_local_repo adds_two repos_of_reads_row adds_url code_folder existing_name_kept name_rules credentials_stripped
+ALL="adds_local_repo adds_two repos_of_reads_row adds_url code_folder existing_name_kept name_rules credentials_stripped credential_forms
 init_offered_never_overwrites no_init_and_yes memory_indexed non_repo_fails_alone failure_asks_at_terminal
 start_refused_in_agent_session start_at_terminal scan_picks lists_projects project_help"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done

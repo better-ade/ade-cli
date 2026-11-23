@@ -19,8 +19,10 @@ and the hub (A21)".
   guide's own multi-choice question does not set it and behaves as before.
 
 ## Safety
-- Credentials: `url_nocred` strips `user:token@` before a clone (so git never stores it) and `url_clean` makes the
-  https form for the table; what the person typed is printed through `proj_shown`.
+- Credentials (review B2): `proj_url` drops the whole userinfo (everything up to the last `@`), any query and any
+  fragment, reading the scheme in any case: `clone` is what git is given (ssh keeps its user name only, so git never
+  stores a password), `clean` is the https form for the table, and a remote that still looks like it holds a userinfo
+  is written as `(remote hidden: it held a credential)`. What the person typed is printed through `proj_shown`.
 - Data, not code: names and paths reach git and the hub's scripts as single arguments; the table cells drop `|` and
   control characters; a checkout path that holds one is refused.
 - Nothing is overwritten: an existing hub folder is never passed to `bin/new`, `ade init` keeps what is there, and a

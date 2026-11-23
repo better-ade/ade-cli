@@ -4441,17 +4441,50 @@ HELP
 proj_name_ok() { matches "$1" '^[a-z0-9][a-z0-9-]{0,63}$'; }
 # proj_name <text>: a folder name in the hub's rules (a-z 0-9 -) from a repo's folder name; nothing when none is left
 proj_name() { printf '%s' "${1%.git}" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -c 'a-z0-9' '-' | tr -s '-' | sed 's/^-//' | cut -c1-64 | sed 's/-$//'; }
-# url_nocred <url>: the URL as given, without a user:token@ or token@ (ssh keeps its user, never a password)
-url_nocred() { printf '%s' "$1" | no_ctl | sed -E 's#^(https?://)[^/@]*@#\1#; s#^(ssh://[^/:@]*):[^/@]*@#\1@#'; }
-# url_clean <remote>: its https form for the table, never with credentials, a query or a trailing .git
-url_clean() {
-  url_nocred "$1" | sed -E 's#^[A-Za-z0-9._-]+@([^:/]+):#https://\1/#; s#^(ssh|git)://([^@/]*@)?([^/:]+)(:[0-9]+)?/#https://\3/#; s#[?\#].*$##; s#/+$##; s#\.git$##' | tr -d '|'
+# proj_url <clean|clone|shown> <text>: a remote without its credentials (review B2). The whole userinfo (everything up
+# to the last @), any query and any fragment are dropped, and the scheme is read in any case.
+#   clean: the https form for ACCESS.md and for the screen (no port for ssh, no .git); a remote that still looks like
+#          it holds a userinfo is "(remote hidden: it held a credential)", never written and never printed
+#   clone: the URL git is given: no password, no query; ssh keeps its user name only; nothing when it cannot be read
+#   shown: what the person typed, for a line ade prints: everything up to the last @ is hidden
+PROJ_HIDDEN="(remote hidden: it held a credential)"
+proj_url() {
+  python3 -I -c '
+import re, sys
+mode, u = sys.argv[1], re.sub(r"[\x00-\x20\x7f]", "", sys.argv[2])
+if mode == "shown":
+    u = re.split(r"[?#]", u, 1)[0]
+    print("<hidden>@" + u.rsplit("@", 1)[1] if "@" in u else u); sys.exit(0)
+hidden = "(remote hidden: it held a credential)"
+simple = lambda x: x if re.match(r"^[A-Za-z0-9._-]{1,64}$", x) else ""
+u = re.split(r"[?#]", u, 1)[0]
+m = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*)://(.*)$", u)
+scheme = user = host = port = path = ""
+if m and m.group(1).lower() != "file":
+    scheme, rest = m.group(1).lower(), m.group(2)
+    if "@" in rest:
+        info, rest = rest.rsplit("@", 1); user = simple(info.split(":", 1)[0])
+    hm = re.match(r"^([A-Za-z0-9.-]+)(:[0-9]{1,5})?(/.*)?$", rest)
+    if hm: host, port, path = hm.group(1), hm.group(2) or "", (hm.group(3) or "").strip("/")
+elif not m:
+    sm = re.match(r"^(.*)@([A-Za-z0-9.-]+):([^:@]*)$", u)
+    if sm: scheme, user, host, path = "scp", simple(sm.group(1).split(":", 1)[0]), sm.group(2), sm.group(3).strip("/")
+if host and re.match(r"^[A-Za-z0-9._~/+-]*$", path):
+    web = scheme in ("http", "https")
+    if mode == "clone":
+        if scheme == "scp": print("%s@%s:%s" % (user or "git", host, path))
+        else: print("%s://%s%s%s/%s" % (scheme, "" if web or not user else user + "@", host, port, path))
+    else:
+        print("%s://%s%s/%s" % ("http" if scheme == "http" else "https", host, port if web else "", re.sub(r"\.git$", "", path)))
+elif mode == "clean":   # not a URL ade can read (a local path, or something else): as it is unless it could hold a userinfo
+    print(hidden if ("@" in u or (":" in u and not re.match(r"^file://", u)) or scheme) else u.replace("|", ""))
+' "$@"
 }
+url_clean() { proj_url clean "$1"; }
 # proj_shown <text>: what the person typed, as one line ade may print: never with a user:token@
-proj_shown() { plain "$(printf '%s' "$1" | sed -E 's#(://)[^/@ ]*@#\1#g; s#[^/@ :]+:[^/@ ]+@#<hidden>@#g')"; }
+proj_shown() { plain "$(proj_url shown "$1")"; }
 proj_is_url() {
-  case "$1" in https://?*|http://?*|ssh://?*|git://?*) return 0 ;; esac
-  matches "$1" '^[A-Za-z0-9._-]+@[A-Za-z0-9.-]+:[A-Za-z0-9._/-]+$' || matches "$1" '^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$'
+  matches "$1" '^[A-Za-z][A-Za-z0-9+.-]*://.' || matches "$1" '^[^/]*@[A-Za-z0-9.-]+:[A-Za-z0-9._/~-]+$' || matches "$1" '^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$'
 }
 phys() { (cd "$1" 2> /dev/null && pwd -P); }
 # proj_checkouts <ACCESS.md>: its checkout paths, read as the hub's repos_of reads them (~ expanded)
@@ -4488,10 +4521,12 @@ proj_code_dir() {
 # proj_clone <hub> <url>: the repo cloned into the code folder (gh when it is signed in and the host is GitHub, else
 # git), into P_REPO; a folder already there with the same remote is used as it is
 proj_clone() {
-  local u="$2" base dest clean have
-  matches "$u" '^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$' && u="https://github.com/$u"
-  u="$(url_nocred "$u")"; clean="$(url_clean "$u")"; base="${clean##*/}"
-  [ "$u" = "$2" ] || matches "$2" '^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$' || echo "the credentials in that URL are left out: $(plain "$clean")"
+  local u="$2" base dest clean have short=0
+  matches "$u" '^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$' && { u="https://github.com/$u"; short=1; }
+  clean="$(url_clean "$u")"; have="$(proj_url clone "$u")"; base="${clean##*/}"
+  [ -n "$have" ] && [ -n "$clean" ] && [ "$clean" != "$PROJ_HIDDEN" ] || { P_ERR="that URL cannot be read as a git URL (its credentials, if any, are not shown)"; return 1; }
+  [ "$have" = "$u" ] || [ "$short" = 1 ] || echo "that URL is used without its credentials or query: $(plain "$clean")"
+  u="$have"
   matches "$base" '^[A-Za-z0-9._-]+$' && [ "$base" != . ] && [ "$base" != .. ] || { P_ERR="no folder name can be read from $(plain "$clean")"; return 1; }
   proj_code_dir "$1" || return 1
   dest="$P_CODE/$base"
