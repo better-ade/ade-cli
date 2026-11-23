@@ -137,8 +137,19 @@ bun_already_installed_left_alone() {   # Homebrew's bun, or one in ~/.bun/bin: n
   assert_eq "$(cat "$CALLS")" "" "nothing downloaded, and brew is not run"; [ ! -e "$HOME/.bun" ] || fail "no ~/.bun"; [ ! -e "$HOME/.zshrc" ] || fail "no PATH line"
   assert_eq "$("$T/homebrew/bin/bun" --version)" "1.0.0" "it is left as it was"
   world; mkdir -p "$HOME/.bun/bin"; printf '#!/bin/bash\necho 1.0.0\n' > "$B"; chmod +x "$B"; before="$(cksum "$B")"
-  talk "y\n" setup --tools; assert_eq "$(cat "$T/out")" "tools: everything ade uses is installed" "a bun in ~/.bun/bin counts, on PATH or not"
-  assert_eq "$(cat "$CALLS")" "" "nothing downloaded"; assert_eq "$(cksum "$B")" "$before" "it is left as it was"; [ ! -e "$HOME/.zshrc" ] || fail "and the start file is not touched"
+  talk "y\n" setup --tools; assert_contains "$T/out" "tools: everything ade uses is installed" "a bun in ~/.bun/bin counts, on PATH or not"
+  assert_eq "$(cat "$CALLS")" "" "nothing downloaded"; assert_eq "$(cksum "$B")" "$before" "it is left as it was"
+  # the owner's Mac, 2026-11-23: bun in ~/.bun/bin, not on PATH, so the hub's bin/chat in a new terminal found none
+  assert_contains "$T/out" "~/.bun/bin is not on your PATH: ade adds one line to ~/.zshrc, so a new" "not on PATH: said"
+  assert_eq "$(cat "$HOME/.zshrc")" "$RC_LINE" "and the start file gets the line, so a new terminal finds bun"
+  talk "" setup --tools; assert_eq "$(cat "$T/out")" "tools: everything ade uses is installed" "run again: nothing more"
+  assert_eq "$(grep -c '\.bun/bin' "$HOME/.zshrc")" 1 "the line once"
+  world; mkdir -p "$HOME/.bun/bin"; printf '#!/bin/bash\necho 1.0.0\n' > "$B"; chmod +x "$B"; talk "y\n" setup
+  assert_contains "$HOME/.zshrc" "$RC_LINE" "the guide's tools step does the same"
+  world; mkdir -p "$HOME/.bun/bin"; printf '#!/bin/bash\necho 1.0.0\n' > "$B"; chmod +x "$B"; CLAUDECODE=1 A setup --tools < /dev/null
+  [ ! -e "$HOME/.zshrc" ] || fail "an agent session never writes the start file"
+  world; mkdir -p "$HOME/.bun/bin"; printf '#!/bin/bash\necho 1.0.0\n' > "$B"; chmod +x "$B"; ADE_TEST_PATH="$F:$T/sys:$HOME/.bun/bin" talk "" setup --tools
+  [ ! -e "$HOME/.zshrc" ] || fail "~/.bun/bin already on the person's PATH: no line"
   world; rm "$F/tmux"; talk "y\ny\n" setup --tools
   assert_eq "$(grep -c '^brew ' "$CALLS")" 1 "Homebrew installs the other tools"; assert_contains "$CALLS" "brew install tmux" "tmux"; assert_not_contains "$CALLS" "brew install tmux bun" "never bun"
   [ -x "$B" ] || fail "bun from its release, in the same run"

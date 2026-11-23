@@ -3385,8 +3385,12 @@ BUN_RELEASES="https://github.com/oven-sh/bun/releases"
 BUN_RC_MARK="# added by ade: bun"
 BUN_WHY=""; BUN_DETAILS=""
 # bun_path: a bun in ~/.bun/bin that is not on PATH is found by ade and by what it runs (the hub's bin/chat); a bun
-# already on PATH stays the one that is found
-bun_path() { command -v bun > /dev/null 2>&1 || ! [ -x "$HOME/.bun/bin/bun" ] || { PATH="$HOME/.bun/bin:$PATH"; export PATH; hash -r; }; }
+# already on PATH stays the one that is found. BUN_PATH_ADDED=1: ade put it there, so the person's own PATH lacks it
+# and setup writes the start-file line (bun_rc), whoever installed bun
+BUN_PATH_ADDED=""
+bun_path() { command -v bun > /dev/null 2>&1 || ! [ -x "$HOME/.bun/bin/bun" ] || { PATH="$HOME/.bun/bin:$PATH"; export PATH; hash -r; BUN_PATH_ADDED=1; }; }
+# bun_rc_due: bun is in ~/.bun/bin, the person's PATH lacks it, and this is a person at a terminal (setup then adds the line)
+bun_rc_due() { [ "$BUN_PATH_ADDED" = 1 ] && [ -x "$HOME/.bun/bin/bun" ] && ! agent_context; }
 bun_asset() {   # the release zip for this OS and CPU, without .zip; 1 = bun has none that ade knows
   local os cpu; os="$(uname -s 2> /dev/null)"; cpu="$(uname -m 2> /dev/null)"
   case "$os" in Darwin) os=darwin ;; Linux) os=linux ;; *) return 1 ;; esac
@@ -3433,8 +3437,7 @@ PY
 # shell start file (~/.zshrc for zsh, ~/.bashrc for bash, ~/.profile otherwise), said first and never added twice
 bun_rc() {
   local f line
-  case ":$PATH:" in *":$HOME/.bun/bin:"*) return 0 ;; esac
-  PATH="$HOME/.bun/bin:$PATH"; export PATH; hash -r
+  case ":$PATH:" in *":$HOME/.bun/bin:"*) [ "$BUN_PATH_ADDED" = 1 ] || return 0 ;; *) PATH="$HOME/.bun/bin:$PATH"; export PATH; hash -r ;; esac
   case "${SHELL:-}" in */zsh) f=.zshrc ;; */bash) f=.bashrc ;; *) f=.profile ;; esac
   ! grep -qF '.bun/bin' "$HOME/$f" 2> /dev/null && ! grep -qF 'BUN_INSTALL' "$HOME/$f" 2> /dev/null || return 0
   # shellcheck disable=SC2016  # the line as it goes into the file: the shell that reads it expands it
@@ -3476,6 +3479,7 @@ setup_tools() {   # [required|extras]: ade setup --tools; what is missing, after
   local req ext ASK_AGAIN="ade setup --tools"
   req="$(tools_missing $REQUIRED_TOOLS)"; ext="$(tools_missing $EXTRA_TOOLS)"
   case "${1:-}" in required) ext="" ;; extras) req="" ;; esac
+  ! bun_rc_due || bun_rc
   [ -n "$req$ext" ] || { echo "tools: everything ade uses is installed"; return 0; }
   [ -n "$req" ] && echo "missing tools ade needs: $req"
   [ -n "$ext" ] && echo "missing viewer extras (ade works without them): $ext"
@@ -3486,6 +3490,7 @@ setup_tools() {   # [required|extras]: ade setup --tools; what is missing, after
 setup_tools_steps() {   # the first steps of ade setup: the required tools, then the viewer extras as one yes/no
   local req ext
   req="$(tools_missing $REQUIRED_TOOLS)"; ext="$(tools_missing $EXTRA_TOOLS)"
+  ! bun_rc_due || bun_rc
   # shellcheck disable=SC2086
   [ -n "$req" ] && { echo "missing tools ade needs: $req"; tools_install $req || true; }
   # shellcheck disable=SC2086
