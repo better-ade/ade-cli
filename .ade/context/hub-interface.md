@@ -265,8 +265,9 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   (`HUB_CHAT_MODE`), `on (<running mode>: restart for <mode>, ade setup --telegram)`, or `on` (a hub that names no
   mode). After the last step `ade setup --telegram` offers the lock to a bot that is not locked, restarts a session
   whose mode is not the one a start would use (`bin/chat stop`, `bin/schedule install`, `bin/chat status`) only when
-  `bin/sessions` shows `main` idle (else it prints what to type and does not say "working"), and, when the run did
-  something, says what the mode means.
+  `bin/sessions` shows `main` idle (else it prints what to type and does not say "working"). What auto mode means
+  (three lines) is said before the chat switches to it: in the `allowlist` step, before the person locks, and before
+  a restart that brings auto; when the run did something it is said again at the end, as what is now so.
 - What is left is read from the state alone, in this order (`tg_left` in `ade`): `token` (`bin/keys` lists `telegram`
   as stored), `bun` (on PATH or `~/.bun/bin/bun`), `plugin` (`telegram@claude-plugins-official` in Claude Code's
   `installed_plugins.json`), `start`, `pair`, `allowlist` (from `bin/chat status`), `test` (`HUB_CHAT=telegram` in
@@ -279,9 +280,12 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   unasked"): that line ends `, locked to you` or `, not locked`, and a line `mode: <auto|manual|acceptEdits|plan>
   (<why>)` names the mode a start would use: `(HUB_CHAT_MODE)` when hub.conf sets it, `(not locked: ...)` for manual
   by default, and it ends `; the running session is in <mode>: ...` when the running session started in another
-  mode. `ade` never reads the channel's `access.json` itself. The `allowlist` step is done when the policy is
-  `allowlist` and the line does not say `not locked`; a hub whose status has neither (an older one) is read as
-  before: the policy `allowlist` is the lock, and no mode is shown. `ade` cannot tell a paired owner from a pending pairing
+  mode. `ade` never reads the channel's `access.json` itself. The telegram line is read whole and exactly: the
+  lock is the line `telegram: policy allowlist, groups: 0, locked to you`, nothing more on it (a trailing space, a
+  leftover escape sequence, other words or another group count is not a lock). Only a hub whose status has no
+  `mode:` line at all (an older one) is read as before: the line `telegram: policy allowlist, groups: 0` is the
+  lock, and no mode is shown. When the lines do not say locked and the mode line does not say manual for that
+  reason, the `telegram:` line reads `on (lock unclear: ade chat status)`. `ade` cannot tell a paired owner from a pending pairing
   code in that line; the hub's test settles it.
 - What `ade` runs: `bin/keys set telegram` (the token on stdin, the hub's own prompt and "stored" line not shown),
   bun's own install after a yes when bun is missing there all the same ("bun" below), `claude plugin install

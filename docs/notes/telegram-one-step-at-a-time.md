@@ -39,3 +39,8 @@
 - The mode is explained only when the run did something, so `ade setup --telegram` on a finished hub stays one line.
 - Tests: `tg_lock_then_auto` in `tests/test_telegram.sh`. The golden guide transcript answers no to Telegram, so it
   is unchanged.
+- Fix round after the adversarial review: what auto mode means is shown before the chat switches to it (in the
+  `allowlist` step, before the person locks, and before a restart that brings auto), not only after; and the lock
+  is the hub's exact line, so an unclear line (other words, a trailing space, a leftover escape sequence, a group
+  count that is not 0) is never read as locked, and the older-hub reading applies only when there is no `mode:`
+  line. Tests: `tg_lock_then_auto` (the order) and `tg_lock_line_exact` (the crafted lines).
