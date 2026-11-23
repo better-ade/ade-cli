@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.5
 - bun is installed as part of set-up. It is a required tool now: the guide's tools step, `ade setup --tools` and
   `install.sh` install it after a yes, before any Telegram step, and `ade doctor` lists it. It needs neither Homebrew
   nor the Xcode Command Line Tools (on a Mac with outdated Command Line Tools and an untrusted tap, `brew install`
