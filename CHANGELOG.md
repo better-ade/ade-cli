@@ -1,6 +1,16 @@
 # Changelog
 
 ## Unreleased
+- Telegram: the guide's step is not "working" until the bot is locked to you, as the hub's own `bin/chat status` says
+  it ("locked to you": the policy allowlist, your account in it, no groups), not by the policy's name alone. Once it
+  is, the guide says what follows (before you lock, and again once it is so): the chat runs in auto mode, so your main agent acts on your Telegram messages
+  without asking at the terminal; Claude Code's auto mode still refuses risky actions; `HUB_CHAT_MODE=manual` in
+  `hub.conf` turns that off. Needs a hub whose `bin/chat` chooses the mode this way; an older hub is read as before.
+- `ade`, `ade setup --check`: the line reads `telegram: on (auto)`, `telegram: on (manual: not locked)`, or
+  `telegram: on (<mode>)` when `HUB_CHAT_MODE` is set.
+- `ade setup --telegram` on a bot that is on but not locked shows the one line to type and checks it. A session that
+  started before the lock is restarted so the new mode applies, only when your main agent is idle; a busy one is
+  never interrupted, and you are told what to type (`ade chat stop && ade setup --telegram`).
 - `ade web` ([A19](docs/stories/A19-web-view.md)): a read-only page of the hub in your browser: the agents and their
   state, the picked agent's log (its events and its `STATE.md`), today's and yesterday's journal and the chat log,
   refreshed every 3 seconds. It listens on 127.0.0.1 only, on port 8765 or a free one (`--port N`), and prints an
