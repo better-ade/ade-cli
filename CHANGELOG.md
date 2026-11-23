@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.8
 - `ade project add <path-or-git-url>... [--name N] [--no-init] [--yes]` (A21): load repos you already have into the hub.
   Each becomes a project folder made by the hub's own `bin/new`, with the Code row of its `ACCESS.md` filled from the
   repo (the remote in https form and never with credentials, the checkout, the default branch, the CI it can see), so
