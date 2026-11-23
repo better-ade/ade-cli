@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+- bun already in `~/.bun/bin` but not on the PATH (bun's own installer, or an earlier ade): `ade setup` and
+  `ade setup --tools` now add the one marked PATH line to the shell's start file, as after ade's own install, so a new
+  terminal (and the hub's `bin/chat start`) finds it. Never from an agent session.
+
 ## 0.2.5
 - bun is installed as part of set-up. It is a required tool now: the guide's tools step, `ade setup --tools` and
   `install.sh` install it after a yes, before any Telegram step, and `ade doctor` lists it. It needs neither Homebrew
