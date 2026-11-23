@@ -73,6 +73,12 @@ mkdir -p ~/.config/ade && echo ~/hubs/my-hub > ~/.config/ade/hub   # or export A
 ade doctor                       # the hub's bin/doctor
 ade status                       # the hub's sessions (bin/sessions)
 ade work projects/api --role builder   # start or resume a focus agent (bin/work)
+
+# Load repos you already have into the hub (A21)
+ade project add ~/Project/api ~/Project/web    # each becomes projects/<name>, with its ACCESS.md Code row
+ade project add acme/billing                   # a URL or owner/repo is cloned into your code folder first
+ade project add --scan ~/Project               # pick from the repos in a folder: 1 3 4, 1-3, all, or names
+ade project list                               # name, checkout, branch, focus agent, last update
 ```
 
 `ade` with no hub lists the steps to a working hub and offers to start the guide; `ade setup` is the guide, one step
@@ -279,6 +285,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade sync` | Sync the hub (hub `bin/sync`) | **built** (A1) |
 | `ade context …` | The hub's context store (hub `bin/context`) | **built** (A1) |
 | `ade agent-run …` | Run an agent (hub `bin/agent`) | **built** (A1) |
+| `ade project add <path-or-git-url>... [--name N] [--no-init] [--yes]` \| `add --scan <folder>` \| `list` | Load repos you already have into the hub ([A21](docs/stories/A21-project-add.md)). For each: the hub's own `bin/new projects/<name>` (the name is the repo's folder name as `a-z 0-9 -`, or `--name`; a folder already in the hub is left as it is), then the Code row of its `ACCESS.md` from the repo: the remote in https form and never with credentials, the checkout, the default branch, `(owner)` under "Who merges", and the CI it can see. A URL (`https://`, `git@`, `ssh://`, or `owner/repo` on GitHub) is cloned into your code folder, never into the hub (`gh repo clone` when `gh` is signed in, else `git clone`). It offers `ade init` in each repo (`--no-init`: no offer; `--yes`: yes to every offer; nothing is ever overwritten), adds the repo's `README.md` and `docs/` to the hub's memory (`HUB_BRAIN_PATHS`, then `bin/brain index`), prints one line per project and offers to start the focus agents (never in an agent session or without a terminal). A failure for one repo does not stop the others (exit 1 at the end). `--scan`: the git repos directly under a folder, those in the hub marked; pick with `1 3 4`, `1-3`, `all` or names. `list`: each project folder's name, checkout, branch, focus agent (from `bin/sessions`) and `STATE.md` "Updated" line |
 | `ade init [--here]` | Copy ade-method at its pinned tag into the project; never overwrites; installs the PR and commit templates and sets `commit.template`; records `.ade/method-version` | **built** (A1) |
 | `ade agent list` | Specialists in ade-agent-registry, name and description | **built** (A1) |
 | `ade agent add <name> [--here]` | Copy a specialist to `.ade/agents/<name>.md` | **built** (A1) |
@@ -313,6 +320,7 @@ or tool. A hub command exits with whatever the hub's script returns.
 | Variable | Default | Used for |
 |---|---|---|
 | `ADE_HUB` | unset | The hub to use, ahead of walking up and `~/.config/ade/hub` |
+| `ADE_CODE_DIR` | `~/Project` when it is there, else `~/code` | Where `ade project add` clones a URL (never inside the hub) |
 | `ADE_METHOD_REF` | `v2.1.0` | The ade-method tag `ade init` copies |
 | `ADE_REGISTRY_REF` | `v1.1.0` | The ade-agent-registry tag `ade agent` reads |
 | `ADE_METHOD_REPO` | `https://github.com/better-ade/ade-method` | Where ade-method comes from (tests use a local fixture) |

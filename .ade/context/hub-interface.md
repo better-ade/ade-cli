@@ -346,6 +346,27 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   address may stand in for the Tailscale one).
 - **Tailscale (`--tailnet`):** `tailscale status --json` (`BackendState` must be `Running`; `Self.DNSName`) and
   `tailscale ip -4` (one address in 100.64.0.0/10). Only asked, never installed, started or signed in.
+
+## `ade project` and the hub (A21)
+- **`bin/new projects/<name>`** makes the folder (`ade` never reimplements it; run from the hub root with `HUB` set,
+  no input). Names: `[a-z0-9][a-z0-9-]{0,63}`. A folder that exists is never passed to it.
+- **`ACCESS.md` Code row** (`| Repo | Checkout | Default branch | Who merges | CI |`): `ade` adds one row at the end of
+  the table under `## Code` (a file with no such table gets one at its end), in the form the hub's `repos_of` reads: a
+  table row whose 2nd cell starts with `/` or `~`. Repo: the remote in https form, no credentials, no `.git`, or
+  `(no remote)`. Checkout: `~/...` under the home folder, else absolute. Who merges: `(owner)`. CI: `GitHub Actions
+  (<workflow files>)`, `GitLab CI`, `CircleCI`, joined by `; `, or `none found`. No cell holds a `|` or a control
+  character; the row is read back before the project counts as added.
+- **Remote:** the whole userinfo (everything up to the last `@`), any query and any fragment are dropped, the scheme
+  is read in any case; a remote that still looks like it holds one is written as `(remote hidden: it held a
+  credential)` and never printed. A URL is cloned without them too (ssh keeps its user name only).
+- **`hub.conf` `HUB_BRAIN_PATHS`** (space-separated, read by `bin/brain`): `ade project add` appends each added repo's
+  `README.md` and `docs` (as `~/...` when under the home folder), once each, then runs `bin/brain index`. A path with a
+  space or a character outside `A-Za-z0-9._/~-` is not added (one line says so). A hub without `bin/brain` is skipped.
+- **`bin/sessions`**: `ade project list` reads its FOLDER (2nd) and STATUS (7th) columns.
+- **`bin/work projects/<name>`**: the start offer runs `ade work projects/<name>` for each added project.
+- **Environment:** `ADE_CODE_DIR` (where a URL is cloned; default `~/Project` when it is there, else `~/code`; never
+  the hub or a folder in it).
+
 ## `ade shot` (A20)
 - **Evidence:** `<project>/.ade/evidence/<UTC date>/<HHMMSS>-<name>.png` and `.txt` (the git top level of the working
   folder, else the hub); folders 0700, files 0600, `.ade/evidence/.gitignore` holds `*`. Sidecar lines: `what:`,

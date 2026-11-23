@@ -46,6 +46,10 @@ Hubs:
               there (ADE_UI=off: in this terminal); with a folder, ade work <folder>
   hub         ade hub new <name> [--private|--public] [--dir <folder>] [--persona P --client C --owner O]
               | ade hub list | ade hub use <path>
+  project     ade project add <path-or-git-url>... [--name N] [--no-init] [--yes] | add --scan <folder> | list: load repos
+              you already have into the hub as project folders (the hub's bin/new, then the ACCESS.md Code row from the
+              repo: remote without credentials, checkout, default branch, CI); a URL is cloned into your code folder
+              (ADE_CODE_DIR, else ~/Project, else ~/code); ade project alone: its help
   (none)      ade alone: your workspace, the tab view of ade ui (set-up not finished: the guide's steps)
   home        the hub, its sessions and what to do next (what ade alone prints without a terminal or tmux)
 
@@ -799,6 +803,16 @@ ask_match() {   # <answer> <name>...: the one name the answer means (its number,
   for n in "$@"; do na="$(ask_norm "$n")"; case "$na" in "$a"*) hit="$n"; k=$((k + 1)) ;; esac; done
   [ "$k" = 1 ] && printf '%s' "$hit"; return 0
 }
+# ask_tokens <answer> <count>: the answer's tokens (spaces or commas between); with ASK_RANGE=1 (ade project add --scan)
+# all is every number and 2-4 is 2 3 4
+ask_tokens() {
+  local t a b
+  for t in $(printf '%s' "$1" | tr ',' ' '); do
+    if [ "${ASK_RANGE:-0}" = 1 ] && [ "$t" = all ]; then seq 1 "$2"
+    elif [ "${ASK_RANGE:-0}" = 1 ] && matches "$t" '^[0-9]{1,4}-[0-9]{1,4}$' && a=$((10#${t%-*})) && b=$((10#${t#*-})) && [ "$a" -ge 1 ] && [ "$a" -le "$b" ] && [ "$b" -le "$2" ]; then seq "$a" "$b"
+    else printf '%s\n' "$t"; fi
+  done
+}
 # ask_choice <prompt> <default name or ""> <name[|description]>...: the chosen name into CHOICE. The choices are
 # numbered (ASK_INLINE=1: a yes/no question, no list); ASK_MULTI=1: several, separated by spaces or commas, into
 # CHOICE as one line (Enter: none, unless a default). Anything else is asked again with one line saying what is accepted.
@@ -815,7 +829,7 @@ ask_choice() {
     why="$(ask_bad "$ANSWER")"
     if [ -n "$why" ]; then ask_say "$why; type it again"; continue; fi
     if [ "${ASK_MULTI:-0}" = 1 ]; then got=""
-      for tok in $(printf '%s' "$ANSWER" | tr ',' ' '); do hit="$(ask_match "$tok" "${names[@]}")"; [ -n "$hit" ] || { got=-; break; }; got="${got:+$got }$hit"; done
+      for tok in $(ask_tokens "$ANSWER" $#); do hit="$(ask_match "$tok" "${names[@]}")"; [ -n "$hit" ] || { got=-; break; }; got="${got:+$got }$hit"; done
       [ "$got" != - ] && { CHOICE="$got"; return 0; }
     else hit=""; [ -z "$ANSWER" ] || hit="$(ask_match "$ANSWER" "${names[@]}")"; [ -n "$hit" ] && { CHOICE="$hit"; return 0; }; fi
     if [ "${ASK_INLINE:-0}" = 1 ]; then ask_say "accepted: y or n (yes or no)"
@@ -866,6 +880,7 @@ tg-bun|retry|retry=try again;manual=show the manual steps;later=skip Telegram fo
 tg-step|retry|retry=try again;later=finish Telegram later;stop=stop here
 tg-wait|again|again=show the step again;later=finish Telegram later;stop=stop here
 key-store|key|key=enter it again;stop=stop here
+project|skip|retry=try again;skip=skip this one and go on with the rest;stop=stop here
 '
 # plain <text>: text from another tool as one line ade may print: ASCII only, no control character, key-shaped text hidden
 plain() { printf '%s' "$1" | LC_ALL=C tr -cd ' -~' | tr -s ' ' | cut -c1-4000 | redact; }
@@ -4398,6 +4413,333 @@ PY
   exec python3 -I -c "$src" "$@"
 }
 
+# --- ade project (A21): existing repos into the hub as project folders ---
+# The hub's own bin/new makes the folder; ade fills its ACCESS.md Code row from the repo, in the form the hub's repos_of
+# reads (a table row whose 2nd cell starts with / or ~). Names, paths, branches and file names from a repo are data:
+# never evaluated, and no control character or | reaches the table. A remote is shown and stored without credentials.
+PROJECT_USAGE="usage: ade project add <path-or-git-url>... [--name N] [--no-init] [--yes] | ade project add --scan <folder> [--no-init] [--yes] | ade project list"
+project_help() {
+  cat <<'HELP'
+ade project: load existing repos into the hub as project folders
+
+  ade project add <path-or-git-url>... [--name N] [--no-init] [--yes]
+      each argument is a repo you have (a path inside it) or a URL to clone (https://, git@, ssh://, or owner/repo
+      on GitHub) into your code folder (ADE_CODE_DIR, else ~/Project, else ~/code), never into the hub. For each:
+      the hub's bin/new projects/<name>, the Code row of its ACCESS.md (remote, checkout, default branch, CI),
+      the offer of ade init in the repo (never overwrites), and its README.md and docs/ in the hub's memory.
+      --name N    the folder name (one repo; default: the repo's folder name as a-z 0-9 -)
+      --no-init   do not offer ade init
+      --yes       yes to every offer (nothing is ever overwritten)
+  ade project add --scan <folder> [--no-init] [--yes]
+      the git repos directly under <folder>; pick with 1 3 4, 1-3, all, or names
+  ade project list
+      each project folder: name, checkout, branch, focus agent, and its STATE.md "Updated" line
+
+A hub folder that is already there is left as it is. A remote is stored without any user:token@.
+HELP
+}
+proj_name_ok() { matches "$1" '^[a-z0-9][a-z0-9-]{0,63}$'; }
+# proj_name <text>: a folder name in the hub's rules (a-z 0-9 -) from a repo's folder name; nothing when none is left
+proj_name() { printf '%s' "${1%.git}" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -c 'a-z0-9' '-' | tr -s '-' | sed 's/^-//' | cut -c1-64 | sed 's/-$//'; }
+# proj_url <clean|clone|shown> <text>: a remote without its credentials (review B2). The whole userinfo (everything up
+# to the last @), any query and any fragment are dropped, and the scheme is read in any case.
+#   clean: the https form for ACCESS.md and for the screen (no port for ssh, no .git); a remote that still looks like
+#          it holds a userinfo is "(remote hidden: it held a credential)", never written and never printed
+#   clone: the URL git is given: no password, no query; ssh keeps its user name only; nothing when it cannot be read
+#   shown: what the person typed, for a line ade prints: everything up to the last @ is hidden
+PROJ_HIDDEN="(remote hidden: it held a credential)"
+proj_url() {
+  python3 -I -c '
+import re, sys
+mode, u = sys.argv[1], re.sub(r"[\x00-\x20\x7f]", "", sys.argv[2])
+if mode == "shown":
+    u = re.split(r"[?#]", u, 1)[0]
+    print("<hidden>@" + u.rsplit("@", 1)[1] if "@" in u else u); sys.exit(0)
+hidden = "(remote hidden: it held a credential)"
+simple = lambda x: x if re.match(r"^[A-Za-z0-9._-]{1,64}$", x) else ""
+u = re.split(r"[?#]", u, 1)[0]
+m = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*)://(.*)$", u)
+scheme = user = host = port = path = ""
+if m and m.group(1).lower() != "file":
+    scheme, rest = m.group(1).lower(), m.group(2)
+    if "@" in rest:
+        info, rest = rest.rsplit("@", 1); user = simple(info.split(":", 1)[0])
+    hm = re.match(r"^([A-Za-z0-9.-]+)(:[0-9]{1,5})?(/.*)?$", rest)
+    if hm: host, port, path = hm.group(1), hm.group(2) or "", (hm.group(3) or "").strip("/")
+elif not m:
+    sm = re.match(r"^(.*)@([A-Za-z0-9.-]+):([^:@]*)$", u)
+    if sm: scheme, user, host, path = "scp", simple(sm.group(1).split(":", 1)[0]), sm.group(2), sm.group(3).strip("/")
+if host and re.match(r"^[A-Za-z0-9._~/+-]*$", path):
+    web = scheme in ("http", "https")
+    if mode == "clone":
+        if scheme == "scp": print("%s@%s:%s" % (user or "git", host, path))
+        else: print("%s://%s%s%s/%s" % (scheme, "" if web or not user else user + "@", host, port, path))
+    else:
+        print("%s://%s%s/%s" % ("http" if scheme == "http" else "https", host, port if web else "", re.sub(r"\.git$", "", path)))
+elif mode == "clean":   # not a URL ade can read (a local path, or something else): as it is unless it could hold a userinfo
+    print(hidden if ("@" in u or (":" in u and not re.match(r"^file://", u)) or scheme) else u.replace("|", ""))
+' "$@"
+}
+url_clean() { proj_url clean "$1"; }
+# proj_shown <text>: what the person typed, as one line ade may print: never with a user:token@
+proj_shown() { plain "$(proj_url shown "$1")"; }
+proj_is_url() {
+  matches "$1" '^[A-Za-z][A-Za-z0-9+.-]*://.' || matches "$1" '^[^/]*@[A-Za-z0-9.-]+:[A-Za-z0-9._/~-]+$' || matches "$1" '^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$'
+}
+phys() { (cd "$1" 2> /dev/null && pwd -P); }
+# proj_checkouts <ACCESS.md>: its checkout paths, read as the hub's repos_of reads them (~ expanded)
+proj_checkouts() {
+  local r; [ -f "$1" ] || return 0
+  awk -F'|' '/^\|/{c=$3; gsub(/^[ \t]+|[ \t]+$/,"",c); if(c ~ /^[\/~]/)print c}' "$1" | while IFS= read -r r; do printf '%s\n' "${r/#\~/$HOME}"; done
+}
+# proj_of_repo <hub> <repo>: the hub folder (projects/x) whose ACCESS.md already lists this checkout, else nothing
+proj_of_repo() {
+  local f r p; p="$(phys "$2")"
+  for f in "$1"/projects/*/ACCESS.md; do
+    while IFS= read -r r; do
+      [ -n "$r" ] && [ "$(phys "$r")" = "$p" ] && { f="${f%/ACCESS.md}"; echo "projects/${f##*/}"; return 0; }
+    done <<EOF
+$(proj_checkouts "$f")
+EOF
+  done
+  return 0
+}
+# proj_code_dir <hub>: the folder clones go to, into P_CODE: ADE_CODE_DIR, else ~/Project when it is there, else ~/code
+# (made after saying so); never the hub or a folder in it
+proj_code_dir() {
+  local d="${ADE_CODE_DIR:-}" h
+  [ -n "$d" ] || { if [ -d "$HOME/Project" ]; then d="$HOME/Project"; else d="$HOME/code"; fi; }
+  case "$d" in /*) ;; *) P_ERR="the code folder must be an absolute path (ADE_CODE_DIR)"; return 1 ;; esac
+  h="$(phys "$1")"
+  case "$d/" in "$1"/*|"$h"/*) P_ERR="the code folder is inside the hub; a clone never goes there (set ADE_CODE_DIR)"; return 1 ;; esac
+  if [ ! -d "$d" ]; then echo "making your code folder: $(plain "$(tilde "$d")")"
+    mkdir -p -- "$d" 2> /dev/null || { P_ERR="could not make the code folder $(tilde "$d")"; return 1; }; fi
+  d="$(phys "$d")"
+  case "$d/" in "$h"/*) P_ERR="the code folder is inside the hub; a clone never goes there (set ADE_CODE_DIR)"; return 1 ;; esac
+  P_CODE="$d"
+}
+# proj_clone <hub> <url>: the repo cloned into the code folder (gh when it is signed in and the host is GitHub, else
+# git), into P_REPO; a folder already there with the same remote is used as it is
+proj_clone() {
+  local u="$2" base dest clean have short=0
+  matches "$u" '^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$' && { u="https://github.com/$u"; short=1; }
+  clean="$(url_clean "$u")"; have="$(proj_url clone "$u")"; base="${clean##*/}"
+  [ -n "$have" ] && [ -n "$clean" ] && [ "$clean" != "$PROJ_HIDDEN" ] || { P_ERR="that URL cannot be read as a git URL (its credentials, if any, are not shown)"; return 1; }
+  [ "$have" = "$u" ] || [ "$short" = 1 ] || echo "that URL is used without its credentials or query: $(plain "$clean")"
+  u="$have"
+  matches "$base" '^[A-Za-z0-9._-]+$' && [ "$base" != . ] && [ "$base" != .. ] || { P_ERR="no folder name can be read from $(plain "$clean")"; return 1; }
+  proj_code_dir "$1" || return 1
+  dest="$P_CODE/$base"
+  if [ -e "$dest" ]; then
+    have="$(git -C "$dest" remote get-url origin 2> /dev/null)"
+    [ -n "$have" ] && [ "$(url_clean "$have")" = "$clean" ] || { P_ERR="$(tilde "$dest") is already there and is not a clone of $clean"; return 1; }
+    echo "already cloned: $(plain "$(tilde "$dest")")"; P_REPO="$dest"; return 0
+  fi
+  echo "cloning $(plain "$clean") into $(plain "$(tilde "$dest")")"
+  case "$clean" in
+    "https://$GH_HOST/"*) if command -v gh > /dev/null 2>&1 && gh_signed_in; then run_logged "$P_CODE" gh repo clone "$u" "$dest"; else run_logged "$P_CODE" git clone -q -- "$u" "$dest"; fi ;;
+    *) run_logged "$P_CODE" git clone -q -- "$u" "$dest" ;;
+  esac || { P_ERR="could not clone $clean: $FAIL_LINE"; P_DETAILS="$FAIL_FILE"; return 1; }
+  [ -d "$dest" ] || { P_ERR="the clone of $clean made no folder"; return 1; }
+  P_REPO="$dest"
+}
+# proj_ci <repo>: the CI it can see, as one cell
+proj_ci() {
+  local f n wf="" more=0 k=0 out=""
+  for f in "$1"/.github/workflows/*.yml "$1"/.github/workflows/*.yaml; do
+    [ -f "$f" ] || continue; n="${f##*/}"
+    if matches "$n" '^[A-Za-z0-9._-]{1,60}$' && [ "$k" -lt 6 ]; then wf="${wf:+$wf, }$n"; k=$((k + 1)); else more=$((more + 1)); fi
+  done
+  [ "$more" = 0 ] || wf="${wf:+$wf, }$more more"
+  [ -z "$wf" ] || out="GitHub Actions ($wf)"
+  [ ! -f "$1/.gitlab-ci.yml" ] || out="${out:+$out; }GitLab CI"
+  [ ! -d "$1/.circleci" ] || out="${out:+$out; }CircleCI"
+  printf '%s' "${out:-none found}"
+}
+proj_branch() {   # <repo>: origin's default branch, else the current one
+  local b; b="$(git -C "$1" symbolic-ref -q --short refs/remotes/origin/HEAD 2> /dev/null)"; b="${b#origin/}"
+  [ -n "$b" ] || b="$(git -C "$1" symbolic-ref -q --short HEAD 2> /dev/null)"
+  printf '%s' "${b:-(detached)}"
+}
+# proj_row <ACCESS.md> <repo> <checkout> <branch> <ci>: one row at the end of the Code table (a file without one gets it)
+proj_row() {
+  write_py "$@" <<'PY'
+import re, sys
+p = sys.argv[1]
+def cell(s): return re.sub(r"[\x00-\x1f\x7f|]", " ", s).strip() or "-"
+repo, co, br, ci = [cell(x) for x in sys.argv[2:6]]
+row = "| %s | %s | %s | (owner) | %s |" % (repo, co, br, ci)
+ade_hold(p)
+lines = open(p, encoding="utf-8", errors="replace").read().split("\n"); at = None
+for i, l in enumerate(lines):
+    if not re.match(r"^##\s+Code\s*$", l): continue
+    j = i + 1
+    while j < len(lines) and not lines[j].startswith("#"):
+        if re.match(r"^\|\s*:?-+", lines[j]):
+            j += 1
+            while j < len(lines) and lines[j].startswith("|"): j += 1
+            at = j; break
+        j += 1
+    break
+if at is None:
+    while lines and not lines[-1].strip(): lines.pop()
+    lines += ["", "## Code", "| Repo | Checkout | Default branch | Who merges | CI |", "|---|---|---|---|---|", row, ""]
+else:
+    lines.insert(at, row)
+ade_write(p, "\n".join(lines))
+PY
+}
+# project_one <hub> <path-or-url> <name or ""> <init 0|1> <yes 0|1>: one project. 0 = added (P_NAME, P_REPO); 2 = left
+# as it is (P_ERR says why); 1 = failed (P_ERR, and P_DETAILS when a tool's lines were kept)
+project_one() {
+  local hub="$1" arg="$2" name="$3" in_hub remote co br f
+  P_ERR=""; P_DETAILS="nothing was changed for it"; P_REPO=""; P_NAME=""
+  [ -n "$arg" ] || { P_ERR="an empty name is not a repo"; return 1; }
+  if [ -e "$arg" ]; then
+    [ -d "$arg" ] || { P_ERR="$(proj_shown "$arg") is a file, not a repo"; return 1; }
+    P_REPO="$(git -C "$arg" rev-parse --show-toplevel 2> /dev/null)" && [ -n "$P_REPO" ] || { P_ERR="$(proj_shown "$arg") is not in a git repository"; return 1; }
+  elif proj_is_url "$arg"; then proj_clone "$hub" "$arg" || return 1
+  else P_ERR="$(proj_shown "$arg") is not a folder here, nor a git URL or owner/repo"; return 1; fi
+  P_REPO="$(phys "$P_REPO")"; [ -n "$P_REPO" ] || { P_ERR="$(proj_shown "$arg") cannot be entered"; return 1; }
+  case "$P_REPO/" in "$(phys "$hub")"/*) P_ERR="$(tilde "$P_REPO") is the hub or a folder in it, not a project's repo"; return 1 ;; esac
+  case "$P_REPO" in *"|"*|*[[:cntrl:]]*) P_ERR="its path has a | or a control character, which ACCESS.md cannot hold"; return 1 ;; esac
+  in_hub="$(proj_of_repo "$hub" "$P_REPO")"
+  [ -z "$in_hub" ] || { P_ERR="already in the hub as $in_hub: left as it is"; return 2; }
+  [ -n "$name" ] || name="$(proj_name "${P_REPO##*/}")"
+  proj_name_ok "$name" || { P_ERR="no folder name (a-z 0-9 -) can be made from its folder name; pass --name"; return 1; }
+  P_NAME="$name"; f="$hub/projects/$name"
+  [ ! -e "$f" ] && [ ! -L "$f" ] || { P_ERR="projects/$name is already in the hub: left as it is (another name: --name)"; return 2; }
+  [ -x "$hub/bin/new" ] || { P_ERR="this hub has no bin/new; update it"; return 1; }
+  echo "project $name: $(plain "$(tilde "$P_REPO")")"
+  run_logged "$hub" env HUB="$hub" "$hub/bin/new" "projects/$name" || { P_ERR="the hub's bin/new projects/$name failed: $FAIL_LINE"; P_DETAILS="$FAIL_FILE"; return 1; }
+  [ -f "$f/ACCESS.md" ] || { P_ERR="the hub's bin/new made no projects/$name/ACCESS.md"; return 1; }
+  remote="$(git -C "$P_REPO" remote get-url origin 2> /dev/null)" || remote=""
+  if [ -n "$remote" ]; then remote="$(url_clean "$remote")"; else remote="(no remote)"; fi
+  co="$(tilde "$P_REPO")"; br="$(proj_branch "$P_REPO")"
+  proj_row "$f/ACCESS.md" "$remote" "$co" "$br" "$(proj_ci "$P_REPO")" 2> /dev/null &&
+    [ -n "$(proj_checkouts "$f/ACCESS.md" | grep -xF -- "$P_REPO")" ] ||
+    { P_ERR="projects/$name was made, but its ACCESS.md Code row could not be written: add the checkout there by hand"; P_DETAILS="projects/$name/ACCESS.md"; return 1; }
+  echo "  ACCESS.md: $(plain "$remote"), $(plain "$co"), branch $(plain "$br")"
+  [ "$4" = 1 ] || return 0
+  if [ "$5" = 1 ] || { local ASK_EOF=no; ask_yn "  copy the ADE method into it (ade init; nothing is overwritten)?" n; }; then
+    run_logged "$P_REPO" "$(ade_self)" init || echo "  ade init did not finish there ($(plain "$FAIL_LINE")); the project is added, run ade init in it later"
+  fi
+  return 0
+}
+# project_memory <hub> <repo>...: each repo's README.md and docs/ into HUB_BRAIN_PATHS, then the hub's bin/brain index
+project_memory() {
+  local hub="$1" r p cur add="" n=0; shift
+  [ -x "$hub/bin/brain" ] || { echo "memory: skipped (this hub has no bin/brain)"; return 0; }
+  cur="$(conf_get "$hub" HUB_BRAIN_PATHS)"
+  for r in "$@"; do
+    for p in "$r/README.md" "$r/docs"; do
+      [ -e "$p" ] || continue; p="$(tilde "$p")"
+      case "$p" in *[!A-Za-z0-9._/~-]*) echo "memory: $(plain "$p") skipped (HUB_BRAIN_PATHS cannot hold a space or a special character)"; continue ;; esac
+      case " $cur $add " in *" $p "*) ;; *) add="${add:+$add }$p" ;; esac; n=$((n + 1))
+    done
+  done
+  [ "$n" -gt 0 ] || { echo "memory: skipped (no README.md or docs/ to index)"; return 0; }
+  [ -z "$add" ] || (conf_set "$hub" HUB_BRAIN_PATHS "${cur:+$cur }$add") 2> /dev/null || { echo "memory: skipped (hub.conf could not be written)"; return 0; }
+  if run_logged "$hub" env HUB="$hub" "$hub/bin/brain" index > /dev/null; then echo "memory: README.md and docs/ indexed (bin/brain index)"
+  else echo "memory: listed in HUB_BRAIN_PATHS, but not indexed (bin/brain index failed: $(plain "$FAIL_LINE")); run it later"; fi
+}
+# project_scan <hub> <folder>: the git repos directly under it (their top levels only); those not in the hub are
+# offered by number, and the picked paths go to P_PICKS (one per line)
+project_scan() {
+  local hub="$1" d top in_hub label i=0 opts=() paths=() labels=" " pick k
+  P_PICKS=""
+  for d in "$2"/*/; do
+    d="${d%/}"; [ -d "$d" ] || continue
+    top="$(git -C "$d" rev-parse --show-toplevel 2> /dev/null)" && [ -n "$top" ] && [ "$(phys "$top")" = "$(phys "$d")" ] || continue
+    d="$(phys "$d")"; in_hub="$(proj_of_repo "$hub" "$d")"
+    if [ -n "$in_hub" ]; then echo "  -  $(plain "${d##*/}")  already in the hub ($in_hub)"; i=$((i + 1)); continue; fi
+    label="$(proj_name "${d##*/}")"; [ -n "$label" ] || label=repo
+    case "$labels" in *" $label "*) label="$label-$((${#paths[@]} + 1))" ;; esac
+    labels="$labels$label "; opts+=("$label|$(plain "$(tilde "$d")")"); paths+=("$d"); i=$((i + 1))
+  done
+  [ "$i" -gt 0 ] || { echo "no git repos directly under $(plain "$(tilde "$2")")"; return 0; }
+  [ "${#paths[@]}" -gt 0 ] || { echo "nothing new to add: every repo there is already in the hub"; return 0; }
+  if [ "$3" = 1 ]; then for d in "${opts[@]}"; do echo "  $(plain "${d#*|}")"; done; pick="$(printf '%s ' "${opts[@]%%|*}")"
+  else local ASK_MULTI=1 ASK_RANGE=1 ASK_EOF=no
+    ask_choice "Which to add (numbers, 1-3, all, or names; Enter for none)" "" "${opts[@]}" || CHOICE=""
+    pick="$CHOICE"; fi
+  for label in $pick; do k=0
+    for d in "${opts[@]}"; do [ "${d%%|*}" = "$label" ] && P_PICKS="$P_PICKS${paths[$k]}
+"; k=$((k + 1)); done
+  done
+}
+project_add() {
+  local name="" init=1 yes=0 scan="" scanned=0 args=() a hub rc ok=() okrepo=() rows=() bad=0 n ask=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --name) [ $# -ge 2 ] || die 2 "$PROJECT_USAGE"; name="$2"; shift
+        proj_name_ok "$name" || die 2 "--name takes a-z, 0-9 and - (at most 64, starting with a letter or a digit)" ;;
+      --scan) [ $# -ge 2 ] || die 2 "$PROJECT_USAGE"; scan="$2"; scanned=1; shift
+        [ -n "$scan" ] && [ -d "$scan" ] || die 2 "--scan takes a folder that is there" ;;
+      --no-init) init=0 ;;
+      --yes) yes=1 ;;
+      -*) die 2 "$PROJECT_USAGE" ;;
+      *) args+=("$1") ;;
+    esac; shift
+  done
+  if [ "$scanned" = 1 ]; then [ "${#args[@]}" = 0 ] && [ -z "$name" ] || die 2 "--scan takes one folder, and no --name"
+  else [ "${#args[@]}" -gt 0 ] || die 2 "$PROJECT_USAGE"; [ -z "$name" ] || [ "${#args[@]}" = 1 ] || die 2 "--name goes with one repo"; fi
+  hub="$(find_hub)" || exit $?
+  if [ "$scanned" = 1 ]; then
+    echo "git repos in $(plain "$(tilde "$(phys "$scan")")"):"
+    project_scan "$hub" "$scan" "$yes"
+    while IFS= read -r a; do [ -z "$a" ] || args+=("$a"); done <<EOF
+$P_PICKS
+EOF
+    [ "${#args[@]}" -gt 0 ] || { echo "nothing added"; return 0; }
+  fi
+  { [ -t 0 ] && ! agent_context; } 2> /dev/null && ask=1
+  local ASK_AGAIN="ade project add"
+  for a in "${args[@]}"; do
+    while :; do
+      project_one "$hub" "$a" "$name" "$init" "$yes"; rc=$?
+      case "$rc" in
+        0) ok+=("$P_NAME"); okrepo+=("$P_REPO"); rows+=("$(printf '  %-20s added    %s' "projects/$P_NAME" "$(plain "$(tilde "$P_REPO")")")") ;;
+        2) echo "$(proj_shown "$a"): $(plain "$P_ERR")"; rows+=("$(printf '  %-20s kept     %s' "$(proj_shown "$a" | cut -c1-40)" "$(plain "$P_ERR")")") ;;
+        *) if [ "$ask" = 1 ] && [ "$yes" = 0 ]; then failed project "$P_ERR" "$P_DETAILS"; [ "$CHOICE" != retry ] || continue
+          else echo "ade: $(plain "$P_ERR")" >&2; fi
+          bad=$((bad + 1)); rows+=("$(printf '  %-20s failed   %s' "$(proj_shown "$a" | cut -c1-40)" "$(plain "$P_ERR")")") ;;
+      esac; break
+    done
+  done
+  [ "${#ok[@]}" = 0 ] || project_memory "$hub" "${okrepo[@]}"
+  echo "projects:"; printf '%s\n' "${rows[@]}"
+  if [ "${#ok[@]}" -gt 0 ]; then
+    if [ "$ask" = 1 ] && { [ "$yes" = 1 ] || { local ASK_EOF=no; ask_yn "start focus agents on them now?" n; }; }; then
+      for n in "${ok[@]}"; do ADE_HUB="$hub" "$(ade_self)" work "projects/$n" < /dev/null || echo "ade: projects/$n did not start; later: ade work projects/$n" >&2; done
+    else for n in "${ok[@]}"; do echo "start it later: ade work projects/$n"; done; fi
+  fi
+  [ "$bad" = 0 ] || { echo "$bad of ${#args[@]} failed; the rest are done" >&2; return 1; }
+}
+project_list() {
+  local hub d n co br up st sess=""
+  hub="$(find_hub)" || exit $?
+  [ -x "$hub/bin/sessions" ] && sess="$( (HUB="$hub"; export HUB; "$hub/bin/sessions") 2> /dev/null < /dev/null | no_ctl)"
+  printf '%-20s %-34s %-16s %-8s %s\n' NAME CHECKOUT BRANCH AGENT UPDATED
+  for d in "$hub"/projects/*/; do
+    [ -d "$d" ] || continue; d="${d%/}"; n="${d##*/}"
+    co="$(proj_checkouts "$d/ACCESS.md" | head -1)"; br=""; up=""
+    [ -z "$co" ] || br="$(git -C "$co" symbolic-ref -q --short HEAD 2> /dev/null)"
+    [ ! -f "$d/STATE.md" ] || up="$(sed -n 's/^Updated:[[:space:]]*//p' "$d/STATE.md" | head -1)"
+    st="$(printf '%s\n' "$sess" | awk -v f="projects/$n" '$2 == f { print ($7 == "" || $7 == "-") ? "running" : $7; exit }')"
+    printf '%-20s %-34s %-16s %-8s %s\n' "$(plain "$n")" "$(plain "$(tilde "${co:--}")")" "$(plain "${br:--}")" "${st:--}" "$(plain "${up:--}" | cut -c1-80)"
+  done
+}
+cmd_project() {
+  local sub="${1:-}"; [ $# -gt 0 ] && shift
+  case "$sub" in
+    add) project_add "$@" ;;
+    list) [ $# -eq 0 ] || die 2 "usage: ade project list"; project_list ;;
+    ""|help|--help|-h) project_help ;;
+    *) die 2 "$PROJECT_USAGE" ;;
+  esac
+}
+
 # ade shot (story A20): screenshots as proof, the ADE method's recorded evidence. A page through the headless Chromium
 # the hub already has (Playwright's; ade downloads none), the whole screen (screencapture -x on macOS, the X display on
 # Linux and in an ADE Computer) after a yes, or a focus agent's tab in ade's tmux server, its text redacted and then
@@ -5043,6 +5385,7 @@ case "$cmd" in
   status) run_hub sessions "$@" ;;
   agent-run) run_hub agent "$@" ;;
   init) cmd_init "$@" ;;
+  project) cmd_project "$@" ;;
   agent) cmd_agent "$@" ;;
   skills) cmd_skills "$@" ;;
   "") cmd_home ;;
