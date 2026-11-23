@@ -37,6 +37,10 @@ Orchestrators (one per hub, run by the hub's bin/chat):
 Hubs:
   ui          ade ui [--detach]: one tmux window, a tab per agent (keys: prefix ? in it)
   dash        ade dash [--once]: the fleet panel (agents, tickets, last events)
+  web         ade web [--port N] [--tailnet] | --print-link: a read-only page of the agents, their logs, the journal and the
+              chat log, keys hidden, on 127.0.0.1 behind a random link (Ctrl-C stops it); --tailnet: on this machine's
+              Tailscale address instead, for your phone (anyone on your tailnet with the link can read it); --print-link:
+              the running page's address, else nothing and exit 1
   setup       ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]: the guide, one step at a time (resumes where you are)
   claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root, as tab 0 of ade ui when tmux is
               there (ADE_UI=off: in this terminal); with a folder, ade work <folder>
@@ -3878,6 +3882,401 @@ PY
   ADE_ROOTS="$ROOTS" ADE_SELF="$(ade_self)" ADE_BASH="$BASH" ADE_TMP_ROOT="$TMP_ROOT" python3 -I -c "$src" "$@"
 }
 
+# ade web (story A19, docs/notes/A19-web-view.md): a read-only page of the hub's agents and logs, served by python3's
+# standard library on 127.0.0.1, or with --tailnet on this machine's Tailscale address only. The address carries a
+# random token; ~/.config/ade/web (0600: the server's pid, then the address) is there while it runs.
+WEB_LINK="$CONF_DIR/web"
+WEB_USAGE="usage: ade web [--port N] [--tailnet] | ade web --print-link"
+# web_link: the running server's address: line 2 of the link file, while the pid on line 1 lives and the address still
+# answers (a pid can be another program's after a crash or a restart of the machine); a stale file is removed
+web_link() {
+  local pid="" url="" at
+  [ -f "$WEB_LINK" ] || return 1
+  { IFS= read -r pid; IFS= read -r url; } < "$WEB_LINK" 2> /dev/null
+  if matches "$pid" '^[0-9]+$' && kill -0 "$pid" 2> /dev/null && matches "$url" '^http://[0-9.]+:[0-9]+/\?k=[A-Za-z0-9_-]+$'; then
+    at="${url#http://}"; at="${at%%/*}"
+    if ( exec 3<> "/dev/tcp/${at%:*}/${at##*:}" ) 2> /dev/null; then printf '%s\n' "$url"; return 0; fi
+  fi
+  rm -f -- "$WEB_LINK"; return 1
+}
+# web_tailnet_ip <text>: exactly one IPv4 address in 100.64.0.0/10, the range Tailscale gives out. The test switch
+# ADE_WEB_TEST_TAILNET_LOOPBACK=1 accepts a loopback address in its place (a test has no tailnet), never anything wider.
+web_tailnet_ip() {
+  local o='(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])'
+  matches "$1" "^100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.$o\.$o\$" && return 0
+  [ "${ADE_WEB_TEST_TAILNET_LOOPBACK:-}" = 1 ] && matches "$1" '^127\.0\.0\.[0-9]$'
+}
+# web_tailnet: prints "<this machine's Tailscale IPv4> <its MagicDNS name, or ->". tailscale is only asked (status, ip);
+# ade never installs it, starts it or signs in to it: it says how and stops.
+web_tailnet() {
+  local st state name ip
+  command -v tailscale > /dev/null 2>&1 || die 1 "Tailscale is not installed (its tailscale command is not on the PATH), and ade never installs it or signs in to it. Get it from https://tailscale.com/download (macOS: the app, or brew install tailscale; Ubuntu: the steps on that page), sign in with: tailscale up, then: ade web --tailnet"
+  st="$(tailscale status --json 2> /dev/null | python3 -I -c '
+import json, re, sys
+try:
+    d = json.load(sys.stdin); state = d.get("BackendState"); name = ((d.get("Self") or {}).get("DNSName") or "").rstrip(".").lower()
+    label = "[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?"
+    print(state if isinstance(state, str) and state.isalnum() else "-", name if re.fullmatch("%s([.]%s)+" % (label, label), name) and len(name) < 254 else "-")
+except Exception:
+    print("- -")')"
+  read -r state name <<< "$st"
+  ip=""; [ "$state" != Running ] || ip="$(tailscale ip -4 2> /dev/null)" || ip=""
+  [ -n "$ip" ] || die 1 "Tailscale is not signed in (or not running) on this machine, and ade never signs in for you. Sign in with: tailscale up, then: ade web --tailnet"
+  web_tailnet_ip "$ip" || die 1 "tailscale ip -4 did not print one address in 100.64.0.0/10: not a Tailscale address, so nothing was started"
+  printf '%s %s\n' "$ip" "${name:--}"
+}
+cmd_web() {
+  local port="" fixed=0 mode=local link=0 hub bind=127.0.0.1 name=- t
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --port) { [ $# -ge 2 ] && matches "$2" '^[1-9][0-9]{3,4}$' && [ "$2" -ge 1024 ] && [ "$2" -le 65535 ]; } || die 2 "$WEB_USAGE (N: a port from 1024 to 65535)"
+        port="$2"; fixed=1; shift 2 ;;
+      --tailnet) mode=tailnet; shift ;;
+      --print-link) link=1; shift ;;
+      *) die 2 "$WEB_USAGE" ;;
+    esac
+  done
+  if [ "$link" = 1 ]; then [ "$fixed$mode" = 0local ] || die 2 "$WEB_USAGE"; web_link; return; fi
+  hub="$(find_hub)" || exit $?
+  command -v python3 > /dev/null 2>&1 || die 1 "ade web needs python3 (ade setup --tools installs it)"
+  ! web_link > /dev/null || die 1 "ade web is already running (ade web --print-link prints its address); stop that one with Ctrl-C first"
+  if [ "$fixed" = 0 ]; then port="${ADE_WEB_PORT:-8765}"; { matches "$port" '^[1-9][0-9]{3,4}$' && [ "$port" -ge 1024 ] && [ "$port" -le 65535 ]; } || port=8765; fi
+  if [ "$mode" = tailnet ]; then t="$(web_tailnet)" || exit $?; bind="${t%% *}"; name="${t#* }"; fi
+  ( umask 077; mkdir -p "$CONF_DIR" ) && chmod 700 "$CONF_DIR" || die 1 "cannot create $CONF_DIR"
+  HUB="$hub"; export HUB   # as run_hub: the hub's bin/sessions reads it
+  web_py "$hub" "$(hub_state "$hub")" "$(hub_label "$hub")" "$mode" "$bind" "$port" "$fixed" "$name" "$WEB_LINK"
+}
+# web_py <hub> <state folder> <hub name> <local|tailnet> <address> <port> <port fixed 0|1> <MagicDNS name|-> <link file>:
+# the server, in the foreground until Ctrl-C. Run with -I. GET only. It opens, for reading, only: <hub>/journal/<today
+# and yesterday, UTC>.md, <state>/logs/chat.log, <state>/events.jsonl and <hub>/<folder>/STATE.md for a folder the hub's
+# bin/sessions listed (the one hub command it runs); a path never comes from a request. Every string it sends goes
+# through hide(): the hub's bin/chat logs rule (bin/agent.py ESCAPES and HIDE), then ade's additions (MORE).
+web_py() {
+  local src; IFS= read -r -d '' src <<'PY' || true
+import errno, hmac, http.server, ipaddress, json, os, re, secrets, signal, socket, socketserver, stat, subprocess, sys, threading, time, urllib.parse
+HUB, STATE, LABEL, MODE, BIND, PORT, FIXED, NAME, LINK = sys.argv[1:10]
+HUB = os.path.realpath(HUB); STATE = os.path.realpath(STATE); PORT = int(PORT); FIXED = FIXED == "1"
+CAP = 256 * 1024   # at most this much of a file's end is read
+LINE = 2000        # and this much of a line is sent
+def die(msg):
+    sys.stderr.write("ade: web: %s\n" % msg); sys.exit(1)
+def say(msg):
+    try: print("ade web: " + msg, flush=True)
+    except OSError: pass
+ip = ipaddress.IPv4Address(BIND)
+if MODE == "local": ok = BIND == "127.0.0.1"
+else: ok = ip in ipaddress.ip_network("100.64.0.0/10") or (os.environ.get("ADE_WEB_TEST_TAILNET_LOOPBACK") == "1" and ip.is_loopback)
+if not ok: die("%s is neither 127.0.0.1 nor a Tailscale address; nothing was started" % BIND)
+
+# the hub's rule, as bin/agent.py has it (bin/lib.sh redact, bin/chat logs): escape sequences and control characters go
+# first, so they cannot split a key; then Telegram bot tokens, "<id>.<secret>" keys, key-shaped strings, long opaque runs
+ESCAPES = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-_]?|[\x00-\x08\x0b-\x1f\x7f\x80-\x9f]")
+HIDE = [(re.compile(r"[0-9]{6,12}:[A-Za-z0-9_-]{30,}"), "<hidden token>"), (re.compile(r"[A-Za-z0-9]{16,}\.[A-Za-z0-9_-]{8,}"), "<hidden key>"),
+        (re.compile(r"(sk|pk|ak|key)-[A-Za-z0-9_-]{8,}"), "<hidden key>"), (re.compile(r"[A-Za-z0-9_-]{32,}"), "<hidden>")]
+# ade's additions, after the hub's rule (so whatever the hub hides is hidden here too): characters that reorder or split
+# text, Authorization headers, bearer tokens, the value after password, secret, token or api key, sk_ keys, GitHub tokens
+MARKS = re.compile("[​-‏ -‮⁠-⁩﻿]")
+MORE = [(re.compile(r"(?i)(authorization\s*[:=]\s*)\S.*"), r"\1<hidden>"),
+        (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1<hidden>"),
+        (re.compile(r"(?i)((?:password|passwd|secret|token|api[_ -]?key)[\"']?\s*[:=]\s*[\"']?)(?:<hidden[^>]*>|[^\s\"'&,;]+)"), r"\1<hidden>"),
+        (re.compile(r"(?<![A-Za-z0-9])(?:sk|pk|rk)_[A-Za-z0-9_-]{12,}"), "<hidden key>"),
+        (re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})"), "<hidden token>")]
+def hide(text):
+    text = MARKS.sub("", ESCAPES.sub("", text.replace("\n", " ")))
+    for p, r in HIDE + MORE: text = p.sub(r, text)
+    return text[:LINE]
+def scrub(v):   # every string of an answer, keys too
+    if isinstance(v, str): return hide(v)
+    if isinstance(v, list): return [scrub(x) for x in v]
+    if isinstance(v, dict): return {scrub(k): scrub(x) for k, x in v.items()}
+    return v
+
+def opened(path):   # tests only: ADE_WEB_OPENED names a file that gets one line per file about to be opened
+    t = os.environ.get("ADE_WEB_OPENED")
+    if t:
+        with open(t, "a") as f: f.write(path + "\n")
+def tail(path, root, n):
+    """the last n lines (not yet hidden) of a regular file that really is under root; [] for anything else"""
+    try:
+        real = os.path.realpath(path)
+        if real == root or os.path.commonpath([real, root]) != root: return []
+        opened(real)
+        fd = os.open(real, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+        with os.fdopen(fd, "rb") as f:
+            st = os.fstat(fd)
+            if not stat.S_ISREG(st.st_mode): return []
+            f.seek(max(0, st.st_size - CAP)); data = f.read(CAP)
+    except (OSError, ValueError):
+        return []
+    lines = data.decode("utf-8", "replace").split("\n")
+    if st.st_size > CAP: lines = lines[1:]
+    if lines and lines[-1] == "": lines.pop()
+    return lines[-n:]
+
+AGENT = re.compile(r"[A-Za-z0-9._:-]{1,64}")
+FOLDER = re.compile(r"(?:projects|ops)/[A-Za-z0-9][A-Za-z0-9._-]{0,80}")
+LOCK = threading.Lock(); SEEN = {"at": 0.0, "rows": [], "note": ""}
+def sessions():
+    """the hub's bin/sessions, at most every 2 s: (rows, note). A row keeps the folder as the hub printed it."""
+    with LOCK:
+        if time.time() - SEEN["at"] < 2: return SEEN["rows"], SEEN["note"]
+        rows, note, out = [], "", ""
+        try:
+            r = subprocess.run([os.path.join(HUB, "bin", "sessions")], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10, cwd=HUB)
+            if r.returncode == 0: out = r.stdout.decode("utf-8", "replace")
+            else: note = "bin/sessions failed (exit %d)" % r.returncode
+        except subprocess.TimeoutExpired: note = "bin/sessions did not answer in 10 s"
+        except OSError: note = "bin/sessions could not be run"
+        names = set()
+        for line in out.split("\n")[:500]:
+            f = line.split()
+            if len(f) != 9 or f[:2] == ["NAME", "FOLDER"] or not AGENT.fullmatch(f[0]): continue
+            name = hide(f[0])
+            if name in names: continue
+            names.add(name)
+            rows.append({"name": name, "folder": f[1], "started": f[4], "role": f[5], "status": f[6], "last": f[7], "engine": f[8]})
+        SEEN.update(at=time.time(), rows=rows, note=note)
+        return rows, note
+def agent_log(name):
+    """an agent of the list, by its name: its events and its folder's STATE.md; None when the list has no such name"""
+    row = next((r for r in sessions()[0] if r["name"] == name), None)
+    if row is None: return None
+    folder = row["folder"]; state = []; events = []
+    if FOLDER.fullmatch(folder): state = tail(os.path.join(HUB, folder, "STATE.md"), HUB, 200)
+    for line in tail(os.path.join(STATE, "events.jsonl"), STATE, 4000):
+        try: e = json.loads(line)
+        except ValueError: continue
+        if isinstance(e, dict) and (e.get("from") == folder or e.get("to") in (folder, "all")):
+            events.append("%s  %s -> %s  %s: %s" % tuple(str(e.get(k, "?")) for k in ("time", "from", "to", "kind", "text")))
+    return {"agent": name, "folder": folder, "events": events[-200:], "state": state}
+def journal():
+    now = time.time(); out = {}
+    for key, back in (("today", 0), ("yesterday", 86400)):
+        day = time.strftime("%Y-%m-%d", time.gmtime(now - back))
+        out[key] = {"date": day, "lines": tail(os.path.join(HUB, "journal", day + ".md"), HUB, 400)}
+    return out
+
+PAGE = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>ade web</title>
+<style nonce="__NONCE__">
+:root { color-scheme: light dark; --bg: #f6f6f4; --card: #ffffff; --ink: #1c1c1a; --dim: #6b6b66; --line: #d9d9d3; --busy: #b45309; --idle: #15803d; --pick: #1d4ed8; }
+@media (prefers-color-scheme: dark) { :root { --bg: #161615; --card: #20201e; --ink: #ececea; --dim: #9a9a94; --line: #383835; --busy: #fbbf24; --idle: #4ade80; --pick: #93c5fd; } }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 12px; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1100px; margin: 0 auto; }
+header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 4px; }
+h1 { font-size: 18px; margin: 0; }
+h2 { font-size: 15px; margin: 18px 0 6px; }
+h3 { font-size: 13px; margin: 10px 0 4px; color: var(--dim); font-weight: 600; }
+.dim { color: var(--dim); font-size: 13px; }
+#note { color: var(--busy); font-size: 13px; min-height: 1.2em; }
+#agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
+.agent { text-align: left; font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; cursor: pointer; min-height: 44px; }
+.agent.on { border-color: var(--pick); box-shadow: 0 0 0 1px var(--pick); }
+.agent b { display: block; overflow-wrap: anywhere; }
+.agent span { display: block; font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
+.agent .busy { color: var(--busy); font-weight: 600; }
+.agent .idle, .agent .ready { color: var(--idle); font-weight: 600; }
+pre { margin: 0; padding: 9px 11px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; max-height: 46vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+pre.none { color: var(--dim); font-family: inherit; }
+footer { margin: 18px 0 8px; }
+</style>
+</head>
+<body>
+<main>
+<header><h1 id="hub">ade web</h1><span class="dim" id="when"></span></header>
+<div id="note" role="status"></div>
+<h2>Agents</h2>
+<div id="agents"></div>
+<p class="dim" id="none" hidden>No agent is running in this hub.</p>
+<section id="log" hidden>
+<h2 id="logname">Agent log</h2>
+<h3>Events</h3>
+<pre id="events"></pre>
+<h3>STATE.md</h3>
+<pre id="state"></pre>
+</section>
+<h2>Journal</h2>
+<h3 id="day0">Today</h3>
+<pre id="today"></pre>
+<h3 id="day1">Yesterday</h3>
+<pre id="yesterday"></pre>
+<h2>Chat log</h2>
+<pre id="chat"></pre>
+<footer class="dim">Read-only. Keys and tokens are hidden. Refreshed every 3 seconds while this page is in view.</footer>
+</main>
+<script nonce="__NONCE__">
+(function () {
+  "use strict";
+  var picked = null, chose = false, over = false, turn = 0;
+  function $(id) { return document.getElementById(id); }
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } e.textContent = text; return e; }
+  function fill(id, lines, none) {
+    var box = $(id), low = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    box.textContent = lines.length ? lines.join("\\n") : none;
+    box.className = lines.length ? "" : "none";
+    if (low) { box.scrollTop = box.scrollHeight; }
+  }
+  function note(text) { $("note").textContent = text; }
+  function ask(path, then, gone) {
+    if (over) { return; }
+    fetch(path, { credentials: "same-origin", cache: "no-store" }).then(function (r) {
+      if (r.status === 403) { over = true; note("This link no longer works. Run ade web --print-link, or start ade web again, and open the address it prints."); return null; }
+      if (r.status === 404 && gone) { gone(); return null; }
+      return r.ok ? r.json() : null;
+    }).then(function (d) { if (d && !over) { note(""); then(d); } }).catch(function () { if (!over) { note("No answer from ade web. Is it still running?"); } });
+  }
+  function pick(name) { picked = name; $("log").hidden = !name; if (name) { $("logname").textContent = "Agent log: " + name; fill("events", [], "Loading"); fill("state", [], "Loading"); log(); } mark(); }
+  function mark() { var all = $("agents").children, i; for (i = 0; i < all.length; i++) { all[i].className = all[i].dataset.name === picked ? "agent on" : "agent"; } }
+  function agents() {
+    ask("/api/agents", function (d) {
+      var box = $("agents"), seen = false;
+      $("hub").textContent = "ade web: " + d.hub; document.title = "ade web: " + d.hub; $("when").textContent = "updated " + d.time + (d.note ? " (" + d.note + ")" : "");
+      box.textContent = ""; $("none").hidden = d.agents.length > 0;
+      d.agents.forEach(function (a) {
+        var b = el("button", "agent", ""); b.type = "button"; b.dataset.name = a.name;
+        b.appendChild(el("b", "", a.name));
+        b.appendChild(el("span", a.status, a.status === "-" ? "starting" : a.status));
+        b.appendChild(el("span", "", a.folder + (a.role === "-" ? "" : ", " + a.role) + ", " + a.engine));
+        b.appendChild(el("span", "", "last " + a.last + ", started " + a.started));
+        b.addEventListener("click", function () { chose = true; pick(a.name); });
+        box.appendChild(b); if (a.name === picked) { seen = true; }
+      });
+      if (picked && !seen) { pick(null); } else if (!picked && !chose && d.agents.length) { chose = true; pick(d.agents[0].name); } else { mark(); }
+    });
+  }
+  function log() {
+    var name = picked; if (!name) { return; }
+    ask("/api/log?agent=" + encodeURIComponent(name), function (d) {
+      if (name !== picked) { return; }
+      fill("events", d.events, "No event from or to this agent yet."); fill("state", d.state, "This agent's folder has no STATE.md.");
+    }, function () { if (name === picked) { pick(null); } });
+  }
+  function rest() {
+    ask("/api/journal", function (d) {
+      $("day0").textContent = "Today, " + d.today.date + " (UTC)"; $("day1").textContent = "Yesterday, " + d.yesterday.date + " (UTC)";
+      fill("today", d.today.lines, "No journal entry today."); fill("yesterday", d.yesterday.lines, "No journal entry yesterday.");
+    });
+    ask("/api/chat", function (d) { fill("chat", d.lines, "The chat log is empty."); });
+  }
+  function tick() { if (document.hidden || over) { return; } agents(); log(); if (turn % 2 === 0) { rest(); } turn += 1; }
+  if (location.search) { history.replaceState(null, "", "/"); }
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) { turn = 0; tick(); } });
+  tick(); setInterval(tick, 3000);
+}());
+</script>
+</body>
+</html>
+"""
+
+TEXT = "text/plain; charset=utf-8"
+def same(a, b): return hmac.compare_digest(a.encode("utf-8", "replace"), b.encode())
+class Handler(http.server.BaseHTTPRequestHandler):
+    server_version = "ade-web"; sys_version = ""; timeout = 15
+    def log_message(self, *a): pass   # no access log: the first request line carries the token
+    def reply(self, code, ctype, body, more=()):
+        self.send_response(code)
+        for k, v in (("Content-Type", ctype), ("Content-Length", str(len(body))), ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"),
+                     ("X-Frame-Options", "DENY"), ("Referrer-Policy", "no-referrer"), ("Cross-Origin-Resource-Policy", "same-origin"),
+                     ("Content-Security-Policy", "default-src 'none'; script-src 'nonce-%s'; style-src 'nonce-%s'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" % (NONCE, NONCE))) + tuple(more):
+            self.send_header(k, v)
+        self.end_headers()
+        if self.command != "HEAD": self.wfile.write(body)
+    def send_json(self, value):   # the one way data leaves: every string hidden, no "<" spelled out
+        self.reply(200, "application/json; charset=utf-8", json.dumps(scrub(value)).replace("<", "\\u003c").encode("ascii"))
+    def refuse(self, code, text): self.reply(code, TEXT, (text + "\n").encode())
+    def other(self):   # every method but GET
+        n = self.headers.get("Content-Length", "")
+        if n.isdigit(): self.rfile.read(min(int(n), 65536))
+        self.reply(405, TEXT, b"read-only: GET only\n", (("Allow", "GET"),))
+    def __getattr__(self, name):
+        if name.startswith("do_"): return self.other
+        raise AttributeError(name)
+    def cookie(self):
+        for h in self.headers.get_all("Cookie") or []:
+            for part in h.split(";"):
+                k, _, v = part.strip().partition("=")
+                if k == CNAME: return v
+        return ""
+    def do_GET(self):
+        hosts = self.headers.get_all("Host") or []
+        if len(hosts) != 1 or hosts[0].strip().lower() not in HOSTS: return self.refuse(403, "forbidden")
+        try:
+            u = urllib.parse.urlsplit(self.path); q = urllib.parse.parse_qs(u.query, keep_blank_values=True, max_num_fields=8)
+        except ValueError:
+            u = None
+        path = u.path if u and self.path.startswith("/") and not u.scheme and not u.netloc else None
+        linked = path == "/" and len(q.get("k", [])) == 1 and same(q["k"][0], TOKEN)
+        if not (linked or same(self.cookie(), COOKIE)): return self.refuse(403, "forbidden")
+        if path != "/" and self.headers.get("Sec-Fetch-Site", "same-origin").strip().lower() not in ("same-origin", "none"): return self.refuse(403, "forbidden")
+        if path == "/":
+            more = (("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Strict" % (CNAME, COOKIE)),) if linked else ()
+            return self.reply(200, "text/html; charset=utf-8", HTML, more)
+        if path == "/api/agents":
+            rows, note = sessions()
+            return self.send_json({"hub": LABEL, "time": time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime()), "note": note,
+                                   "agents": [{k: r[k] for k in ("name", "folder", "started", "role", "status", "last", "engine")} for r in rows]})
+        if path == "/api/log":
+            who = q.get("agent", []); found = agent_log(who[0]) if len(who) == 1 else None
+            return self.send_json(found) if found else self.refuse(404, "not found")
+        if path == "/api/journal": return self.send_json(journal())
+        if path == "/api/chat": return self.send_json({"lines": tail(os.path.join(STATE, "logs", "chat.log"), STATE, 400)})
+        self.refuse(404, "not found")
+
+class Server(http.server.ThreadingHTTPServer):
+    address_family = socket.AF_INET; daemon_threads = True
+    allow_reuse_address = sys.platform.startswith("linux")   # elsewhere it would let this address share a port another program holds on every interface
+    def server_bind(self):   # as HTTPServer's, without its reverse lookup of the address
+        socketserver.TCPServer.server_bind(self); self.server_name, self.server_port = self.server_address[:2]
+    def handle_error(self, request, client_address): pass   # a browser that went away: nothing to say
+def listen(port):
+    try: return Server((BIND, port), Handler)
+    except OSError as e:
+        if e.errno != errno.EADDRINUSE: die("cannot listen on %s: %s; nothing was started" % (BIND, e.strerror or e))
+        if FIXED or port == 0: die("port %d is in use on %s; nothing was started (without --port, ade web finds a free one)" % (port, BIND))
+        return listen(0)
+server = listen(PORT); PORT = server.server_address[1]
+TOKEN = secrets.token_urlsafe(32); COOKIE = secrets.token_urlsafe(32); NONCE = secrets.token_urlsafe(16); CNAME = "ade_web_%d" % PORT
+HTML = PAGE.replace("__NONCE__", NONCE).encode("utf-8")
+HOSTS = set("%s:%d" % (h, PORT) for h in (("127.0.0.1", "localhost") if MODE == "local" else (BIND,) + ((NAME,) if NAME != "-" else ())))
+URL = "http://%s:%d/?k=%s" % (BIND, PORT, TOKEN)
+def link_off():
+    try:
+        with open(LINK) as f: mine = f.readline().strip() == str(os.getpid())
+        if mine: os.unlink(LINK)
+    except OSError: pass
+try:
+    tmp = "%s.%d" % (LINK, os.getpid())
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+    with os.fdopen(fd, "w") as f: f.write("%d\n%s\n" % (os.getpid(), URL))
+    os.replace(tmp, LINK)
+except OSError as e:
+    server.server_close(); die("cannot write %s: %s" % (LINK, e.strerror or e))
+def stop(*_): raise KeyboardInterrupt
+signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGHUP, stop)
+try:
+    say(URL)
+    if MODE == "local":
+        say("a read-only view of the hub %s: its agents, their logs, the journal and the chat log. This machine only (127.0.0.1). Ctrl-C stops it." % hide(LABEL))
+    else:
+        if NAME != "-": say("http://%s:%d/?k=%s" % (NAME, PORT, TOKEN))
+        say("a read-only view of the hub %s: its agents, their logs, the journal and the chat log. Open the address on a device that is signed in to your tailnet. Ctrl-C stops it." % hide(LABEL))
+        say("anyone on your tailnet with the link can read these logs; the link changes every start. It listens on this machine's Tailscale address only (%s), not on any other network." % BIND)
+    server.serve_forever(poll_interval=0.5)
+except KeyboardInterrupt:
+    pass
+finally:
+    link_off(); server.server_close()
+say("stopped")
+PY
+  exec python3 -I -c "$src" "$@"
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -3889,7 +4288,7 @@ cmd_version() {
 bun_path
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in   # A12: the daily update check, never for the commands tmux and ade itself run all the time
-  version|--version|-v|help|--help|-h|update) ;;
+  version|--version|-v|help|--help|-h|update|web) ;;
   ui) { [ $# -eq 0 ] || [ "$1" = --detach ]; } && update_check ;;
   *) update_check ;;
 esac
@@ -3904,6 +4303,7 @@ case "$cmd" in
   view) cmd_view "$@" ;;
   ui) cmd_ui "$@" ;;
   dash) cmd_dash "$@" ;;
+  web) cmd_web "$@" ;;
   status) run_hub sessions "$@" ;;
   agent-run) run_hub agent "$@" ;;
   init) cmd_init "$@" ;;

@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+- `ade web` ([A19](docs/stories/A19-web-view.md)): a read-only page of the hub in your browser: the agents and their
+  state, the picked agent's log (its events and its `STATE.md`), today's and yesterday's journal and the chat log,
+  refreshed every 3 seconds. It listens on 127.0.0.1 only, on port 8765 or a free one (`--port N`), and prints an
+  address with a random token; without the token, 403. Ctrl-C stops it. Keys and tokens are hidden as in
+  `ade chat logs`, plus GitHub tokens, `sk_` keys, `Authorization:` headers and the value after `password=`; escape
+  sequences are removed. GET only: it changes nothing and runs nothing but the hub's `bin/sessions`.
+- `ade web --tailnet`: the same page on this machine's Tailscale address only (never every interface), for your
+  phone. Anyone on your tailnet with the link can read these logs; the link changes every start. `ade` never installs
+  Tailscale or signs in to it: it says how when it is missing or signed out.
+- `ade web --print-link`: the running page's address, else nothing and exit 1.
+
 ## 0.2.6
 - bun already in `~/.bun/bin` but not on the PATH (bun's own installer, or an earlier ade): `ade setup` and
   `ade setup --tools` now add the one marked PATH line to the shell's start file, as after ade's own install, so a new

@@ -44,6 +44,7 @@ table() {
     skills) echo "R|skills add X"; echo "R|skills enable X"; echo "R|skills disable X"; echo "S|skills search X" ;;
     clean) echo "R|clean X" ;;
     home) echo "R|home X" ;;
+    web) echo "R|web X"; echo "R|web --port X"; echo "R|web --tailnet X"; echo "R|web --print-link X" ;;
     update) echo "R|update X" ;;
     restore) echo "R|restore X"; echo "S|restore --label X" ;;
     reset) echo "R|reset X"; echo "R|reset --hub X"; echo "R|reset --keys --hub X" ;;

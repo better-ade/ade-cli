@@ -196,6 +196,37 @@ outside the hub and its projects asks first; without the `code` command one line
 installs Visual Studio Code) and the built-in viewer is used; a `code` that lies inside the hub or project is never
 run; over SSH with no display (and outside Visual Studio Code's own terminal) the path is offered instead.
 
+## The web view ([A19](docs/stories/A19-web-view.md))
+
+`ade web` shows the hub in a browser, read-only: the agents and their state (the hub's `bin/sessions`), the picked
+agent's log (its events and its `STATE.md`), today's and yesterday's journal, and the chat log, refreshed every
+3 seconds. It runs in the foreground and prints the address to open; Ctrl-C stops it.
+
+```
+$ ade web
+ade web: http://127.0.0.1:8765/?k=<a random token>
+```
+
+| Command | What it does |
+|---|---|
+| `ade web [--port N]` | The page on `127.0.0.1` only: port 8765 when it is free, else a free one |
+| `ade web --tailnet` | The page on this machine's Tailscale address only, so your phone can open it |
+| `ade web --print-link` | The running page's address; nothing and exit 1 when none runs |
+
+- **Read-only.** It answers GET and nothing else (405). No request changes, starts or stops anything. It reads the
+  journal, the chat log, the event log and each listed agent's `STATE.md`; a request never names a file.
+- **The link is the key.** The address holds a random token, new at every start; without it the answer is 403. The
+  page keeps it as a cookie the page's own script cannot read. Do not paste the address anywhere public.
+- **Keys are hidden.** Every line passes the same rule as `ade chat logs` (Telegram bot tokens, key-shaped strings,
+  long opaque runs), plus GitHub tokens, `sk_` keys, `Authorization:` headers and the value after `password=`. A
+  commit id or another long run of letters and digits is hidden too. Logs can still hold your code and your
+  customers' context: that is what the page is for, so treat the link like the logs.
+- **`--tailnet`.** It listens on the address `tailscale ip -4` prints (100.64.0.0/10) and on no other, never on every
+  interface. **Anyone on your tailnet with the link can read these logs.** `ade` never installs Tailscale or signs in
+  to it; when it is missing or signed out, `ade web --tailnet` says how (https://tailscale.com/download, then
+  `tailscale up`) and starts nothing. No public address, no tunnel.
+- It needs only `python3`. Inside an ADE Computer, open the address in the desktop's own browser.
+
 ## A ticket's path
 
 ```mermaid
@@ -217,6 +248,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 |---|---|---|
 | `ade work <folder> [--role <r>]` | Start or resume a focus agent (hub `bin/work`), as a tab of the hub's `ade ui` session and never a new window: the session is made when it is not there (`ade ui` shows it). `ADE_UI=off`, no tmux or the ADE app: the hub's own way | **built** (A1, A6) |
 | `ade status` | List sessions (hub `bin/sessions`) | **built** (A1) |
+| `ade web [--port N] [--tailnet]` \| `--print-link` | A read-only page of the agents, their logs, the journal and the chat log, on `127.0.0.1` behind a random link; `--tailnet`: on this machine's Tailscale address only | **built** (A19) |
 | `ade dispatch …` | Hand a task to an agent (hub `bin/dispatch`) | **built** (A1) |
 | `ade notify …` | Send a notification (hub `bin/notify`) | **built** (A1) |
 | `ade chat …` | Chat with the hub (hub `bin/chat`) | **built** (A1) |
