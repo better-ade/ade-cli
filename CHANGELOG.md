@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+- bun is installed as part of set-up. It is a required tool now: the guide's tools step, `ade setup --tools` and
+  `install.sh` install it after a yes, before any Telegram step, and `ade doctor` lists it. It needs neither Homebrew
+  nor the Xcode Command Line Tools (on a Mac with outdated Command Line Tools and an untrusted tap, `brew install`
+  could not install it): `ade` downloads the pinned release, bun 1.4.4, for your OS and CPU from bun's GitHub
+  releases (`bun-darwin-aarch64.zip`, `bun-darwin-x64.zip`, `bun-linux-x64.zip`, `bun-linux-aarch64.zip`), checks the
+  zip's sha256 against the `SHASUMS256.txt` of the same release, and puts the one program in it at `~/.bun/bin/bun`.
+  A sha256 that does not match installs nothing, and no script is piped to a shell. A bun you already have
+  (Homebrew's, or one in `~/.bun/bin`) is left alone; `ade` never runs `brew install bun`.
+- PATH: when `~/.bun/bin` is not on your PATH, `ade` says so and adds one marked line to `~/.zshrc` (zsh),
+  `~/.bashrc` (bash) or `~/.profile`, once; `ade` and the hub commands it runs (`ade chat start`) find bun there in
+  the same session.
+- A bun install that fails (the download, the sha256, unpacking, a CPU bun has no build for) is one plain line, then
+  the usual question: try again, show the manual steps, stop. The Telegram step still checks for bun; when it is
+  missing there all the same, it offers the same install (and "skip Telegram for now").
+
 ## 0.2.4
 - The guide's Telegram step finishes, one step at a time. The token is asked once (the hub's own prompt no longer
   shows as a second one). Then `ade` does each step it can, said before and checked after: bun (after a yes, as

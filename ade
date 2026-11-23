@@ -852,7 +852,8 @@ hub-init|retry|retry=try again from where it stopped;stop=stop here
 first-save|retry|retry=try again;go-on=go on (save it later, with the command shown);stop=stop here
 session|go-on|again=start it again;go-on=go on (this step stays not done);stop=stop here
 tg-token|token|token=enter the token again;later=finish Telegram later;stop=stop here
-tg-bun|retry|retry=try again;manual=show how to install bun yourself;later=skip Telegram for now;stop=stop here
+bun|retry|retry=try again;manual=show the manual steps;stop=stop here
+tg-bun|retry|retry=try again;manual=show the manual steps;later=skip Telegram for now;stop=stop here
 tg-step|retry|retry=try again;later=finish Telegram later;stop=stop here
 tg-wait|again|again=show the step again;later=finish Telegram later;stop=stop here
 key-store|key|key=enter it again;stop=stop here
@@ -1101,7 +1102,6 @@ setup_focus() {   # focus agents: several; each signed in and live-tested; only 
 # can do inside a Claude Code session (bin/chat start at a terminal, /telegram:access pair and policy) is shown one
 # step at a time, then checked with the hub's bin/chat status. Never the hub's bin/chat setup (its list of every step).
 TG_PLUGIN="telegram@claude-plugins-official"
-BUN_INSTALL_CMD="curl -fsSL https://bun.sh/install | bash"
 TG_RUN=unknown; TG_POLICY=none
 tg_chat() {   # <hub>: TG_RUN (running, unconnected, stopped, unknown) and TG_POLICY (none, or the policy's name)
   local out first pol
@@ -1185,10 +1185,11 @@ tg_auto() {   # <hub> <step>: one step ade does itself: said, done, checked; 1 =
   while :; do
     case "$id" in
       bun) echo "Next: bun, the program the Telegram plugin runs on."
-        tools_install bun || true; hash -r
+        bun_install tg-bun; rc=$?   # the tools step installs bun; here only when it is missing all the same
         if tg_bun; then echo "checked: bun is installed"; return 0; fi
-        failed tg-bun "${TOOLS_WHY:-bun is not installed yet; the Telegram plugin runs on it}" "${TOOLS_WHY:+in the lines above, from the installer itself}${TOOLS_WHY:-https://bun.sh shows how to install it}"
-        [ "$CHOICE" != manual ] || { echo "To install bun yourself, run (from https://bun.sh; ade does not run it for you):"; echo "  $BUN_INSTALL_CMD"; return 1; } ;;
+        [ "$rc" = 2 ] || return 1   # it failed, and the person chose the manual steps or later
+        failed tg-bun "bun is not installed yet; the Telegram plugin runs on it" "ade setup --tools installs it too"
+        [ "$CHOICE" != manual ] || { bun_manual; return 1; } ;;
       plugin) echo "Next: the Telegram plugin for Claude Code, installed for your user."
         run_logged "$hub" hub_claude "$hub" plugin install "$TG_PLUGIN" --scope user > /dev/null; rc=$?
         if plugin_version "$hub" "$hub" "$TG_PLUGIN" > /dev/null; then echo "checked: the Telegram plugin is installed"; return 0; fi
@@ -3300,8 +3301,9 @@ clip_copy() {   # <path>: onto the clipboard on stdin (pbcopy, wl-copy, xclip, x
 }
 
 # the tools ade uses: the required ones (checked by install.sh and ade setup) and the viewer extras (one step in ade
-# setup); ade setup --tools installs what is missing with Homebrew (macOS) or apt (Ubuntu), after a yes at a terminal
-REQUIRED_TOOLS="git python3 tmux gh gitleaks"
+# setup); ade setup --tools installs what is missing with Homebrew (macOS) or apt (Ubuntu), after a yes at a terminal;
+# bun comes from its own release (bun_install), with neither
+REQUIRED_TOOLS="git python3 tmux gh gitleaks bun"
 EXTRA_TOOLS="yazi bat glow poppler chafa code"
 tool_bin() { local c; for c in "$1" $([ "$1" = bat ] && echo batcat); do command -v "$c" 2> /dev/null && return 0; done; return 1; }   # Ubuntu names bat batcat
 tool_present() { case "$1" in poppler) command -v pdftotext && command -v pdftoppm ;; *) tool_bin "$1" ;; esac > /dev/null 2>&1; }
@@ -3310,16 +3312,15 @@ tool_what() {
   case "$1" in
     git) echo "required: hubs and projects are git repositories" ;; python3) echo "required: ade reads JSON with it" ;;
     tmux) echo "required: ade ui" ;; gh) echo "required: ade hub new on GitHub" ;;
-    gitleaks) echo "required: the hub's secret scan before each save" ;;
+    gitleaks) echo "required: the hub's secret scan before each save" ;; bun) echo "required: the Telegram plugin runs on it" ;;
     yazi) echo "extra: ade files with ADE_FILES=yazi; not read-only" ;; bat) echo "extra: syntax colours in ade view, else less -N" ;;
     glow) echo "extra: Markdown rendered in ade view, else plain text" ;; poppler) echo "extra: PDF pages in ade view (pdftotext, pdftoppm)" ;;
     chafa) echo "extra: images on more terminals" ;; code) echo "extra: Visual Studio Code, for c in ade files and ade view" ;;
   esac
 }
-tool_pkg() { case "$1:$2" in brew:python3) echo python ;; brew:code) echo visual-studio-code ;; apt:poppler) echo poppler-utils ;; apt:yazi|apt:glow|apt:code|apt:bun) ;; *) echo "$2" ;; esac; }   # <brew|apt> <tool>
+tool_pkg() { case "$1:$2" in brew:python3) echo python ;; brew:code) echo visual-studio-code ;; apt:poppler) echo poppler-utils ;; apt:yazi|apt:glow|apt:code) ;; *) echo "$2" ;; esac; }   # <brew|apt> <tool>
 tool_page() {   # <tool>: where to get a tool apt does not have
-  case "$1" in yazi) echo "https://github.com/sxyazi/yazi/releases (ade works without it)" ;; glow) echo "https://github.com/charmbracelet/glow/releases (ade works without it)" ;;
-    bun) echo "https://bun.sh" ;; esac
+  case "$1" in yazi) echo "https://github.com/sxyazi/yazi/releases (ade works without it)" ;; glow) echo "https://github.com/charmbracelet/glow/releases (ade works without it)" ;; esac
 }
 tools_report() {   # ade doctor: each tool, installed or missing
   local t; echo "ade tools:"
@@ -3340,7 +3341,14 @@ install_why() {
     *"not trusted"*|*"tap trust"*) case "$2" in *" "*) echo "Homebrew does not trust one of its taps yet (see brew trust)" ;; *) echo "Homebrew does not trust the ${2##*/} tap yet" ;; esac ;;
   esac
 }
-tools_install() {   # <tool>...: one question at a terminal, then brew install or apt-get install -y; 1 = not installed
+tools_install() {   # <tool>...: the packages (pkgs_install), then bun from its release (bun_install); 1 = one is not installed
+  local t bun=0 rc=0 others=(); TOOLS_WHY=""
+  for t in "$@"; do if [ "$t" = bun ]; then bun=1; else others+=("$t"); fi; done
+  [ "${#others[@]}" = 0 ] || pkgs_install "${others[@]}" || rc=1
+  [ "$bun" = 0 ] || bun_install || rc=1
+  return "$rc"
+}
+pkgs_install() {   # <tool>...: one question at a terminal, then brew install or apt-get install -y; 1 = not installed
   local m="" t p pkgs="" cmd rc tmp; TOOLS_WHY=""
   if on_macos; then command -v brew > /dev/null 2>&1 && m=brew; elif command -v apt-get > /dev/null 2>&1; then m=apt; fi
   if [ -z "$m" ]; then
@@ -3367,8 +3375,105 @@ tools_install() {   # <tool>...: one question at a terminal, then brew install o
   [ -n "$TOOLS_WHY" ] || TOOLS_WHY="$cmd failed (exit $rc)$([ "$m" = apt ] && echo '; when apt cannot find a package, run apt-get update first')"
   echo "$TOOLS_WHY"; return 1
 }
-setup_tools() {   # [required|extras]: ade setup --tools; what is missing, after one yes
-  local req ext
+# bun (the Telegram plugin runs on it) is a required tool that ade installs itself, with neither Homebrew nor the Xcode
+# Command Line Tools: the release zip for this OS and CPU from bun's GitHub release, its sha256 checked against the
+# SHASUMS256.txt of that release, the one program in it put at ~/.bun/bin/bun (0755), where the hub's bin/chat finds it
+# once ~/.bun/bin is on PATH. No script is piped to a shell, and Homebrew is never asked for bun. A bun already on PATH
+# (Homebrew's, or any other) or in ~/.bun/bin is left alone. The version is pinned on the next line and nowhere else.
+BUN_VERSION="1.4.4"   # the newest release at least two weeks old on 2026-11-23 (released 2026-10-22)
+BUN_RELEASES="https://github.com/oven-sh/bun/releases"
+BUN_RC_MARK="# added by ade: bun"
+BUN_WHY=""; BUN_DETAILS=""
+# bun_path: a bun in ~/.bun/bin that is not on PATH is found by ade and by what it runs (the hub's bin/chat); a bun
+# already on PATH stays the one that is found
+bun_path() { command -v bun > /dev/null 2>&1 || ! [ -x "$HOME/.bun/bin/bun" ] || { PATH="$HOME/.bun/bin:$PATH"; export PATH; hash -r; }; }
+bun_asset() {   # the release zip for this OS and CPU, without .zip; 1 = bun has none that ade knows
+  local os cpu; os="$(uname -s 2> /dev/null)"; cpu="$(uname -m 2> /dev/null)"
+  case "$os" in Darwin) os=darwin ;; Linux) os=linux ;; *) return 1 ;; esac
+  case "$cpu" in arm64|aarch64) cpu=aarch64 ;; x86_64|amd64) cpu=x64 ;; *) return 1 ;; esac
+  # an Intel shell on Apple silicon (Rosetta): the Apple silicon bun, as bun's own installer picks
+  if [ "$os-$cpu" = darwin-x64 ] && [ "$(sysctl -n sysctl.proc_translated 2> /dev/null)" = 1 ]; then cpu=aarch64; fi
+  echo "bun-$os-$cpu"
+}
+bun_get() {   # <url> <file>: https only, redirects too (file:// for tests); curl's own reason in <file>.err
+  local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"
+  curl --proto "$proto" --proto-redir "$proto" --tlsv1.2 -fsSL --connect-timeout 20 --max-time 900 "$1" -o "$2" 2> "$2.err" < /dev/null
+}
+bun_fetch() {   # the pinned bun into ~/.bun/bin/bun; 1 = nothing installed, BUN_WHY (one plain line) and BUN_DETAILS say why
+  local a tmp url want got dest="$HOME/.bun/bin"; BUN_WHY=""; BUN_DETAILS="bun's releases: github.com/oven-sh/bun/releases"
+  a="$(bun_asset)" || { BUN_WHY="bun has no download for this computer ($(uname -s 2> /dev/null) $(uname -m 2> /dev/null))"; BUN_DETAILS="https://bun.sh/docs/installation lists the computers bun runs on"; return 1; }
+  tmp="$(mk_tmp)" || { BUN_WHY="ade could not make a temp folder for the download"; return 1; }
+  url="$BUN_RELEASES/download/bun-v$BUN_VERSION"
+  if ! bun_get "$url/$a.zip" "$tmp/bun.zip"; then BUN_WHY="The download of bun $BUN_VERSION did not finish"; BUN_DETAILS="$(plain "$(tail -1 "$tmp/bun.zip.err" 2> /dev/null)")"
+  elif ! bun_get "$url/SHASUMS256.txt" "$tmp/sums"; then BUN_WHY="The download of bun's SHASUMS256.txt did not finish; nothing installed"; BUN_DETAILS="$(plain "$(tail -1 "$tmp/sums.err" 2> /dev/null)")"
+  else
+    want="$(awk -v f="$a.zip" '$2 == f || $2 == "*" f { print $1; exit }' "$tmp/sums" 2> /dev/null)"; got="$(sha256_of "$tmp/bun.zip" 2> /dev/null)"
+    if ! matches "$want" '^[0-9a-f]{64}$'; then BUN_WHY="SHASUMS256.txt names no sha256 for $a.zip; nothing installed"
+    elif [ "$got" != "$want" ]; then BUN_WHY="$a.zip does not match its sha256; nothing installed"; BUN_DETAILS="SHASUMS256.txt of bun-v$BUN_VERSION names another sha256 for it"
+    elif ! bun_unzip "$tmp/bun.zip" "$a/bun" "$tmp/bun"; then BUN_WHY="$a.zip could not be unpacked; nothing installed"
+    elif ! chmod 755 "$tmp/bun" || [ "$("$tmp/bun" --version 2> /dev/null < /dev/null)" != "$BUN_VERSION" ]; then
+      BUN_WHY="bun $BUN_VERSION does not run on this computer; nothing installed"; BUN_DETAILS="https://bun.sh/docs/installation lists the computers bun runs on"
+    elif ! { mkdir -p "$dest" && cp "$tmp/bun" "$dest/bun.ade-tmp" && chmod 755 "$dest/bun.ade-tmp" && mv -f "$dest/bun.ade-tmp" "$dest/bun"; } 2> /dev/null; then
+      rm -f "$dest/bun.ade-tmp"; BUN_WHY="ade could not write ~/.bun/bin/bun; nothing installed"; BUN_DETAILS="check that you can write in ~/.bun"
+    fi
+  fi
+  [ -n "$BUN_DETAILS" ] || BUN_DETAILS="curl gave no reason; check the network"
+  rm_tmp "$tmp"; [ -z "$BUN_WHY" ]
+}
+bun_unzip() {   # <zip> <member> <file>: that one member, as a file, and nothing else from the zip
+  python3 -I - "$@" 2> /dev/null <<'PY' && [ -s "$3" ]
+import sys, zipfile
+z = zipfile.ZipFile(sys.argv[1]); i = z.getinfo(sys.argv[2])
+if i.is_dir() or i.file_size > 1 << 30: sys.exit(1)
+with z.open(i) as src, open(sys.argv[3], "wb") as dst:
+    for block in iter(lambda: src.read(1 << 20), b""): dst.write(block)
+PY
+}
+# bun_rc: ~/.bun/bin is not on PATH: this ade's own PATH (and so what it runs), and one marked line in the person's
+# shell start file (~/.zshrc for zsh, ~/.bashrc for bash, ~/.profile otherwise), said first and never added twice
+bun_rc() {
+  local f line
+  case ":$PATH:" in *":$HOME/.bun/bin:"*) return 0 ;; esac
+  PATH="$HOME/.bun/bin:$PATH"; export PATH; hash -r
+  case "${SHELL:-}" in */zsh) f=.zshrc ;; */bash) f=.bashrc ;; *) f=.profile ;; esac
+  ! grep -qF '.bun/bin' "$HOME/$f" 2> /dev/null && ! grep -qF 'BUN_INSTALL' "$HOME/$f" 2> /dev/null || return 0
+  # shellcheck disable=SC2016  # the line as it goes into the file: the shell that reads it expands it
+  line='export PATH="$HOME/.bun/bin:$PATH"'"   $BUN_RC_MARK"
+  # shellcheck disable=SC2088  # a literal ~ for the person to read
+  echo "~/.bun/bin is not on your PATH: ade adds one line to ~/$f, so a new"
+  echo "terminal finds bun (this ade already does):"; echo "  $line"
+  { { [ ! -s "$HOME/$f" ] || [ -z "$(tail -c 1 "$HOME/$f")" ] || echo; } && printf '%s\n' "$line"; } 2> /dev/null >> "$HOME/$f" ||
+    echo "ade could not write ~/$f; add that line to it yourself"
+}
+bun_manual() {   # the manual steps: the same download, check and place, by hand; never a script piped to a shell
+  local a; echo "To install bun $BUN_VERSION yourself:"
+  if a="$(bun_asset)"; then
+    echo "  1. from $BUN_RELEASES/tag/bun-v$BUN_VERSION"; echo "     download $a.zip and SHASUMS256.txt"
+    echo "  2. shasum -a 256 $a.zip must print the sha256 that"; echo "     SHASUMS256.txt has for it"
+    echo "  3. unzip $a.zip && mkdir -p ~/.bun/bin &&"; echo "     mv $a/bun ~/.bun/bin/bun"
+  else echo "  https://bun.sh/docs/installation lists the computers bun runs on"; fi
+  echo "then run ${ASK_AGAIN:-ade setup --tools}"
+}
+# bun_install [kind of failure]: after a yes at a terminal. 0 = installed and found; 1 = it failed and the person chose
+# the manual steps (shown) or to go on; 2 = not tried (no yes, no terminal, an agent session). A failure goes through
+# failed: try again, the manual steps, stop.
+bun_install() {
+  local kind="${1:-bun}"
+  if agent_context; then echo "ade installs nothing from an agent session; run it yourself at a terminal: ade setup --tools"; return 2; fi
+  { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || { echo "to install bun, run at a terminal: ade setup --tools"; return 2; }
+  echo "bun $BUN_VERSION: ade downloads it from github.com/oven-sh/bun, checks its sha256 and"
+  # shellcheck disable=SC2088  # a literal ~ for the person to read
+  echo "puts it in ~/.bun/bin/bun. Homebrew is not used, and no script is run."
+  tty_confirm "Install bun now?" || { echo "nothing installed (later: ade setup --tools)"; return 2; }
+  while :; do
+    echo "downloading bun $BUN_VERSION from github.com/oven-sh/bun"
+    if bun_fetch; then bun_rc; hash -r; echo "installed: bun $BUN_VERSION in ~/.bun/bin/bun"; return 0; fi
+    failed "$kind" "$BUN_WHY" "$BUN_DETAILS"
+    [ "$CHOICE" = retry ] || { [ "$CHOICE" != manual ] || bun_manual; return 1; }
+  done
+}
+setup_tools() {   # [required|extras]: ade setup --tools; what is missing, after a yes
+  local req ext ASK_AGAIN="ade setup --tools"
   req="$(tools_missing $REQUIRED_TOOLS)"; ext="$(tools_missing $EXTRA_TOOLS)"
   case "${1:-}" in required) ext="" ;; extras) req="" ;; esac
   [ -n "$req$ext" ] || { echo "tools: everything ade uses is installed"; return 0; }
@@ -3776,6 +3881,7 @@ cmd_version() {
   echo "ade ${v:-unknown}"
 }
 
+bun_path
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in   # A12: the daily update check, never for the commands tmux and ade itself run all the time
   version|--version|-v|help|--help|-h|update) ;;

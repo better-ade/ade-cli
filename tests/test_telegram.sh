@@ -1,7 +1,8 @@
 #!/bin/bash
 # The guide's Telegram step (ade setup --telegram, and step 6 of ade setup): the token asked once, then every step that
 # is left, one at a time, to a bot that passed the hub's test, or one line saying what is left. Fakes only: a hub
-# whose bin/keys, bin/chat and bin/schedule keep their state in $T/tg, a fake claude (plugin install), bun and brew.
+# whose bin/keys, bin/chat and bin/schedule keep their state in $T/tg, a fake claude (plugin install), bun, brew and
+# a curl that serves a fake bun release (bun_fakes in helpers.sh).
 # ade runs with those fakes and the system's own commands ($T/sys), on a scratch HOME. Never Telegram, never a real
 # claude, never a key store. SHOW_EXCHANGE=1 prints the whole run's transcript.
 . "$(dirname "$0")/helpers.sh"
@@ -11,7 +12,7 @@ farm() {   # $T/sys: the system's commands without the ones faked here
   python3 - "$T/sys" "$(command -v python3)" "$(command -v git)" <<'PY'
 import os, sys
 d = sys.argv[1]; os.makedirs(d, exist_ok=True)
-skip = set("code bun gitleaks claude gh brew apt-get apt sudo uname open xdg-open tmux yazi bat batcat glow pdftotext pdftoppm chafa "
+skip = set("code bun curl wget sysctl gitleaks claude gh brew apt-get apt sudo uname open xdg-open tmux yazi bat batcat glow pdftotext pdftoppm chafa "
            "security pass gpg pbcopy xclip xsel wl-copy".split())
 for name, target in (("python3", sys.argv[2]), ("git", sys.argv[3])):
     os.symlink(target, os.path.join(d, name))
@@ -70,17 +71,17 @@ if [ "$1 $2" = "plugin install" ]; then fails plugin.fail && exit 1; [ ! -f "$FT
   echo "Successfully installed plugin: telegram@claude-plugins-official (scope: user)"; fi
 exit 0
 STUB
-  # brew: $W/brew.fail is the installer's whole message for one failed run; install bun puts a bun on PATH
+  # brew: $W/brew.fail is the installer's whole message for one failed run; it is never asked for bun
   cat > "$F/brew" <<'STUB'
 #!/bin/bash
 echo "brew $*" >> "$CALLS"
 if [ -s "$FT/tg/brew.fail" ]; then cat "$FT/tg/brew.fail" >&2; rm -f "$FT/tg/brew.fail"; exit 1; fi
-for t in "$@"; do case "$t" in bun|gitleaks) printf '#!/bin/bash\nexit 0\n' > "$FT/fakebin/$t"; chmod +x "$FT/fakebin/$t" ;; esac; done
+for t in "$@"; do case "$t" in gitleaks) printf '#!/bin/bash\nexit 0\n' > "$FT/fakebin/$t"; chmod +x "$FT/fakebin/$t" ;; esac; done
 echo "==> Pouring ${*: -1}"
 STUB
   printf '#!/bin/bash\nif [ $# -eq 0 ] || [ "$1" = -s ]; then echo "${FAKE_OS:-Darwin}"; else exec "%s" "$@"; fi\n' "$(command -v uname)" > "$F/uname"
   local c; for c in bun tmux gh gitleaks yazi bat glow pdftotext pdftoppm chafa code; do printf '#!/bin/bash\nexit 0\n' > "$F/$c"; done
-  chmod +x "$F"/* "$H/bin/"*
+  chmod +x "$F"/* "$H/bin/"*; bun_fakes
 }
 plugin_there() { mkdir -p "$HOME/.claude/plugins"; echo '{"plugins": {"telegram@claude-plugins-official": [{"scope": "user", "version": "0.0.6"}]}}' > "$HOME/.claude/plugins/installed_plugins.json"; }
 token_there() { echo "telegram=$TOKEN" > "$T/keystore"; }
@@ -155,8 +156,9 @@ tg_full_run() {   # 2, 4: every step, to a bot that passed the test; the one end
     "checked: your bot's message reached you, and your reply reached the hub" \
     "Next: your hub keeps the session with your bot running, in the background." "checked: the session is running in the background"; do
     assert_contains "$T/out" "$s" "said or checked: $s"; done
-  assert_contains "$T/out" "Install bun now? This runs: brew install bun" "bun: asked first, as ade setup --tools asks"
-  assert_eq "$(did)" "keys set telegram;brew install bun;claude plugin install telegram@claude-plugins-official --scope user;chat stop;chat test telegram;schedule install;" "what ade ran, in order"
+  assert_contains "$T/out" "Install bun now? [y/N]" "bun, missing all the same: asked first, as ade setup --tools asks"
+  assert_contains "$T/out" "installed: bun $BUN_V in ~/.bun/bin/bun" "and installed the same way"; [ -x "$HOME/.bun/bin/bun" ] || fail "where the hub's bin/chat finds it"
+  assert_eq "$(did)" "keys set telegram;curl $BUN_URL/bun-darwin-aarch64.zip;curl $BUN_URL/SHASUMS256.txt;claude plugin install telegram@claude-plugins-official --scope user;chat stop;chat test telegram;schedule install;" "what ade ran, in order"
   assert_eq "$(grep -c '^HUB_CHAT=telegram$' "$H/hub.conf")" 1 "HUB_CHAT=telegram in hub.conf"
   [ "$(grep -n '^HUB_CHAT' "$H/hub.conf" | wc -l | tr -d ' ')" = 1 ] || fail "written once"
   grep -q '"bot": "@acme_bot"' "$H/.ade/connections.json" || fail "the channel is recorded with the bot's public name"
@@ -166,7 +168,7 @@ tg_full_run() {   # 2, 4: every step, to a bot that passed the test; the one end
   A < /dev/null; assert_contains "$T/out" "telegram: on" "ade alone: on"
   : > "$CALLS"; A setup --telegram < /dev/null; assert_eq "$?" 0 "run again, finished"
   assert_eq "$(cat "$T/out")" "Telegram is working: your bot passed its test, and its session is running." "nothing asked or shown again, the one line"
-  ! grep -qE "^(keys set|brew|claude|chat (stop|test)|schedule)" "$CALLS" || fail "and nothing done again"
+  ! grep -qE "^(keys set|brew|curl|claude|chat (stop|test)|schedule)" "$CALLS" || fail "and nothing done again"
 }
 
 tg_one_step_at_a_time() {   # 3: a step for the person is alone on the screen, waited for, then checked
@@ -205,7 +207,7 @@ tg_resumes() {   # 5: run again, it starts at the first thing not done and shows
   : > "$CALLS"; talk "$PAIR\n$LOCK\n" setup --telegram; rc=$?; assert_eq "$rc" 0 "the second run finishes"
   for s in "Do you want to reach" "Bot token" "BotFather" "bun" "the Telegram plugin" "second terminal"; do assert_not_contains "$T/out" "$s" "not shown again: $s"; done
   head -1 "$T/out" > "$T/first"; assert_contains "$T/first" "Your turn: in Telegram, send your bot any message. It replies with a pairing" "it starts at the first thing not done"
-  ! grep -qE "^(keys set|brew|claude)" "$CALLS" || fail "nothing done again"
+  ! grep -qE "^(keys set|brew|curl|claude)" "$CALLS" || fail "nothing done again"
   assert_eq "$(last_line)" "Telegram is working: your bot passed its test, and its session is running." "and ends working"
   rm "$W/running"; A setup --check < /dev/null; assert_contains "$T/out" "telegram: not finished: start it in the background (ade setup --telegram)" "a session that stopped: not finished"
   : > "$CALLS"; A setup --telegram < /dev/null; assert_eq "$(did)" "schedule install;" "the run after starts it again, and only that"
@@ -260,34 +262,34 @@ tg_steps_fail() {   # 2: each step ade does goes through the shared failure func
   A setup --check < /dev/null; assert_contains "$T/out" "telegram: not finished: start it in the background" "the state"
 }
 
-tg_bun_fails() {   # the owner's Mac: Homebrew's own failures, in one plain line each, and the choices
-  world; person; token_there; plugin_there; rm "$F/bun"
-  printf 'Error: Your Command Line Tools are too outdated.\nUpdate them from Software Update in System Settings.\nYou should download the Command Line Tools for Xcode 26.6.\n' > "$W/brew.fail"
+tg_bun_fails() {   # bun missing at the Telegram step all the same: offered the same way (its release, never Homebrew), and the choices
+  world; person; token_there; plugin_there; rm "$F/bun"; printf 'curl: (6) Could not resolve host: github.com\n' > "$T/curl.fail"
   talk "y\nmanual\n" setup --telegram; rc=$?
-  assert_contains "$T/out" "You should download the Command Line Tools for Xcode 26.6." "the installer's own lines are on the screen"
-  assert_eq "$(grep -c '^Homebrew needs newer Command Line Tools: run softwareupdate --install -a$' "$T/out")" 2 "said in one plain line (by the install, and by the step)"
-  assert_contains "$T/out" "details: in the lines above, from the installer itself" "where"
-  for s in "  1) retry   try again" "  2) manual  show how to install bun yourself" "  3) later   skip Telegram for now" "  4) stop    stop here" "What now? [retry]:"; do assert_contains "$T/out" "$s" "$s"; done
-  assert_contains "$T/out" "To install bun yourself, run (from https://bun.sh; ade does not run it for you):" "manual"
-  assert_contains "$T/out" "  curl -fsSL https://bun.sh/install | bash" "the command, shown and not run"
+  assert_contains "$T/out" "Next: bun, the program the Telegram plugin runs on." "the step is said"
+  assert_contains "$T/out" "The download of bun $BUN_V did not finish" "a download that fails: one plain line"
+  assert_contains "$T/out" "details: curl: (6) Could not resolve host: github.com" "where"
+  for s in "  1) retry   try again" "  2) manual  show the manual steps" "  3) later   skip Telegram for now" "  4) stop    stop here" "What now? [retry]:"; do assert_contains "$T/out" "$s" "$s"; done
+  assert_contains "$T/out" "To install bun $BUN_V yourself:" "manual"; assert_contains "$T/out" "     download bun-darwin-aarch64.zip and SHASUMS256.txt" "the steps, shown and not run"
+  assert_not_contains "$T/out" "| bash" "no script piped to a shell"
   assert_eq "$(last_line)" "Telegram is not finished: install bun, then ade setup --telegram" "the ending"; assert_eq "$rc" 0 "the step ended"; fits
-  assert_eq "$(did)" "brew install bun;" "ade ran the install and nothing else: no brew trust, no softwareupdate, no curl"
-  printf 'Warning: The following taps are not trusted:\n  oven-sh/bun\nHomebrew is currently ignoring formulae, casks and commands from these taps because tap trust is required.\nError: No available formula with the name "bun".\n' > "$W/brew.fail"
-  : > "$CALLS"; talk "y\n\ny\n$START\n$PAIR\n$LOCK\n" setup --telegram; rc=$?
-  assert_contains "$T/out" "Homebrew does not trust the bun tap yet" "the tap that is not trusted, in one plain line"
-  assert_eq "$(grep -c '^brew install bun' "$CALLS")" 2 "try again runs the install again, after a yes"; assert_not_contains "$CALLS" "trust" "never brew trust"
+  assert_eq "$(did)" "curl $BUN_URL/bun-darwin-aarch64.zip;" "ade tried the download and nothing else: no brew, no softwareupdate"
+  printf 'curl: (28) Operation timed out\n' > "$T/curl.fail"; : > "$CALLS"; talk "y\n\n$START\n$PAIR\n$LOCK\n" setup --telegram; rc=$?
+  assert_eq "$(grep -c '^curl ' "$CALLS")" 3 "try again downloads again, with no second question"; assert_eq "$(grep -c 'Install bun now' "$T/out")" 1 "asked once"
+  assert_contains "$T/out" "checked: bun is installed" "checked"; assert_not_contains "$CALLS" "brew" "never Homebrew"
   assert_eq "$(last_line)" "Telegram is working: your bot passed its test, and its session is running." "and on to the end"; assert_eq "$rc" 0 "exit 0"
-  world; token_there; rm "$F/bun"; echo "Error: something else" > "$W/brew.fail"; talk "y\nlater\n" setup --telegram
-  assert_contains "$T/out" "brew install bun failed (exit 1)" "another failure: the command and its exit"
+  world; token_there; rm "$F/bun"; sed 's/^[0-9a-f]\{8\}/deadbeef/' "$BUN_REL/SHASUMS256.txt" > "$T/s"; cp "$T/s" "$BUN_REL/SHASUMS256.txt"; talk "y\nlater\n" setup --telegram
+  assert_contains "$T/out" "bun-darwin-aarch64.zip does not match its sha256; nothing installed" "a sha256 that does not match"; [ ! -e "$HOME/.bun" ] || fail "installs nothing"
   assert_eq "$(last_line)" "Telegram is not finished: install bun, then ade setup --telegram" "skip for now"
   world; token_there; rm "$F/bun"; talk "n\nstop\n" setup --telegram; assert_eq "$?" 1 "stop"
-  assert_contains "$T/out" "bun is not installed yet; the Telegram plugin runs on it" "a no to the install"; assert_contains "$T/out" "details: https://bun.sh shows how to install it" "where"
-  assert_not_contains "$CALLS" "brew" "nothing installed without a yes"
+  assert_contains "$T/out" "bun is not installed yet; the Telegram plugin runs on it" "a no to the install"; assert_contains "$T/out" "details: ade setup --tools installs it too" "where"
+  assert_not_contains "$CALLS" "curl" "nothing downloaded without a yes"; assert_not_contains "$CALLS" "brew" "and no Homebrew"
+  world; token_there; rm "$F/bun"; talk "n\nmanual\n" setup --telegram; assert_contains "$T/out" "To install bun $BUN_V yourself:" "a no, then the manual steps"
+  assert_contains "$T/out" "then run ade setup --telegram" "and how to come back"
   world; token_there; rm "$F/bun"; printf '#!/bin/bash\necho "apt-get $*" >> "$CALLS"\n' > "$F/apt-get"; chmod +x "$F/apt-get"
-  FAKE_OS=Linux talk "later\n" setup --telegram; assert_contains "$T/out" "bun: not in apt; get it from https://bun.sh" "Linux: apt has no bun, so its page is named"
-  assert_not_contains "$CALLS" "apt-get" "and nothing is installed"
-  mkdir -p "$HOME/.bun/bin"; printf '#!/bin/bash\n' > "$HOME/.bun/bin/bun"; chmod +x "$HOME/.bun/bin/bun"; A setup --check < /dev/null
-  assert_contains "$T/out" "telegram: not finished: install the Telegram plugin" "a bun its own installer put in ~/.bun/bin counts"
+  FAKE_OS=Linux FAKE_CPU=x86_64 talk "y\nlater\n" setup --telegram; assert_contains "$CALLS" "curl $BUN_URL/bun-linux-x64.zip" "Linux: the same way, its own zip"
+  assert_contains "$T/out" "checked: bun is installed" "installed"; assert_not_contains "$CALLS" "apt-get" "and apt is not asked for it"
+  world; token_there; rm "$F/bun"; mkdir -p "$HOME/.bun/bin"; printf '#!/bin/bash\n' > "$HOME/.bun/bin/bun"; chmod +x "$HOME/.bun/bin/bun"; A setup --check < /dev/null
+  assert_contains "$T/out" "telegram: not finished: install the Telegram plugin" "a bun already in ~/.bun/bin counts"
 }
 
 tools_report_brew_failures() {   # the same two failures in ade setup --tools, and gitleaks among the required tools
