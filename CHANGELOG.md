@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+- `ade project add <path-or-git-url>... [--name N] [--no-init] [--yes]` (A21): load repos you already have into the hub.
+  Each becomes a project folder made by the hub's own `bin/new`, with the Code row of its `ACCESS.md` filled from the
+  repo (the remote in https form and never with credentials, the checkout, the default branch, the CI it can see), so
+  the hub finds the checkout. A URL (or `owner/repo` on GitHub) is cloned into your code folder (`ADE_CODE_DIR`, else
+  `~/Project`, else `~/code`), never into the hub. It offers `ade init` in each repo (never overwrites), adds the
+  repo's `README.md` and `docs/` to the hub's memory, and offers to start the focus agents. A folder that is already
+  in the hub is left as it is; a failure for one repo does not stop the others.
+- `ade project add --scan <folder>`: the git repos directly under a folder, those already in the hub marked; pick with
+  `1 3 4`, `1-3`, `all` or names.
+- `ade project list`: each project folder's name, checkout, branch, focus agent and its `STATE.md` "Updated" line.
+
 ## 0.2.7
 - Telegram: the guide's step is not "working" until the bot is locked to you, as the hub's own `bin/chat status` says
   it ("locked to you": the policy allowlist, your account in it, no groups), not by the policy's name alone. Once it

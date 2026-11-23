@@ -49,6 +49,8 @@ table() {
     restore) echo "R|restore X"; echo "S|restore --label X" ;;
     reset) echo "R|reset X"; echo "R|reset --hub X"; echo "R|reset --keys --hub X" ;;
     uninstall) echo "R|uninstall X"; echo "R|uninstall --hub X" ;;
+    project) echo "S|project X"; echo "R|project list X"; echo "R|project add --name X /nonexistent"; echo "R|project add --scan X"
+      echo "S|project add X"; echo "S|project add --no-init X" ;;
     init|dash|version|help) echo none ;;
     *) return 1 ;;
   esac
