@@ -11,6 +11,8 @@
   never overwritten, ignored by git); `--name N` names one. A page or screen shot cannot be redacted. `--tg [caption]`
   sends the picture to you on Telegram through the hub's new `bin/chat send`, only while the bot is locked to you.
   `ade doctor` lists Chromium.
+
+## 0.2.7
 - Telegram: the guide's step is not "working" until the bot is locked to you, as the hub's own `bin/chat status` says
   it ("locked to you": the policy allowlist, your account in it, no groups), not by the policy's name alone. Once it
   is, the guide says what follows (before you lock, and again once it is so): the chat runs in auto mode, so your main agent acts on your Telegram messages
