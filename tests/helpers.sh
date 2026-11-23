@@ -101,7 +101,10 @@ if pid == 0:
 t = time.time()
 while termios.tcgetattr(fd)[3] & termios.ECHO and time.time() - t < 5:
     time.sleep(0.01)
-os.write(fd, inp)
+try:
+    os.write(fd, inp)
+except OSError:   # the program already ended and closed its terminal (macOS: EIO): nothing left to type into
+    pass
 out = b""
 while True:
     try:
