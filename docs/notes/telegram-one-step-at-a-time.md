@@ -23,4 +23,5 @@
 - bun: installed as the other tools are (`tools_install`, one yes at a terminal; Homebrew's own `bun` formula, so
   no third-party tap is needed). apt has no bun and ade pipes no installer from the network, so on Linux its page is
   named and the step waits. A failed install is said in one line from the installer's message, for every tool.
+  (Since `docs/notes/install-bun.md`: bun is a required tool, installed from its own release, never by Homebrew.)
 - Left for the hub (not changed here): see the pull request.

@@ -200,7 +200,7 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   absolute path outside the roots (by its real path too), found once per run. Over SSH it runs only with `DISPLAY`
   or `WAYLAND_DISPLAY` set or in Visual Studio Code's own terminal (`TERM_PROGRAM=vscode`). `ade view`'s `where`
   line ends with the column (`FT_COL`). The link picker takes `<number>c`.
-- Tools: required `git python3 tmux gh gitleaks`; extras `yazi bat glow poppler chafa code` (code = Visual Studio Code:
+- Tools: required `git python3 tmux gh gitleaks bun` (bun: its own section below); extras `yazi bat glow poppler chafa code` (code = Visual Studio Code:
   Homebrew `visual-studio-code`, not in apt, named with https://code.visualstudio.com/download, no repository added)
   (bat may be `batcat`; poppler =
   `pdftotext` and `pdftoppm`). Homebrew packages: `git python tmux gh gitleaks yazi bat glow poppler chafa`. apt (Ubuntu 24.04):
@@ -244,7 +244,8 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   Never `--force`. No `bin/sync` in the hub: nothing is done. Kind `first-save`.
 - Kinds: `live-top-account`, `live-top-key`, `live-top-check` (GLM, Muse), `live-focus-account`, `live-focus-key`,
   `install` (Claude Code, `gh`), `sign-in` (Claude, Gemini), `gh-sign-in`, `repo-taken`, `repo-auth`, `repo-create`,
-  `hub-init`, `session`, `key-store`, and Telegram's `tg-token`, `tg-bun`, `tg-step`, `tg-wait`.
+  `hub-init`, `session`, `key-store`, `bun` (try again, the manual steps, stop), and Telegram's `tg-token`, `tg-bun`
+  (the same, and skip Telegram for now), `tg-step`, `tg-wait`.
 - `~/.config/ade/last-failure` (0600): the output of the last `gh repo create` or `bin/init` that failed, control
   characters removed and key-shaped text hidden. Both run with no input and their output captured (shown when they
   work). Tools that own the terminal (sign-ins, installers, the session, `bin/chat setup`) keep their own lines.
@@ -270,7 +271,7 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   (else not paired). The policy `allowlist` is the lock. `ade` cannot tell a paired owner from a pending pairing
   code in that line; the hub's test settles it.
 - What `ade` runs: `bin/keys set telegram` (the token on stdin, the hub's own prompt and "stored" line not shown),
-  `brew install bun` after a yes (apt has no bun: `https://bun.sh` is named), `claude plugin install
+  bun's own install after a yes when bun is missing there all the same ("bun" below), `claude plugin install
   telegram@claude-plugins-official --scope user`, `bin/chat stop` (the test is refused while the session runs),
   `bin/chat test telegram`, `hub.conf` `HUB_CHAT=telegram`, `bin/schedule install`, then `bin/chat status` for up to
   `ADE_TG_WAIT` seconds (default 30). What only a person does, shown one at a time and checked with `bin/chat status`:
@@ -289,3 +290,20 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   (no lock file is left in the project) until they exit. `hub.conf` is checked without its folder, the hub root,
   which may be a link the owner made.
 - Fetches of the pinned repositories run with `GIT_TERMINAL_PROMPT=0` and `-c credential.helper=`.
+
+## bun (a required tool, installed without Homebrew)
+- `ade` pins one bun version (`BUN_VERSION` in `ade`, the only place) and installs it itself, after a yes at a
+  terminal, in the guide's tools step, `ade setup --tools`, `install.sh` and, when it is missing there all the same,
+  the Telegram step. Never `brew install bun`, never apt, never a script piped to a shell.
+- What it fetches, over https only (redirects too): `https://github.com/oven-sh/bun/releases/download/bun-v<version>/`
+  `<asset>.zip` and `SHASUMS256.txt` from the same release. Assets: `bun-darwin-aarch64` (also an Intel shell under
+  Rosetta), `bun-darwin-x64`, `bun-linux-x64`, `bun-linux-aarch64`; another OS or CPU is a failure, not a guess.
+- The zip's sha256 must be the one `SHASUMS256.txt` names for it (a 64-hex line for exactly that file name); then the
+  one member `<asset>/bun` is unpacked (python3 `zipfile`, no `unzip` needed), must print the pinned version for
+  `--version`, and is renamed into `~/.bun/bin/bun` (0755). Anything short of that installs nothing.
+- Found: a `bun` on PATH (Homebrew's or any other) or an executable `~/.bun/bin/bun` counts as installed and is left
+  alone. `ade` prepends `~/.bun/bin` to its own PATH (so to every hub command it runs; the hub's `bin/chat` looks
+  with `command -v bun`) when no bun is on PATH and `~/.bun/bin/bun` is there.
+- The person's shell start file: after an install, when `~/.bun/bin` is not on PATH, one line
+  `export PATH="$HOME/.bun/bin:$PATH"   # added by ade: bun` is appended to `~/.zshrc` (zsh), `~/.bashrc` (bash) or
+  `~/.profile` (any other `$SHELL`), said first; never when that file already names `.bun/bin` or `BUN_INSTALL`.
