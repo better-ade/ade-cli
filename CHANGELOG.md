@@ -1,6 +1,16 @@
 # Changelog
 
 ## Unreleased
+- `ade project add <path-or-git-url>... [--name N] [--no-init] [--yes]` (A21): load repos you already have into the hub.
+  Each becomes a project folder made by the hub's own `bin/new`, with the Code row of its `ACCESS.md` filled from the
+  repo (the remote in https form and never with credentials, the checkout, the default branch, the CI it can see), so
+  the hub finds the checkout. A URL (or `owner/repo` on GitHub) is cloned into your code folder (`ADE_CODE_DIR`, else
+  `~/Project`, else `~/code`), never into the hub. It offers `ade init` in each repo (never overwrites), adds the
+  repo's `README.md` and `docs/` to the hub's memory, and offers to start the focus agents. A folder that is already
+  in the hub is left as it is; a failure for one repo does not stop the others.
+- `ade project add --scan <folder>`: the git repos directly under a folder, those already in the hub marked; pick with
+  `1 3 4`, `1-3`, `all` or names.
+- `ade project list`: each project folder's name, checkout, branch, focus agent and its `STATE.md` "Updated" line.
 - `ade shot`: screenshots as proof (A20). `ade shot url <address>` saves a PNG of a page through the headless Chromium
   the hub already has (Playwright's; `ade` downloads nothing, and says how to get it when it is missing), with
   `--full-page` and `--width W`; only `http`, `https` and `file` addresses, a file only inside the project.
