@@ -218,8 +218,9 @@ ade web: http://127.0.0.1:8765/?k=<a random token>
 - **The link is the key.** The address holds a random token, new at every start; without it the answer is 403. The
   page keeps it as a cookie the page's own script cannot read. Do not paste the address anywhere public.
 - **Keys are hidden.** Every line passes the same rule as `ade chat logs` (Telegram bot tokens, key-shaped strings,
-  long opaque runs), plus GitHub tokens, `sk_` keys, `Authorization:` headers and the value after `password=`. A
-  commit id or another long run of letters and digits is hidden too. Logs can still hold your code and your
+  long opaque runs), plus GitHub tokens, `sk_` keys, AWS access key ids, `Authorization:` headers, the user and
+  password of a URL, the value after a name ending in `password`, `secret`, `token` or `key`, and private key
+  blocks. A commit id or another long run of letters and digits is hidden too, and a line over 4096 characters is cut. Logs can still hold your code and your
   customers' context: that is what the page is for, so treat the link like the logs.
 - **`--tailnet`.** It listens on the address `tailscale ip -4` prints (100.64.0.0/10) and on no other, never on every
   interface. **Anyone on your tailnet with the link can read these logs.** `ade` never installs Tailscale or signs in

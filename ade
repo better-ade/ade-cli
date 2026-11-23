@@ -3953,10 +3953,11 @@ cmd_web() {
 # through hide(): the hub's bin/chat logs rule (bin/agent.py ESCAPES and HIDE), then ade's additions (MORE).
 web_py() {
   local src; IFS= read -r -d '' src <<'PY' || true
-import errno, hmac, http.server, ipaddress, json, os, re, secrets, signal, socket, socketserver, stat, subprocess, sys, threading, time, urllib.parse
+import errno, functools, hmac, http.server, ipaddress, json, os, re, secrets, signal, socket, socketserver, stat, subprocess, sys, threading, time, urllib.parse
 HUB, STATE, LABEL, MODE, BIND, PORT, FIXED, NAME, LINK = sys.argv[1:10]
 HUB = os.path.realpath(HUB); STATE = os.path.realpath(STATE); PORT = int(PORT); FIXED = FIXED == "1"
 CAP = 256 * 1024   # at most this much of a file's end is read
+RAW = 4096         # at most this much of a line is looked at: the hub's "<id>.<secret>" pattern is quadratic on one long run
 LINE = 2000        # and this much of a line is sent
 def die(msg):
     sys.stderr.write("ade: web: %s\n" % msg); sys.exit(1)
@@ -3974,33 +3975,62 @@ ESCAPES = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)
 HIDE = [(re.compile(r"[0-9]{6,12}:[A-Za-z0-9_-]{30,}"), "<hidden token>"), (re.compile(r"[A-Za-z0-9]{16,}\.[A-Za-z0-9_-]{8,}"), "<hidden key>"),
         (re.compile(r"(sk|pk|ak|key)-[A-Za-z0-9_-]{8,}"), "<hidden key>"), (re.compile(r"[A-Za-z0-9_-]{32,}"), "<hidden>")]
 # ade's additions, after the hub's rule (so whatever the hub hides is hidden here too): characters that reorder or split
-# text, Authorization headers, bearer tokens, the value after password, secret, token or api key, sk_ keys, GitHub tokens
+# text; Authorization headers; bearer tokens; the value after a name that ends in password, secret, token or key and
+# then : or = (aws_secret_access_key = ..., "privateKey": "...", ?key=...&token=...), a quoted value to its closing
+# quote; the user and password of a URL; AWS access key ids; sk_ keys; GitHub tokens; a private key block on one line
+# (one over several lines: hide_lines). Every repeat is bounded, and a line is cut to RAW before any pattern runs.
 MARKS = re.compile("[​-‏ -‮⁠-⁩﻿]")
-MORE = [(re.compile(r"(?i)(authorization\s*[:=]\s*)\S.*"), r"\1<hidden>"),
-        (re.compile(r"(?i)\b(bearer\s+)[A-Za-z0-9._~+/=-]{8,}"), r"\1<hidden>"),
-        (re.compile(r"(?i)((?:password|passwd|secret|token|api[_ -]?key)[\"']?\s*[:=]\s*[\"']?)(?:<hidden[^>]*>|[^\s\"'&,;]+)"), r"\1<hidden>"),
+PK_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----")
+PK_END = re.compile(r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----")
+PK_LINE = re.compile(r"(?:[A-Za-z0-9+/=]+|<hidden>)")   # a line of a block whose beginning was not read
+PK = "<hidden private key>"
+MORE = [(re.compile(r"(?i)(authorization\s{0,8}[:=]\s{0,8})\S.*"), r"\1<hidden>"),
+        (re.compile(r"(?i)\b(bearer\s{1,8})[A-Za-z0-9._~+/=-]{8,}"), r"\1<hidden>"),
+        (re.compile(r"(?i)((?:password|passwd|secret|token|key)(?:\\?[\"'])?\s{0,8}[:=]\s{0,8})(?:\\?\"[^\"]*\"?|\\?'[^']*'?|<hidden[^>]{0,16}>|[^\s\"'&,;]+)"), r"\1<hidden>"),
+        (re.compile(r"(://)[^\s/@]{1,512}(@)"), r"\1<hidden>\2"),
+        (re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])"), "<hidden key>"),
         (re.compile(r"(?<![A-Za-z0-9])(?:sk|pk|rk)_[A-Za-z0-9_-]{12,}"), "<hidden key>"),
-        (re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})"), "<hidden token>")]
-def hide(text):
-    text = MARKS.sub("", ESCAPES.sub("", text.replace("\n", " ")))
+        (re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})"), "<hidden token>"),
+        (re.compile(PK_BEGIN.pattern + r".*?(?:" + PK_END.pattern + r"|$)"), PK), (PK_END, PK)]
+WORD = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:=/+~%@-"
+def clean(text):
+    """a line without escape sequences, control characters and marks; a line over RAW is cut there, the piece of a word at the cut dropped"""
+    cut = len(text) > RAW
+    text = MARKS.sub("", ESCAPES.sub("", text[:RAW].replace("\n", " ")))
+    return text.rstrip(WORD) + " [line cut]" if cut else text
+@functools.lru_cache(maxsize=2048)   # a log's last lines are mostly the ones of the request before: each is worked out once
+def patterns(text):
     for p, r in HIDE + MORE: text = p.sub(r, text)
     return text[:LINE]
+def hide(text): return patterns(clean(text))
+def hide_lines(lines):
+    """hide() for the lines of one file, with a private key block that spans lines hidden as one marker"""
+    out = []; inside = False
+    for line in lines:
+        c = clean(line)
+        if inside:
+            end = PK_END.search(c)
+            if not end: continue
+            inside = False; c = c[end.end():]
+            if not c.strip(): continue
+        else:
+            begin = PK_BEGIN.search(c)
+            if begin and not PK_END.search(c, begin.end()): inside = True   # patterns() hides from the BEGIN to the end of this line
+            elif not begin and PK_END.search(c):   # the block began above what was read: its lines read so far go too
+                while out and PK_LINE.fullmatch(out[-1]): out.pop()
+        out.append(patterns(c))
+    return out
 def scrub(v):   # every string of an answer, keys too
     if isinstance(v, str): return hide(v)
-    if isinstance(v, list): return [scrub(x) for x in v]
+    if isinstance(v, list): return hide_lines(v) if v and all(isinstance(x, str) for x in v) else [scrub(x) for x in v]
     if isinstance(v, dict): return {scrub(k): scrub(x) for k, x in v.items()}
     return v
 
-def opened(path):   # tests only: ADE_WEB_OPENED names a file that gets one line per file about to be opened
-    t = os.environ.get("ADE_WEB_OPENED")
-    if t:
-        with open(t, "a") as f: f.write(path + "\n")
 def tail(path, root, n):
     """the last n lines (not yet hidden) of a regular file that really is under root; [] for anything else"""
     try:
         real = os.path.realpath(path)
         if real == root or os.path.commonpath([real, root]) != root: return []
-        opened(real)
         fd = os.open(real, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
         with os.fdopen(fd, "rb") as f:
             st = os.fstat(fd)
@@ -4197,12 +4227,13 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def __getattr__(self, name):
         if name.startswith("do_"): return self.other
         raise AttributeError(name)
-    def cookie(self):
+    def cookie_ok(self):   # any cookie of the name may be the right one (another page on this host can plant one more)
+        ok = False
         for h in self.headers.get_all("Cookie") or []:
-            for part in h.split(";"):
+            for part in h.split(";")[:64]:
                 k, _, v = part.strip().partition("=")
-                if k == CNAME: return v
-        return ""
+                if k == CNAME and same(v, COOKIE): ok = True
+        return ok
     def do_GET(self):
         hosts = self.headers.get_all("Host") or []
         if len(hosts) != 1 or hosts[0].strip().lower() not in HOSTS: return self.refuse(403, "forbidden")
@@ -4212,7 +4243,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
             u = None
         path = u.path if u and self.path.startswith("/") and not u.scheme and not u.netloc else None
         linked = path == "/" and len(q.get("k", [])) == 1 and same(q["k"][0], TOKEN)
-        if not (linked or same(self.cookie(), COOKIE)): return self.refuse(403, "forbidden")
+        if not (linked or self.cookie_ok()): return self.refuse(403, "forbidden")
         if path != "/" and self.headers.get("Sec-Fetch-Site", "same-origin").strip().lower() not in ("same-origin", "none"): return self.refuse(403, "forbidden")
         if path == "/":
             more = (("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Strict" % (CNAME, COOKIE)),) if linked else ()

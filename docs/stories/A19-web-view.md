@@ -1,6 +1,6 @@
 # A19: `ade web`, a read-only view of agents and logs
 
-Status: In review (2026-11-23). Risk: high (it serves logs that can hold customer code and context, over HTTP).
+Status: In review (2026-11-23; one fix round after the adversarial review). Risk: high (it serves logs that can hold customer code and context, over HTTP).
 Depends on A1 (the hub is found as for every command). Owner's intent (2026-11-23): "is there a way we can run a web
 view and show the logs?", then yes to (1) `ade web`, a read-only page on 127.0.0.1, and (2) the same page on the
 owner's Tailscale network only, so their phone can open it. Not a Telegram Mini App, no public address, no tunnel.
@@ -18,8 +18,11 @@ Verification command: `bash tests/run.sh`. Design note: `docs/notes/A19-web-view
   opens a file: the page names an agent from the list, the server maps the name to the paths it chose.
 - **Redaction:** every line passes the hub's `bin/chat logs` rule (escape sequences and control characters removed, then
   Telegram bot tokens, `<id>.<secret>` keys, `sk-`-style keys, long opaque runs hidden), then ade's additions: `sk_`
-  keys, GitHub tokens, `Authorization:` headers, bearer tokens, and the value after `password`, `passwd`, `secret`,
-  `token` or `api key` plus `=` or `:`. Text reaches the page as JSON and is inserted as text, never as HTML.
+  keys, GitHub tokens, AWS access key ids, `Authorization:` headers, bearer tokens, the user and password of a URL,
+  the value after a name ending in `password`, `secret`, `token` or `key` plus `=` or `:` (a query value, a JSON
+  value to its closing quote), and a private key block from its BEGIN line to its END line. A line is cut to 4096
+  characters before any pattern runs and to 2000 after. Text reaches the page as JSON and is inserted as text, never
+  as HTML.
 - **Read-only:** GET only (anything else 405); no endpoint changes, starts or stops anything; the only hub command run
   is `bin/sessions`, as `ade status` runs it.
 - **Access:** a random token in the printed address (`http://127.0.0.1:8765/?k=<random>`), kept as an HttpOnly,
@@ -37,15 +40,16 @@ Verification command: `bash tests/run.sh`. Design note: `docs/notes/A19-web-view
 | AC | Criterion | Test |
 |---|---|---|
 | 1 | `ade web` prints `http://127.0.0.1:<port>/?k=<token>`, listens on 127.0.0.1 only (the listening socket is checked), takes 8765 or a free port, and `--port N` that port; a busy `--port` and a bad argument are refused | `t_local` |
-| 2 | The token is required: `?k=<token>` gives the page and an HttpOnly, SameSite=Strict cookie; the cookie alone then works; a missing or wrong token or cookie is 403 with no data | `t_token` |
+| 2 | The token is required: `?k=<token>` gives the page and an HttpOnly, SameSite=Strict cookie; the cookie alone then works, also beside a planted cookie of the same name; a missing or wrong token or cookie is 403 with no data | `t_token` |
 | 3 | A Host header other than `127.0.0.1:<port>` or `localhost:<port>` is 403; no response carries a CORS header | `t_host` |
 | 4 | POST, PUT, DELETE, PATCH, OPTIONS and HEAD are 405; no request changes the fixture hub or its state folder (compared before and after) | `t_readonly` |
 | 5 | The page is one document with no external address; the API lists the fake `bin/sessions` agents, an agent's events and `STATE.md`, today's and yesterday's journal and the chat log | `t_page` |
-| 6 | Each secret pattern (built at run time from parts) is hidden in every section, the words around it kept | `t_redact` |
+| 6 | Each secret pattern (built at run time from parts) is hidden in every section, the words around it kept; a private key block over several lines is one marker, also when its beginning or its end is not in what is read | `t_redact` |
 | 7 | Escape sequences and control characters never reach the browser; HTML in a log arrives as JSON text and the page inserts text only | `t_escapes` |
-| 8 | An agent name not in the list, `../`, an absolute path and an unknown route are 404, and the server opens no file for them (its open trace is unchanged) | `t_paths` |
+| 8 | An agent name not in the list, `../`, an absolute path and an unknown route are 404 and serve nothing of the file they name (canary files); a folder or a link that leaves the hub is never read; the server has no switch that writes a file | `t_paths` |
 | 9 | `--tailnet` binds only to the fake Tailscale address and accepts only that address or the MagicDNS name as Host; refused when `tailscale` is missing, not signed in, or prints an address outside 100.64.0.0/10 | `t_tailnet` |
 | 10 | `--print-link` prints the running server's address and exits 0, else prints nothing and exits 1; the link file is 0600 and gone after the server stops on a signal, the port free again | `t_link` |
+| 11 | A 250,000-character line answers within a second and is cut, the piece of a key at the cut not shown; under three worst-case requests another request still answers and SIGTERM stops the server within 2 s | `t_long` |
 
 ## Out of scope
 - A live copy of what an agent's terminal shows (focus sessions write no log file in the hub or its state folder;

@@ -15,7 +15,20 @@
 - **Redaction.** `send_json` is the only way data leaves and passes every string through `hide()`: the hub's rule
   copied from `bin/agent.py` (`ESCAPES`, then `HIDE`; `bin/lib.sh redact`, used by `bin/chat logs`), then ade's
   additions. The hub's rule runs first and unchanged, so whatever `bin/chat logs` hides is hidden here. It over-hides
-  on purpose (any run of 32 letters and digits, such as a commit id; the value after `token:`).
+  on purpose (any run of 32 letters and digits, such as a commit id; the value after `token:` or `key:`).
+- **Fix round (adversarial review).** (1) The hub's `[A-Za-z0-9]{16,}\.[A-Za-z0-9_-]{8,}` is quadratic on one long
+  run, and Python's `re` keeps the interpreter lock for a whole call: a 250,000-character line held every request and
+  the signal handler for over a minute. A line is now cut to 4096 characters before any pattern runs (the piece of a
+  word at the cut is dropped, the line ends in `[line cut]`), every repeat in ade's own patterns is bounded, and a
+  hidden line is remembered (`lru_cache`, 2048 lines), since a log's last lines are mostly those of the request
+  before. The worst file (256 KB of 4094-character runs) costs about 1.5 s once, in calls of about 20 ms each, so
+  other requests and a stop get the lock in between. (2) Added: AWS access key ids, the user and password of a URL,
+  names ending in `key` (so `aws_secret_access_key =`, `"privateKey":`, `?key=`), a quoted value to its closing
+  quote, and private key blocks: `hide_lines` keeps the BEGIN/END state across the lines of one file, and an END
+  whose BEGIN is above what was read takes the base64 lines before it too. (3) `ADE_WEB_OPENED` is removed: the
+  server writes no file but its link file. "No file opened" is now shown by what is served: canary files the
+  requests name, and files behind a folder or a link that leaves the hub, never appear in an answer. (4) Any cookie
+  of the name may be the right one, so a planted `ade_web_<port>` cookie cannot lock the page.
 - **Text, not HTML.** Answers are JSON with `<` written as `<`, `nosniff`, and a content security policy that
   allows only the page's own script and style (a nonce) and requests to itself. The page builds its nodes with
   `textContent`.
@@ -36,7 +49,6 @@
   ACLs are the owner's Tailscale settings; the message says anyone on the tailnet with the link can read.
 - **Test switch.** A test has no tailnet address to bind, so `ADE_WEB_TEST_TAILNET_LOOPBACK=1` lets `--tailnet`
   accept a loopback address from the (fake) `tailscale`. It can only narrow where the server listens.
-  `ADE_WEB_OPENED=<file>` gets one line per file the server is about to open (the "no file opened" check).
 - **Link file.** `~/.config/ade/web`, 0600 in the 0700 folder: the server's pid, then the address. Removed on
   Ctrl-C, SIGTERM and SIGHUP. `--print-link` trusts it only while the pid lives and the address accepts a
   connection; otherwise it removes it. One `ade web` per user at a time.

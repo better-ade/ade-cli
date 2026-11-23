@@ -5,8 +5,9 @@
   state, the picked agent's log (its events and its `STATE.md`), today's and yesterday's journal and the chat log,
   refreshed every 3 seconds. It listens on 127.0.0.1 only, on port 8765 or a free one (`--port N`), and prints an
   address with a random token; without the token, 403. Ctrl-C stops it. Keys and tokens are hidden as in
-  `ade chat logs`, plus GitHub tokens, `sk_` keys, `Authorization:` headers and the value after `password=`; escape
-  sequences are removed. GET only: it changes nothing and runs nothing but the hub's `bin/sessions`.
+  `ade chat logs`, plus GitHub tokens, `sk_` keys, AWS access key ids, `Authorization:` headers, the user and
+  password of a URL, the value after a name ending in `password`, `secret`, `token` or `key`, and private key
+  blocks; escape sequences are removed and a line over 4096 characters is cut. GET only: it changes nothing and runs nothing but the hub's `bin/sessions`.
 - `ade web --tailnet`: the same page on this machine's Tailscale address only (never every interface), for your
   phone. Anyone on your tailnet with the link can read these logs; the link changes every start. `ade` never installs
   Tailscale or signs in to it: it says how when it is missing or signed out.

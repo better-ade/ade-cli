@@ -41,7 +41,15 @@ S_AUTH="dXNlcjpw$(rep Y 4)=="                     # after Authorization: Basic
 S_BEAR="tok$(rep e 3)n$(rep 5 6)"                 # after Bearer
 S_GLM="$(rep a1 9).$(rep b2 5)"                   # <id>.<secret>
 S_RUN="$(rep Q 20)$(rep 8 20)"                    # a long opaque run
-SECRETS="$S_TG $S_SKD $S_SKU $S_GHL $S_GHS $S_PAT $S_PW $S_PWJ $S_AUTH $S_BEAR $S_GLM $S_RUN"
+S_AWS="AK""IA$(rep Q7 8)"                          # an AWS access key id
+S_AWSS="$(rep aB3/ 5)$(rep xY+9 5)"               # an AWS secret access key: 40 characters, no run the hub's rule sees
+S_URL="pw$(rep z 3)$(rep 6 3)"                    # the password in scheme://user:password@host
+S_QK="qk$(rep 4 5)v"                              # after ?key=
+S_QT="qt$(rep 8 5)w"                              # after &token=
+S_JK="json $(rep k 4) phrase"                     # a JSON value with blanks, after "privateKey":
+S_PK1="$(rep Mi 5)+$(rep E9 4)"; S_PK2="$(rep p/ 6)$(rep Q 5)"; S_PK3="$(rep z 6)=="   # lines of a private key block, each under every other rule
+PK_BEGIN="-----BEGIN RSA PRIV""ATE KEY-----"; PK_END="-----END RSA PRIV""ATE KEY-----"
+SECRETS="$S_AWS $S_AWSS $S_URL $S_QK $S_QT $S_PK1 $S_PK2 $S_PK3 $S_TG $S_SKD $S_SKU $S_GHL $S_GHS $S_PAT $S_PW $S_PWJ $S_AUTH $S_BEAR $S_GLM $S_RUN"
 secret_lines() {   # <label>: one line per secret, with a word before and after it
   printf '%s tg before %s after\n' "$1" "$S_TG"; printf '%s skd before %s after\n' "$1" "$S_SKD"
   printf '%s sku before %s after\n' "$1" "$S_SKU"; printf '%s ghl before %s after\n' "$1" "$S_GHL"
@@ -49,6 +57,13 @@ secret_lines() {   # <label>: one line per secret, with a word before and after 
   printf '%s pw before password=%s after\n' "$1" "$S_PW"; printf '%s pwj before {"password": "%s"} after\n' "$1" "$S_PWJ"
   printf '%s auth before Authorization: Basic %s\n' "$1" "$S_AUTH"; printf '%s bear before Bearer %s after\n' "$1" "$S_BEAR"
   printf '%s glm before %s after\n' "$1" "$S_GLM"; printf '%s run before %s after\n' "$1" "$S_RUN"
+  printf '%s aws before %s after\n' "$1" "$S_AWS"; printf '%s awss before aws_secret_access_key = %s after\n' "$1" "$S_AWSS"
+  printf '%s url before postgres://admin:%s@db.internal/app after\n' "$1" "$S_URL"
+  printf '%s query before https://api.internal/v1?key=%s&page=2&token=%s after\n' "$1" "$S_QK" "$S_QT"
+  printf '%s jkey before {"privateKey": "%s", "n": 1} after\n' "$1" "$S_JK"
+  printf '%s esc before {\\"apiSecret\\": \\"%s\\"} after\n' "$1" "$S_JK"
+  printf '%s block before\n%s\n%s\n%s\n%s\n%s\n%s block after\n' "$1" "$PK_BEGIN" "$S_PK1" "$S_PK2" "$S_PK3" "$PK_END" "$1"
+  printf '%s oneline before %s%s%s after\n' "$1" "$PK_BEGIN" "$S_PK1" "$PK_END"
 }
 
 fixture() {
@@ -83,7 +98,7 @@ PY
     echo '<script>alert(1)</script><img src=x onerror=alert(2)>'
     printf 'split sk\033[0m-%s end\n' "$(rep w6 6)"; } > "$S/logs/chat.log"
   { echo "state of api"; secret_lines state; } > "$H/projects/api/STATE.md"
-  python3 - "$S/events.jsonl" "$S_TG $S_SKD $S_SKU $S_GHL $S_GHS $S_PAT $S_GLM $S_RUN" <<'PY'
+  python3 - "$S/events.jsonl" "$S_TG $S_SKD $S_SKU $S_GHL $S_GHS $S_PAT $S_GLM $S_RUN $S_AWS" <<'PY'
 import json, sys
 rows = [("2026-11-23T09:01:00Z", "projects/api", "main", "idle", "api went idle"),
         ("2026-11-23T09:02:00Z", "main", "projects/api", "note", "a note to api"),
@@ -94,7 +109,7 @@ with open(sys.argv[1], "w") as f:
     for t, a, b, k, x in rows: f.write(json.dumps({"time": t, "from": a, "to": b, "kind": k, "text": x}) + "\n")
     f.write("not json\n")
 PY
-  export ADE_HUB="$H" AGENT_STATE="$S" ADE_WEB_OPENED="$T/opened"; : > "$T/opened"
+  export ADE_HUB="$H" AGENT_STATE="$S"
   WPATH="$F:$T/sys"; SRV=""
 }
 # start [args]: ade web in the background; URL, PORT and K from its first line
@@ -181,6 +196,10 @@ t_token() {
   grep -qi 'samesite=strict' "$T/cookie" || fail "the cookie is not SameSite=Strict"
   assert_not_contains "$T/cookie" "$K" "the cookie is not the link's token"
   api "/"; assert_eq "$CODE" 200 "the page with the cookie alone"
+  # several cookies of that name (another page on this host can plant one with a longer path): one right one is enough
+  get "/api/agents" -H "Cookie: ade_web_$PORT=planted; x=1; $CK"; assert_eq "$CODE" 200 "a planted cookie before the real one"
+  get "/api/agents" -H "Cookie: $CK; ade_web_$PORT=planted"; assert_eq "$CODE" 200 "a planted cookie after the real one"
+  get "/api/agents" -H "Cookie: ade_web_$PORT=planted; ade_web_$PORT=; ade_web_1=${CK#*=}"; assert_eq "$CODE" 403 "only wrong cookies"
   api "/api/agents"; assert_eq "$CODE" 200 "the API with the cookie"
   assert_not_contains "$T/web.out" "GET " "no access log on stdout"; assert_not_contains "$T/web.err" "$K" "the token is never logged"
   stop
@@ -260,10 +279,22 @@ t_redact() {
     for s in $SECRETS; do assert_not_contains "$T/body" "$s" "$p shows a secret"; assert_not_contains "$T/text" "$s" "$p shows a secret"; done; done
   for p in "/api/chat:chat" "/api/journal:journal" "/api/log?agent=api:state"; do
     api "${p%:*}"; flat
-    for w in tg skd sku ghl ghs pat pw pwj bear glm run; do
+    for w in tg skd sku ghl ghs pat pw pwj bear glm run aws awss url query jkey esc oneline; do
       grep -Eq "${p##*:} $w before .*after" "$T/text" || fail "${p%:*}: the words around the $w secret are gone"; done
     grep -Eq "${p##*:} auth before Authorization: <hidden>" "$T/text" || fail "${p%:*}: the Authorization line"
-    assert_contains "$T/text" "password=<hidden> after" "${p%:*}: password="; done
+    assert_contains "$T/text" "password=<hidden> after" "${p%:*}: password="
+    assert_not_contains "$T/text" "$S_JK" "${p%:*}: a JSON value with blanks"; assert_not_contains "$T/text" "phrase" "${p%:*}: the end of a JSON value"
+    assert_contains "$T/text" "postgres://<hidden>@db.internal/app after" "${p%:*}: the host of a URL is kept"
+    assert_contains "$T/text" "?key=<hidden>&page=2&token=<hidden> after" "${p%:*}: query values"
+    assert_contains "$T/text" "aws_secret_access_key = <hidden> after" "${p%:*}: the AWS secret"
+    # a private key block: one marker for all of it, the lines around it kept
+    assert_eq "$(grep -A 2 "${p##*:} block before" "$T/text" | tr '\n' '|')" "${p##*:} block before|<hidden private key>|${p##*:} block after|" "${p%:*}: a private key block"
+    if grep -Eq 'BEGIN|PRIV|-----' "$T/text"; then fail "${p%:*}: part of a private key block is shown"; fi; done
+  # the end of a block whose beginning is above what is read: the short lines before it go too; a block that never ends
+  { echo "tail before"; echo "$S_PK2"; echo "$S_PK3"; echo "$PK_END"; echo "tail after"; echo "$PK_BEGIN"; echo "$S_PK1"; echo "never shown"; } > "$H/ops/infra/STATE.md"
+  api "/api/log?agent=infra"; flat
+  assert_eq "$(json 'd["state"]')" "['tail before', '<hidden private key>', 'tail after', '<hidden private key>']" "a block cut at either end"
+  for s in $SECRETS; do assert_not_contains "$T/text" "$s" "a block cut at either end shows a secret"; done
   api "/api/log?agent=api"; flat; assert_contains "$T/text" "event before <hidden" "an event's secret is hidden, its words kept"
   api "/api/agents"; assert_eq "$(json 'd["agents"][3]["role"]')" "<hidden key>" "a key in a bin/sessions column"
   # a key an escape sequence splits is one key once the sequence is gone (the hub's order)
@@ -294,10 +325,8 @@ PY
 }
 
 t_paths() {
-  fixture; echo "CANARY-ABS" > "$T/canary"; start; login
+  fixture; echo "CANARY-ABS" > "$T/canary"; ADE_WEB_OPENED="$T/opened" start; login
   local p; for p in "/api/agents" "/api/log?agent=api" "/api/journal" "/api/chat"; do api "$p"; assert_eq "$CODE" 200 "$p"; done
-  assert_contains "$T/opened" "$H/projects/api/STATE.md" "the open trace works"
-  cp "$T/opened" "$T/opened.before"
   for p in "/api/log?agent=nosuch" "/api/log?agent=../../canary" "/api/log?agent=..%2F..%2Fcanary" "/api/log?agent=%2e%2e/outside" \
            "/api/log?agent=$T/canary" "/api/log?agent=projects/api" "/api/log?agent=" "/api/log" "/api/log?agent=api&agent=infra" \
            "/api/log?agent=api%00" "/api/log?agent=API" "/api/log?path=$T/canary" "/api/file?path=$T/canary" "$T/canary" "/$T/canary" \
@@ -307,14 +336,12 @@ t_paths() {
     case "$p" in "/api/journal?"*) assert_eq "$CODE" 200 "a parameter the server does not read: $p" ;; *) assert_eq "$CODE" 404 "$p" ;; esac
     if grep -Eq 'CANARY|localhost' "$T/body"; then fail "$p served a file it was not asked to choose"; fi
   done
-  # the journal request above opened the two journal files again, as it does without any parameter, and nothing else
-  grep -v "^$H/journal/" "$T/opened" > "$T/opened.after"; grep -v "^$H/journal/" "$T/opened.before" > "$T/opened.was"
-  cmp -s "$T/opened.was" "$T/opened.after" || { diff "$T/opened.was" "$T/opened.after" >&2; fail "a refused request opened a file"; }
-  assert_not_contains "$T/opened" "canary" "the canary was never opened"; assert_not_contains "$T/opened" "2001-01-01" "no journal by a date from the request"
+  # the server has no switch that writes anywhere: the open trace of the first version is gone
+  [ ! -e "$T/opened" ] || fail "ADE_WEB_OPENED still writes a file"
+  if grep -q "ADE_WEB_OPENED" "$ADE"; then fail "ade still reads ADE_WEB_OPENED"; fi
   # a folder outside the hub in bin/sessions' own output, and a STATE.md that is a link out of the hub: listed, never read
   for p in evil link; do api "/api/log?agent=$p"; assert_eq "$CODE" 200 "$p is in the list"; assert_eq "$(json 'd["state"]')" "[]" "$p: no STATE.md is read"
     assert_not_contains "$T/body" "CANARY" "$p: a file outside the hub was served"; done
-  assert_not_contains "$T/opened" "outside" "nothing outside the hub was opened"
   # a journal folder and a chat log that are links out of the hub and its state folder
   stop; rm -rf "$H/journal" "$S/logs/chat.log"; mkdir "$T/elsewhere"; echo "CANARY-LINKED" > "$T/elsewhere/$TODAY.md"; echo "CANARY-LINKED" > "$T/elsewhere/chat.log"
   ln -s "$T/elsewhere" "$H/journal"; ln -s "$T/elsewhere/chat.log" "$S/logs/chat.log"
@@ -396,6 +423,53 @@ t_tailnet() {
   PATH="$WPATH" "$ADE" web --tailnet --print-link > "$T/out" 2> "$T/err"; assert_eq "$?" 2 "--print-link takes no other option"
 }
 
+# timed <limit s> <label> <path>: the request answers 200 within the limit
+timed() {
+  local s; s="$(curl -q -s --max-time 30 -o "$T/body" -w '%{http_code} %{time_total}' -H "Cookie: $CK" "$BASE$3")" || fail "$2: no answer"
+  python3 -c 'import sys; code, took, limit = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]); sys.exit(0 if code == "200" and took < limit else "%s s, HTTP %s (limit %s s)" % (took, code, limit))' "${s% *}" "${s#* }" "$1" || fail "$2"
+}
+t_long() {   # one very long line (the hub's <id>.<secret> rule is quadratic on it) must not hold the server
+  fixture
+  python3 - "$S/logs/chat.log" "$H/projects/api/STATE.md" "$H/journal/$TODAY.md" "$S/events.jsonl" <<'PY' || fail "the long lines were not written"
+import json, sys
+long = "a1" * 125000
+for p in sys.argv[1:4]:
+    with open(p, "w") as f: f.write("line before\n" + long + "\nline after\n")
+with open(sys.argv[4], "w") as f:
+    f.write(json.dumps({"time": "t", "from": "projects/api", "to": "main", "kind": "note", "text": long}) + "\n")
+PY
+  start; login
+  local p; for p in "/api/chat" "/api/journal" "/api/log?agent=api"; do
+    timed 1 "$p with a 250,000-character line" "$p"; flat
+    assert_contains "$T/text" "line before" "$p: the line before"; assert_contains "$T/text" "line after" "$p: the line after"
+    [ "$(awk '{ if (length($0) > m) m = length($0) } END { print m + 0 }' "$T/text")" -le 2000 ] || fail "$p: a line longer than 2000 characters was sent"
+    if grep -q "a1a1a1a1" "$T/text"; then fail "$p: the long run is shown"; fi; done
+  api "/api/chat"; flat; assert_contains "$T/text" "[line cut]" "a cut line says so"
+  # a line cut in the middle of a key: the piece left at the cut is not shown
+  python3 - "$S/logs/chat.log" "$S_SKD" <<'PY'
+import sys
+head = ("Q" * 40 + " ") * 99   # runs that are hidden, so the line sent is short and its end is in view
+with open(sys.argv[1], "w") as f: f.write(head + "y" * (4089 - len(head)) + " " + sys.argv[2] + " tail\n")   # the key starts 6 characters before the cut
+PY
+  api "/api/chat"; flat; assert_not_contains "$T/text" "sk-p" "the piece of a key at the cut"; assert_not_contains "$T/text" "tail" "nothing after the cut"
+  grep -q 'yyyy  *\[line cut\]$' "$T/text" || fail "the end of the cut line is not in view: $(tail -c 60 "$T/text")"
+  # the worst a file can hold (256 KB is read): every line as long as the cut allows, each one run and each different
+  worst() { python3 -c 'import sys; open(sys.argv[1], "w").write("".join("%s%04d\n" % ("a1" * 2045, i) for i in range(int(sys.argv[2]), int(sys.argv[2]) + 80)))' "$S/logs/chat.log" "$1"; }
+  worst 1000; timed 5 "/api/chat with 80 lines of 4,094 characters" "/api/chat"
+  timed 1 "the same lines asked again (worked out once)" "/api/chat"
+  # three of those at once, lines not seen before: another request is not kept waiting, and SIGTERM stops the server at once
+  local asks=""
+  worst 2000; for p in 1 2 3; do curl -q -s --max-time 30 -o /dev/null -H "Cookie: $CK" "$BASE/api/chat" & asks="$asks $!"; done
+  timed 3 "/api/agents while three long requests run" "/api/agents"
+  # shellcheck disable=SC2086  # the pids of the three requests
+  wait $asks; asks=""
+  worst 3000; for p in 1 2 3; do curl -q -s --max-time 30 -o /dev/null -H "Cookie: $CK" "$BASE/api/chat" & asks="$asks $!"; done
+  local t0; t0="$(python3 -c 'import time; print(time.time())')"; kill "$SRV"; wait "$SRV"; SRV=""
+  python3 -c 'import sys, time; took = time.time() - float(sys.argv[1]); sys.exit(0 if took < 2 else "SIGTERM took %.1f s" % took)' "$t0" || fail "the server did not stop promptly under load"
+  # shellcheck disable=SC2086
+  wait $asks; [ ! -e "$HOME/.config/ade/web" ] || fail "the link file is left after a stop under load"
+}
+
 t_link() {
   fixture
   local L="$HOME/.config/ade/web"
@@ -420,9 +494,10 @@ t_link() {
   start; kill -HUP "$SRV"; wait "$SRV"; SRV=""; [ ! -e "$L" ] || fail "the link file is left after SIGHUP"
   # Ctrl-C at a terminal: the same, exit 0
   python3 - "$ADE" "$WPATH" "$L" <<'PY' || fail "Ctrl-C did not stop ade web cleanly"
-import os, pty, select, sys, time
+import os, pty, select, signal, sys, time
 pid, fd = pty.fork()
 if pid == 0:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)   # a suite started in the background hands down an ignored SIGINT; a terminal does not
     os.environ["PATH"] = sys.argv[2]; os.execv(sys.argv[1], [sys.argv[1], "web"])
 buf = b""; end = time.time() + 15
 while b"Ctrl-C" not in buf and time.time() < end:
@@ -464,6 +539,7 @@ t_page
 t_redact
 t_escapes
 t_paths
+t_long
 t_tailnet
 t_link
 echo ok

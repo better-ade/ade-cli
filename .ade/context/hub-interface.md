@@ -316,7 +316,9 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   in the hub). `<state>` is `${AGENT_STATE:-~/.agent-hub/<HUB_NAME>}`. Nothing else is opened and no other command runs.
 - **Redaction:** `ade` carries a copy of the hub's `bin/agent.py` `ESCAPES` and `HIDE` (what `bin/lib.sh redact` and
   `bin/chat logs` apply) and runs it first, then its own additions. **Needed from the hub:** a change to those two
-  must reach `ade`'s copy (`web_py`).
+  must reach `ade`'s copy (`web_py`). `ade` cuts a line to 4096 characters before the rule runs: its
+  `[A-Za-z0-9]{16,}\.[A-Za-z0-9_-]{8,}` is quadratic on one long run (250,000 characters: over a minute), and
+  `bin/chat logs` and `redact` run it on the whole text.
 - **HTTP (GET only, else 405):** `/?k=<token>` or `/` with the cookie: the page; `/api/agents`; `/api/log?agent=<name
   from the list>`; `/api/journal`; `/api/chat`. JSON, every string hidden. 403 without the cookie `ade_web_<port>` or
   with a Host header other than the served address; 404 for anything else.
@@ -324,6 +326,6 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   server runs. `ade web --print-link` prints line 2 and exits 0, else prints nothing and exits 1: what the hub's
   Telegram `/status` may call. One `ade web` per user at a time.
 - **Environment:** `ADE_WEB_PORT` (the default port, 8765). Tests only: `ADE_WEB_TEST_TAILNET_LOOPBACK=1` (a loopback
-  address may stand in for the Tailscale one), `ADE_WEB_OPENED=<file>` (one line per file about to be opened).
+  address may stand in for the Tailscale one).
 - **Tailscale (`--tailnet`):** `tailscale status --json` (`BackendState` must be `Running`; `Self.DNSName`) and
   `tailscale ip -4` (one address in 100.64.0.0/10). Only asked, never installed, started or signed in.
