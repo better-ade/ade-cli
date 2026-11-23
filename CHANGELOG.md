@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.7
 - Telegram: the guide's step is not "working" until the bot is locked to you, as the hub's own `bin/chat status` says
   it ("locked to you": the policy allowlist, your account in it, no groups), not by the policy's name alone. Once it
   is, the guide says what follows (before you lock, and again once it is so): the chat runs in auto mode, so your main agent acts on your Telegram messages
