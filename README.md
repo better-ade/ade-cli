@@ -233,6 +233,24 @@ ade web: http://127.0.0.1:8765/?k=<a random token>
   to it; when it is missing or signed out, `ade web --tailnet` says how (https://tailscale.com/download, then
   `tailscale up`) and starts nothing. No public address, no tunnel.
 - It needs only `python3`. Inside an ADE Computer, open the address in the desktop's own browser.
+## Screenshots as proof ([A20](docs/stories/A20-screenshots.md))
+The ADE method wants evidence for work that has no test to show: `ade shot` records it as a picture.
+
+| Command | What it captures |
+|---|---|
+| `ade shot url <address> [--full-page] [--width W]` | A page, through the headless Chromium the hub already has (Playwright's; `ade` downloads nothing and says how to get it when it is missing). `http`, `https` and `file` addresses only; a file only inside the project |
+| `ade shot screen` | Everything on your screen, including other apps (macOS: `screencapture -x`; Linux and the ADE Computer: the X display). It asks first at a terminal. An agent can run it only with `--yes-screen` and only where its session asks you before this command: your Allow at that prompt is the approval |
+| `ade shot agent <name>` | A focus agent's tab in `ade ui`, as a picture of its text, with keys and tokens hidden first |
+
+Every shot is saved as `<project>/.ade/evidence/<date>/<time>-<name>.png` (UTC; `--name N` names it; inside the hub,
+the hub's own `.ade/evidence/`) with a `.txt` beside it: what, when, the command, the address or agent, the size.
+The folders are yours alone (0700, files 0600), a shot never replaces another, and git ignores the folder: `git add
+-f` a shot you mean to commit. `--tg [caption]` then sends the picture to you on Telegram through the hub's
+`bin/chat send`, only while the bot is locked to you.
+
+A page or screen shot cannot be redacted: it shows whatever was there, so look at it before you share it. On a Mac
+that does not let your terminal record the screen, `ade` says where to allow it (System Settings > Privacy &
+Security > Screen Recording) and changes nothing itself.
 
 ## A ticket's path
 
@@ -290,6 +308,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade restore [--check] [--label <name>]` | Compare `.ade/connections.json` (names only, committed) with this machine and walk each gap with a yes: the Claude account, keys (hidden prompt, live test), plugins, Telegram (token, re-pair), services | **built** (A10) |
 | `ade files [<folder>]` | A directory explorer over the hub and its projects: name search (`/`), live preview, `o` open in the default app, `f` reveal in Finder (or the Linux file manager), `y` copy the path; a built-in browser (bash + python3), read-only and held to the hub's folders; `ADE_FILES=yazi` uses yazi instead, which yazi is neither read-only nor held to the hub and its projects (it deletes, renames, moves, runs commands and walks anywhere without asking) | **built** (A15) |
 | `ade view <path[:line[:col]]>` | Code at the line (`bat`, else `less -N`), Markdown (`glow`, else plain), images (chafa or the terminal's protocol on iTerm2, WezTerm, kitty, Ghostty; else its size), PDFs (page images on a graphics terminal, else `pdftotext` text; `n`/`p` page, `g` go to, `/` search); `o`, `f`, `y`, `c`; `--code` and `ADE_VIEWER=code` open Visual Studio Code | **built** (A15) |
+| `ade shot url <address>` · `ade shot screen` · `ade shot agent <name>` | Screenshots as proof ([A20](docs/stories/A20-screenshots.md)): a page through the hub's headless Chromium (`--full-page`, `--width W`; http, https, or a file inside the project), the whole screen (asks first; `--yes-screen`), or an agent's tab in `ade ui` with keys hidden. Saved as `.ade/evidence/<date>/<time>-<name>.png` with a `.txt` beside it; `--name N`; `--tg [caption]` sends it to you on Telegram when the bot is locked to you | **built** (A20) |
 | `ade setup --tools [required\|extras]` | Install what is missing (git, python3, tmux, gh, gitleaks; the viewer extras yazi, bat, glow, poppler, chafa and Visual Studio Code) with Homebrew or apt, after one yes at a terminal; bun from its own pinned release (sha256 checked, into `~/.bun/bin`, no Homebrew), after its own yes; `ade doctor` lists each tool | **built** (A15) |
 | `ade update [--check \| --rollback \| --auto on\|off]` | ade itself (download, sha256 against the release's `release.json`, checked in a temp folder, the old one kept as `.ade.prev`, one rename; `--rollback` swaps them back), the hub (`git pull --ff-only`, `bin/method sync`), ade-skills plugins, Claude Code, `ade ui` reloaded in place; nothing is stopped; one notify line | **built** (A11) |
 
@@ -344,6 +363,13 @@ In plain words:
   `telegram: on (auto)` or `telegram: on (manual: not locked)`.
 - **No skipped permissions.** Agents run with Claude Code's normal permission checks. `ade claude` refuses
   `--dangerously-skip-permissions` anywhere in its arguments (A4).
+- **Screenshots ask first.** `ade shot screen` captures only after your yes at the terminal; from an agent session
+  only with `--yes-screen` where the session's settings ask you before that command (the hub's do), never from a pipe
+  or a job, and never where a settings file lets the session skip permissions. `ade shot url` opens only `http`,
+  `https` and `file` addresses, a file only inside the project, and stops a page from pulling in a file from outside
+  it, a `.env`, key or `.git` file of it, or a link-local or metadata address. Shots are private files (0600) that git ignores; a terminal shot has
+  its keys hidden, a page or screen shot cannot be redacted. `--tg` sends only through the hub, only to you, only
+  while the bot is locked to you.
 - **Viewing only reads.** `ade files`, `ade view` and the link picker never edit, move or delete. A path outside the
   hub and its project checkouts, or a link that leads out of them, opens only after you say yes at the terminal (an
   agent cannot answer that), and a folder opened that way is listed but never previewed. Your home folder, `/` and

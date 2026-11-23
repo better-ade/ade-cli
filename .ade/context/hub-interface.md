@@ -346,6 +346,7 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   address may stand in for the Tailscale one).
 - **Tailscale (`--tailnet`):** `tailscale status --json` (`BackendState` must be `Running`; `Self.DNSName`) and
   `tailscale ip -4` (one address in 100.64.0.0/10). Only asked, never installed, started or signed in.
+<<<<<<< HEAD
 
 ## `ade project` and the hub (A21)
 - **`bin/new projects/<name>`** makes the folder (`ade` never reimplements it; run from the hub root with `HUB` set,
@@ -363,3 +364,21 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - **`bin/work projects/<name>`**: the start offer runs `ade work projects/<name>` for each added project.
 - **Environment:** `ADE_CODE_DIR` (where a URL is cloned; default `~/Project` when it is there, else `~/code`; never
   the hub or a folder in it).
+=======
+## `ade shot` (A20)
+- **Evidence:** `<project>/.ade/evidence/<UTC date>/<HHMMSS>-<name>.png` and `.txt` (the git top level of the working
+  folder, else the hub); folders 0700, files 0600, `.ade/evidence/.gitignore` holds `*`. Sidecar lines: `what:`,
+  `when:`, `command:`, `address:` or `agent:`, notes, `size:`, `redaction:`.
+- **Chromium:** Playwright's, as the hub's `browser_chromium` finds it (`PLAYWRIGHT_BROWSERS_PATH`, else
+  `~/.cache/ms-playwright`; ade also looks in `~/Library/Caches/ms-playwright` and `/opt/ms-playwright`).
+- **`--tg`:** `bin/chat status` must print `telegram: policy allowlist, groups: 0, locked to you`; then
+  `bin/chat send <png>` with the caption (one line, at most 200 characters) on stdin. Exit 0 sent, 2 refused, else not
+  sent; a hub whose `bin/chat` answers `usage:` has no `send` yet.
+- **`ade shot screen` from an agent session** (any of `CLAUDECODE`, `CLAUDE_CODE_ENTRYPOINT`, `CLAUDE_CODE_SESSION_ID`,
+  `CLAUDE_PID`, `CLAUDE_CODE_CHILD_SESSION`, `CLAUDE_CODE_EXECPATH`): needs `--yes-screen` and a `permissions.ask` rule
+  matching the command line (`ade shot screen --yes-screen ...`) in the project's `.claude/settings.json` or
+  `settings.local.json` (`CLAUDE_PROJECT_DIR`, else the git or hub root) or the user's settings; refused when any of
+  those, or the managed settings, set `bypassPermissions` or cannot be read. The hub ships `Bash(*ade shot screen*)`.
+- **Tabs:** `ade shot agent <name>` reads `tmux -L ade list-windows` of the hub's session and matches the tab's name
+  (`<folder>:<agent>`), its folder, the folder's last part or the agent's name.
+>>>>>>> origin/main

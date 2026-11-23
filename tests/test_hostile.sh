@@ -45,6 +45,7 @@ table() {
     clean) echo "R|clean X" ;;
     home) echo "R|home X" ;;
     web) echo "R|web X"; echo "R|web --port X"; echo "R|web --tailnet X"; echo "R|web --print-link X" ;;
+    shot) echo "R|shot X"; echo "R|shot url X"; echo "R|shot agent X"; echo "R|shot screen X"; echo "R|shot url https://example.test/ --width X" ;;
     update) echo "R|update X" ;;
     restore) echo "R|restore X"; echo "S|restore --label X" ;;
     reset) echo "R|reset X"; echo "R|reset --hub X"; echo "R|reset --keys --hub X" ;;
