@@ -55,6 +55,11 @@ Files (read-only; a path outside the hub and its projects asks first):
               c (or --code) open it in Visual Studio Code at that line and column. ADE_VIEWER=code: code and text files open in
               Visual Studio Code by default; images, PDFs and Markdown keep the built-in viewer
 
+Proof (screenshots as evidence, in <project>/.ade/evidence/; a page or screen shot cannot be redacted):
+  shot        ade shot url <address> [--full-page] [--width W] | screen [--yes-screen] | agent <name>, each with [--name N]
+              [--tg [caption]]: a page (the hub's headless Chromium), the whole screen (asks first) or an agent's tab
+              (keys hidden) as a PNG with a .txt beside it; --tg sends it to you on Telegram when the bot is locked to you
+
 Housekeeping (each lists what it would do first; nothing of yours is deleted):
   clean       ade clean [--yes]: stale locks, old markers, cursors and temp folders, dead ade tmux sessions, clean merged worktrees
   reset       ade reset [--keys] [--hub <path>]: undo ade setup here; --keys forgets its keys; --hub moves that hub to the Trash
@@ -2015,7 +2020,7 @@ shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # confirm <question>: yes or no (Enter, or no answer, is no); ade clean and ade restore, at a terminal
 confirm() { local ASK_EOF=no; ask_yn "$1" n; }
 # reset and uninstall ask a person at a terminal: answers come from /dev/tty, never a pipe or an agent session
-agent_context() { [ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}${CLAUDE_CODE_SESSION_ID:-}" ]; }
+agent_context() { [ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_PID:-}${CLAUDE_CODE_CHILD_SESSION:-}${CLAUDE_CODE_EXECPATH:-}" ]; }
 tty_ready() {
   agent_context && die 2 "ade $1 asks a person at a terminal; it refuses inside a Claude Code session (an agent cannot answer for you); nothing changed"
   { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || die 2 "ade $1 asks a person at a terminal; it refuses piped or missing answers; nothing changed"
@@ -3413,6 +3418,9 @@ tools_report() {   # ade doctor: each tool, installed or missing
   for t in $REQUIRED_TOOLS $EXTRA_TOOLS; do
     if tool_present "$t"; then printf '  %-8s installed\n' "$t"; else printf '  %-8s missing (%s)\n' "$t" "$(tool_what "$t")"; fi
   done
+  # Playwright's Chromium (ade shot): the hub's browser, found where the hub finds it; ade setup --tools does not install it
+  if shot_py chromium > /dev/null 2>&1; then printf '  %-8s installed\n' chromium
+  else printf '  %-8s missing (%s)\n' chromium "extra: ade shot url and ade shot agent; npx -y @playwright/mcp install-browser chromium"; fi
   [ -z "$(tools_missing $REQUIRED_TOOLS $EXTRA_TOOLS)" ] || echo "  ade setup --tools installs what is missing"
 }
 # install_why <file> <packages>: a failed install in one plain line, from the installer's own message; nothing when
@@ -4390,6 +4398,621 @@ PY
   exec python3 -I -c "$src" "$@"
 }
 
+# ade shot (story A20): screenshots as proof, the ADE method's recorded evidence. A page through the headless Chromium
+# the hub already has (Playwright's; ade downloads none), the whole screen (screencapture -x on macOS, the X display on
+# Linux and in an ADE Computer) after a yes, or a focus agent's tab in ade's tmux server, its text redacted and then
+# rendered by the same Chromium. Shots land in <project>/.ade/evidence/<UTC date>/<HHMMSS>-<name>.png (0700 folders,
+# 0600 files, never overwritten, not committed unless forced) with a .txt sidecar; inside the hub, in the hub's own.
+# A page or screen shot cannot be redacted. --tg sends the saved file through the hub's bin/chat send, which sends
+# only to the paired owner of a locked bot. Addresses, names and what a page or a pane holds are data.
+SHOT_USAGE="usage: ade shot url <address> [--name N] [--full-page] [--width W] [--tg [caption]]
+       ade shot screen [--name N] [--yes-screen] [--tg [caption]]
+       ade shot agent <name> [--name N] [--tg [caption]]"
+shot_help() {
+  cat <<HELP
+$SHOT_USAGE
+
+Screenshots as proof: a PNG and a .txt beside it (what, when, the command, the address or agent, the size) in
+<project>/.ade/evidence/<date>/<time>-<name>.png (UTC; inside the hub: the hub's own .ade/evidence/). The folders are
+yours alone (0700, files 0600), a shot never replaces another, and git ignores them unless you add one with -f.
+
+  url <address>   a page, through the headless Chromium the hub already has (Playwright's; ade downloads nothing).
+                  http, https and file addresses only; a file only inside this project, never a .env, a key
+                  or a .git file; no link-local or metadata address. --full-page: the whole
+                  page, not only the window; --width W: the window's width (320 to 3840, default 1280)
+  screen          everything on your screen, including other apps (macOS: screencapture -x; Linux and the ADE
+                  Computer: the X display). At a terminal ade always asks first. From an agent session it runs
+                  only with --yes-screen, only where the session's settings ask you before this command (the
+                  hub's do) and none lets it skip permissions: your Allow at that prompt is the approval. ade
+                  never changes a system setting
+  agent <name>    a focus agent's tab in ade ui, as a picture of its text; keys and tokens are hidden first
+  --tg [caption]  then send the picture to you on Telegram, through the hub's bin/chat send (only when the bot is
+                  locked to you). The caption comes right after --tg; it is cleaned and cut to 200 characters
+
+A page or screen shot cannot be redacted: it shows whatever was on the page or the screen. Look at it before you
+share it. A terminal shot (agent) hides what the hub's log rule hides; a key the program itself broke over two lines
+can be missed.
+HELP
+}
+# shot_py <op> [args]: plan (check the name and the address before anything is captured), url and pane (the captures
+# through Chromium's DevTools pipe), xwd (an X window dump to a PNG), asks (does this session ask before ade shot
+# screen), caption, chromium (where it is), save. Run with -I; python3's standard library only.
+shot_py() {
+  local src; IFS= read -r -d '' src <<'PY' || true
+import base64, datetime, fnmatch, glob, html, json, math, os, re, select, shutil, signal, struct, subprocess, sys, time, urllib.parse, zlib
+op, A = sys.argv[1], sys.argv[2:]
+def die(code, msg):
+    sys.stderr.write("ade: %s\n" % msg); sys.exit(code)
+def shown(s, n=200): return "".join(c if " " <= c <= "~" else "?" for c in s)[:n]
+
+# hiding keys and tokens: the hub's rule, as bin/agent.py has it (bin/lib.sh redact, bin/chat logs), then the additions
+# of ade web (A19): Authorization headers, bearer tokens, the value after a name ending in password, secret, token or
+# key, the user and password of a URL, AWS key ids, sk_ keys, GitHub tokens, private key blocks
+ESC = re.compile(r"\x1b\[([0-?]*)([ -/]*)([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-_]?|[\x00-\x08\x0b-\x1f\x7f\x80-\x9f]")
+# characters that draw nothing or reorder text (default-ignorable and zero-width ones): removed before any matching, so one cannot split a key
+MARKS = re.compile("[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8"
+                   "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
+PK_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----")
+PK_END = re.compile(r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----")
+PK_LINE = re.compile(r"(?:[A-Za-z0-9+/=]+|<hidden>)")
+PK = "<hidden private key>"
+HIDE = [(re.compile(r"[0-9]{6,12}:[A-Za-z0-9_-]{30,}"), "<hidden token>"), (re.compile(r"[A-Za-z0-9]{16,}\.[A-Za-z0-9_-]{8,}"), "<hidden key>"),
+        (re.compile(r"(sk|pk|ak|key)-[A-Za-z0-9_-]{8,}"), "<hidden key>"), (re.compile(r"[A-Za-z0-9_-]{32,}"), "<hidden>"),
+        (re.compile(r"(?i)(authorization\s{0,8}[:=]\s{0,8})\S.*"), r"\1<hidden>"),
+        (re.compile(r"(?i)((?:set-)?cookie\s{0,8}[:=]\s{0,8})\S.*"), r"\1<hidden>"),
+        (re.compile(r"(?i)\b(bearer\s{1,8})[A-Za-z0-9._~+/=-]{8,}"), r"\1<hidden>"),
+        (re.compile(r"(?i)((?:password|passwd|secret|token|key)(?:\\?[\"'])?\s{0,8}[:=]\s{0,8})(?:\\?\"[^\"]*\"?|\\?'[^']*'?|<hidden[^>]{0,16}>|[^\s\"'&,;]+)"), r"\1<hidden>"),
+        (re.compile(r"(://)[^\s/@]{1,512}(@)"), r"\1<hidden>\2"),
+        (re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])"), "<hidden key>"),
+        (re.compile(r"(?<![A-Za-z0-9])(?:sk|pk|rk)_[A-Za-z0-9_-]{12,}"), "<hidden key>"),
+        (re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})"), "<hidden token>"),
+        (re.compile(PK_BEGIN.pattern + r".*?(?:" + PK_END.pattern + r"|$)"), PK), (PK_END, PK)]
+HID = "hidden"   # the style of text put in place of a key
+def hide(text, sty=None):
+    """text with keys and tokens hidden -> (text, its style per character, how many were hidden); already-hidden text is not counted twice"""
+    sty = list(sty) if sty is not None else [None] * len(text); n = 0
+    for p, r in HIDE:
+        out = []; so = []; last = 0
+        for m in p.finditer(text):
+            rep = m.expand(r); out.append(text[last:m.start()]); so.extend(sty[last:m.start()])
+            if HID not in sty[m.start():m.end()]: n += 1
+            out.append(rep); so.extend([HID] * len(rep)); last = m.end()
+        out.append(text[last:]); so.extend(sty[last:]); text = "".join(out); sty = so
+    return text, sty, n
+def plain_hide(s, n): return hide(ESC.sub(" ", MARKS.sub("", s)))[0].strip()[:n]
+
+# --- plan: the name and the address, checked before anything is captured ---
+def clean_name(name, default):
+    if name == "": name = default
+    elif re.search(r"[/\\\x00-\x1f\x7f]", name) or name[0] in ".-" or len(name) > 200:
+        die(2, "a shot's name is letters, digits, . _ and - (no path, no leading . or -); nothing captured")
+    name = re.sub(r"[^A-Za-z0-9._-]+", "-", name, flags=re.ASCII).strip("-.")[:60].strip("-.")
+    if not name: die(2, "a shot's name is letters, digits, . _ and - (no path, no leading . or -); nothing captured")
+    return name
+def inside(path, root): return path == root or path.startswith(root.rstrip("/") + "/")
+def keyfile(path, root):
+    """a file of the project that the hub never sends either: .env, a key, anything under .git"""
+    parts = os.path.relpath(path, root).split(os.sep); n = parts[-1]
+    return ".git" in parts[:-1] or n == ".env" or n.startswith(".env.") or n.endswith((".env", ".pem", ".key")) or n.startswith("id_")
+def meta_host(host):
+    """a link-local or cloud metadata address: 169.254.0.0/16, fe80::/10, fd00:ec2::254, metadata.google.internal"""
+    import ipaddress
+    h = (host or "").strip("[]").rstrip(".").lower()
+    if h == "metadata.google.internal": return True
+    try: ip = ipaddress.ip_address(h)
+    except ValueError: return False
+    if ip.version == 6 and ip.ipv4_mapped: ip = ip.ipv4_mapped
+    return ip.is_link_local or ip == ipaddress.ip_address("fd00:ec2::254")
+def address(a, root):
+    """the address to open, or exit 2: http, https or file only; a file only a regular file inside the project"""
+    no = "ade shot url takes an http, https or file address (a file only inside this project); nothing captured"
+    if not a or len(a) > 2048 or re.search(r"[\s\x00-\x1f\x7f\\]", a) or not re.match(r"(https?|file)://", a): die(2, no)
+    try: u = urllib.parse.urlsplit(a); host = u.hostname; u.port
+    except ValueError: die(2, no)
+    if u.scheme in ("http", "https"):
+        if not host or u.username is not None or u.password is not None or "@" in u.netloc: die(2, no + " (no user or password in the address)")
+        if meta_host(host): die(2, "ade shot url does not open a link-local or metadata address; nothing captured")
+        return a, host
+    if u.netloc not in ("", "localhost") or u.query or u.fragment: die(2, no)
+    raw = urllib.parse.unquote(u.path)
+    if "\x00" in raw or not raw.startswith("/") or os.path.islink(raw) or not os.path.isfile(raw): die(2, no)
+    real = os.path.realpath(raw)
+    if not inside(real, os.path.realpath(root)): die(2, no)
+    if keyfile(real, os.path.realpath(root)): die(2, "ade shot url does not open a .env, a key or a .git file of the project; nothing captured")
+    return "file://" + urllib.parse.quote(real), os.path.basename(real)
+if op == "plan":
+    mode, root, name, target, width = A
+    if mode == "url":
+        if not re.fullmatch(r"[0-9]{3,4}", width) or not 320 <= int(width) <= 3840: die(2, "--width takes a number from 320 to 3840; nothing captured")
+        target, default = address(target, root)
+    elif mode == "agent":
+        if not re.fullmatch(r"[A-Za-z0-9._:/-]{1,80}", target) or target[0] == "-" or ".." in target:
+            die(2, "an agent's name is letters, digits and . _ - / : only; nothing captured")
+        default = "agent-" + target
+    else: default = "screen"
+    print(clean_name(name, default) + "\x1f" + target); sys.exit(0)
+
+if op == "caption":
+    print(" ".join(plain_hide(A[0], 4000).split())[:200].strip()); sys.exit(0)
+
+# --- asks <project root> <the command line>: this agent session is asked before this very command ---
+# The session's settings are the project's (.claude/settings.json and settings.local.json in CLAUDE_PROJECT_DIR when the
+# session sets it, else the git or hub root ade saves into; never the shell's folder, a folder below or above), the
+# user's (CLAUDE_CONFIG_DIR or ~/.claude) and the managed ones of this system. Any of them that lets the session skip
+# permissions, or cannot be read, means no prompt can be counted on. Then one ask rule of the project's or the user's
+# must match the command line as it is (a wildcard or prefix rule; an exact rule only for exactly that command).
+if op == "asks":
+    root, cmdline = A
+    project = os.environ.get("CLAUDE_PROJECT_DIR") or root
+    user = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    files = [os.path.join(project, ".claude", "settings.json"), os.path.join(project, ".claude", "settings.local.json"), os.path.join(user, "settings.json")]
+    managed = ["/Library/Application Support/ClaudeCode/managed-settings.json", "/etc/claude-code/managed-settings.json"]
+    rules = []
+    for f in files + managed:
+        if not os.path.lexists(f): continue
+        try:
+            with open(f, encoding="utf-8") as fh: d = json.load(fh)
+        except Exception: sys.exit(1)
+        if not isinstance(d, dict): sys.exit(1)
+        perms = d.get("permissions", {})
+        if not isinstance(perms, dict): sys.exit(1)
+        if "bypass" in str(perms.get("defaultMode", "")).lower() or "bypass" in str(d.get("defaultMode", "")).lower(): sys.exit(1)
+        ask = perms.get("ask") or []
+        if not isinstance(ask, list): sys.exit(1)
+        if f in files: rules += [r[5:-1] for r in ask if isinstance(r, str) and r.startswith("Bash(") and r.endswith(")")]
+    for r in rules:
+        if r.endswith(":*"): r = r[:-2] + "*"   # the older way to write a prefix rule
+        if fnmatch.fnmatchcase(cmdline, r): sys.exit(0)
+    sys.exit(1)
+
+# --- Chromium: Playwright's, where the hub finds it (PLAYWRIGHT_BROWSERS_PATH, else its cache folders); a system browser does not count ---
+def chromium():
+    env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+    bases = [env] if env else [os.path.expanduser("~/.cache/ms-playwright"), os.path.expanduser("~/Library/Caches/ms-playwright"), "/opt/ms-playwright"]
+    pats = ["chromium-*/chrome-linux*/chrome", "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
+            "chromium-*/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing",
+            "chromium_headless_shell-*/chrome-*/headless_shell", "chromium_headless_shell-*/chrome-*/chrome-headless-shell"]
+    def rev(p):
+        m = re.search(r"-(\d+)/", p[len(b):]); return int(m.group(1)) if m else 0
+    for b in bases:
+        for pat in pats:
+            for c in sorted(glob.glob(os.path.join(glob.escape(b), pat)), key=rev, reverse=True):
+                if os.path.isfile(c) and os.access(c, os.X_OK): return c
+    return None
+if op == "chromium":
+    c = chromium(); print(c or ""); sys.exit(0 if c else 1)
+NO_CHROMIUM = ("Playwright's Chromium is not installed, so there is no browser to take this shot with; get it with: "
+               "npx -y @playwright/mcp install-browser chromium (on a server, the hub's bin/server install does it)")
+
+class Timeout(Exception): pass
+class Chrome:
+    """one headless Chromium on a DevTools pipe (--remote-debugging-pipe: fd 3 in, fd 4 out, JSON messages ending in NUL).
+    No port is opened. Every request the page makes is held (Fetch) and let go only when allowed() says so."""
+    def __init__(self, exe, tmp, width, height, allowed, deadline):
+        self.allowed = allowed; self.deadline = deadline; self.n = 0; self.buf = bytearray(); self.loaded = False
+        self.status = None; self.blocked = {}; self.session = None
+        profile = os.path.join(tmp, "profile"); os.mkdir(profile, 0o700)
+        args = [exe, "--headless", "--remote-debugging-pipe", "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check",
+                "--disable-gpu", "--hide-scrollbars", "--mute-audio", "--disable-extensions", "--disable-background-networking",
+                "--disable-sync", "--disable-component-update", "--window-size=%d,%d" % (width, height)]
+        # its own sandbox stays on where this computer can make a user namespace; where it cannot (a container), or for
+        # root, Chromium runs only with --no-sandbox (the choice the ADE Computer's chromium wrapper makes)
+        if sys.platform.startswith("linux"):
+            try: ns = os.geteuid() != 0 and subprocess.call(["unshare", "-U", "true"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+            except OSError: ns = False
+            if not ns: args.append("--no-sandbox")
+        args.append("about:blank")
+        r_in, w_in = os.pipe(); r_out, w_out = os.pipe(); import fcntl
+        keep = []   # whatever sits on fd 3 and 4 here is moved aside while Chromium is started, then put back
+        ends = [fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 10) for fd in (r_in, w_in, r_out, w_out)]
+        for fd in (r_in, w_in, r_out, w_out): os.close(fd)
+        r_in, self.w, self.r, w_out = ends
+        for fd in (3, 4):
+            try: keep.append((fd, fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 10)))
+            except OSError: pass
+        os.dup2(r_in, 3, inheritable=True); os.dup2(w_out, 4, inheritable=True)
+        try:
+            self.p = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=(3, 4), start_new_session=True)
+        finally:
+            os.close(3); os.close(4); os.close(r_in); os.close(w_out)
+            for fd, saved in keep: os.dup2(saved, fd); os.close(saved)
+    def send(self, method, params=None):
+        self.n += 1; m = {"id": self.n, "method": method, "params": params or {}}
+        if self.session and not method.startswith(("Target.", "Browser.")): m["sessionId"] = self.session
+        data = json.dumps(m).encode("utf-8") + b"\0"
+        while data: data = data[os.write(self.w, data):]
+        return self.n
+    def read(self, until):
+        """the next message, or None once `until` has passed"""
+        while True:
+            i = self.buf.find(b"\0")
+            if i >= 0:
+                raw = bytes(self.buf[:i]); del self.buf[:i + 1]
+                try: return json.loads(raw.decode("utf-8", "replace"))
+                except ValueError: continue
+            left = until - time.time()
+            if left <= 0 or not select.select([self.r], [], [], left)[0]: return None
+            b = os.read(self.r, 1 << 20)
+            if not b: raise Timeout("the browser closed before it answered")
+            self.buf += b
+            if len(self.buf) > 256 << 20: raise Timeout("the browser sent more than a shot can be")
+    def event(self, m):
+        me = m.get("method"); p = m.get("params") or {}
+        if me == "Fetch.requestPaused":
+            why = self.allowed(str((p.get("request") or {}).get("url", "")))
+            if not why: self.send("Fetch.continueRequest", {"requestId": p.get("requestId")})
+            else: self.blocked[why] = self.blocked.get(why, 0) + 1; self.send("Fetch.failRequest", {"requestId": p.get("requestId"), "errorReason": "BlockedByClient"})
+        elif me == "Page.javascriptDialogOpening": self.send("Page.handleJavaScriptDialog", {"accept": False})
+        elif me == "Page.loadEventFired": self.loaded = True
+        elif me == "Network.responseReceived" and self.status is None and p.get("type") == "Document":
+            s = (p.get("response") or {}).get("status")
+            if isinstance(s, int): self.status = s
+    def call(self, method, params=None):
+        i = self.send(method, params)
+        while True:
+            m = self.read(self.deadline)
+            if m is None: raise Timeout("the browser did not answer in time (%s)" % method)
+            if m.get("id") == i:
+                if "error" in m: raise Timeout("the browser refused %s" % method)
+                return m.get("result") or {}
+            self.event(m)
+    def wait(self, seconds, loaded=False):
+        end = min(self.deadline, time.time() + seconds)
+        while not (loaded and self.loaded):
+            m = self.read(end)
+            if m is None: break
+            self.event(m)
+    def close(self):
+        try:
+            if self.p.poll() is None: self.send("Browser.close")
+        except OSError: pass
+        try: self.p.wait(3)
+        except subprocess.TimeoutExpired: pass
+        try: os.killpg(self.p.pid, signal.SIGKILL)   # it and every helper it started (its own session)
+        except OSError: pass
+        try: self.p.wait(5)
+        except Exception: pass
+        for fd in (self.r, self.w):
+            try: os.close(fd)
+            except OSError: pass
+
+def capture(url, tmp, width, full, file_root, element=None):
+    """a PNG of the address -> (bytes, notes for the sidecar)"""
+    exe = chromium()
+    if not exe: die(1, NO_CHROMIUM)
+    try: total = min(300, max(5, int(os.environ.get("ADE_SHOT_TIMEOUT", "45"))))
+    except ValueError: total = 45
+    root = os.path.realpath(file_root) if file_root else None
+    OUT, KEY, META, OTHER = ("a file outside the project", "a key, .env or .git file of the project", "a link-local or metadata address",
+                             "an address that is not http, https or file")
+    def allowed(u):
+        """None when the page may have it, else why not"""
+        s = u.split(":", 1)[0].lower()
+        if s in ("data", "blob", "about"): return None
+        try: sp = urllib.parse.urlsplit(u); host = sp.hostname
+        except ValueError: return OTHER
+        if s in ("http", "https", "ws", "wss"):
+            if meta_host(host): return META
+            return OTHER if element else None
+        if s != "file": return OTHER
+        if not root or sp.netloc not in ("", "localhost"): return OUT
+        path = os.path.realpath(urllib.parse.unquote(sp.path))
+        if not inside(path, root): return OUT
+        return KEY if keyfile(path, root) and not element else None
+    def bye(n, _): raise KeyboardInterrupt
+    for s in (signal.SIGTERM, signal.SIGHUP): signal.signal(s, bye)
+    c = None; notes = []
+    try:
+        c = Chrome(exe, tmp, width, 800, allowed, time.time() + total)
+        c.session = None; t = c.call("Target.createTarget", {"url": "about:blank"}).get("targetId")
+        c.session = c.call("Target.attachToTarget", {"targetId": t, "flatten": True}).get("sessionId")
+        if not c.session: raise Timeout("the browser opened no page")
+        try: c.call("Browser.setDownloadBehavior", {"behavior": "deny"})   # a page never leaves a file behind
+        except Timeout: pass
+        c.call("Page.enable"); c.call("Network.enable"); c.call("Fetch.enable", {"patterns": [{"urlPattern": "*"}]})
+        c.call("Emulation.setDeviceMetricsOverride", {"width": width, "height": 800, "deviceScaleFactor": 1, "mobile": False})
+        err = c.call("Page.navigate", {"url": url}).get("errorText")
+        if err: die(1, "the page did not load (%s); nothing saved" % shown(str(err), 80))
+        c.wait(total / 2.0, loaded=True)
+        if not c.loaded: notes.append("note: the page was still loading after %d s; shot as it was" % (total // 2))
+        else: c.wait(0.3)
+        shot = {"format": "png"}
+        if element:
+            v = c.call("Runtime.evaluate", {"expression": "(function(){var r=document.getElementById('t').getBoundingClientRect();return JSON.stringify([Math.ceil(r.right),Math.ceil(r.bottom)])})()", "returnByValue": True})
+            try: w, h = [int(x) for x in json.loads((v.get("result") or {}).get("value"))]
+            except Exception: raise Timeout("the browser did not measure the text")
+            shot.update(captureBeyondViewport=True, clip={"x": 0, "y": 0, "width": max(1, min(w, 8000)), "height": max(1, min(h, 16384)), "scale": 1})
+        elif full:
+            size = c.call("Page.getLayoutMetrics").get("cssContentSize") or {}
+            try: h = int(math.ceil(float(size.get("height", 800))))
+            except (TypeError, ValueError): h = 800
+            if h > 16384: notes.append("note: the page is %d px tall; cut at 16384" % h)
+            shot.update(captureBeyondViewport=True, clip={"x": 0, "y": 0, "width": width, "height": max(1, min(h, 16384)), "scale": 1})
+            notes.append("full page: yes")
+        try: data = base64.b64decode(c.call("Page.captureScreenshot", shot).get("data") or "", validate=True)
+        except ValueError: data = b""
+        if data[:8] != b"\x89PNG\r\n\x1a\n": raise Timeout("the browser did not return a PNG")
+        if c.status is not None and url.startswith("http"): notes.insert(0, "http status: %d" % c.status)
+        if c.blocked: notes.append("blocked requests: %d (%s)" % (sum(c.blocked.values()), "; ".join("%s: %d" % (k, c.blocked[k]) for k in (OUT, KEY, META, OTHER) if k in c.blocked)))
+        return data, notes
+    except Timeout as e: die(1, "%s; nothing saved" % e)
+    except OSError as e: die(1, "the browser stopped before the shot was taken (%s); nothing saved" % (e.strerror or e.__class__.__name__))
+    except KeyboardInterrupt: die(130, "stopped; nothing saved")
+    finally:
+        if c: c.close()
+
+if op == "url":
+    url, root, width, full, tmp = A
+    data, notes = capture(url, tmp, int(width), full == "1", root if url.startswith("file://") else None)
+    open(os.path.join(tmp, "shot.png"), "wb").write(data); print("\n".join(notes)); sys.exit(0)
+
+# --- pane: a tmux pane's text (capture-pane -p -e) as a page: colours kept, every other sequence dropped, keys hidden ---
+BASE = ["#000000", "#cd3131", "#0dbc79", "#e5e510", "#2472c8", "#bc3fbc", "#11a8cd", "#e5e5e5",
+        "#666666", "#f14c4c", "#23d18b", "#f5f543", "#3b8eea", "#d670d6", "#29b8db", "#ffffff"]
+def colour256(n):
+    if n < 16: return BASE[n]
+    if n < 232:
+        n -= 16; v = [0, 95, 135, 175, 215, 255]; return "#%02x%02x%02x" % (v[n // 36], v[n // 6 % 6], v[n % 6])
+    g = 8 + 10 * (n - 232); return "#%02x%02x%02x" % (g, g, g)
+def sgr(params, st):
+    """the style after a colour sequence; st = (fg, bg, bold, dim, italic, underline, reverse), colours made here only"""
+    fg, bg, bold, dim, ita, und, rev = st
+    try: ps = [int(x) if x else 0 for x in re.split("[;:]", params)] if params else [0]
+    except ValueError: return st
+    i = 0
+    while i < len(ps):
+        p = ps[i]
+        if p == 0: fg = bg = None; bold = dim = ita = und = rev = False
+        elif p == 1: bold = True
+        elif p == 2: dim = True
+        elif p == 3: ita = True
+        elif p == 4: und = True
+        elif p == 7: rev = True
+        elif p == 22: bold = dim = False
+        elif p == 23: ita = False
+        elif p == 24: und = False
+        elif p == 27: rev = False
+        elif 30 <= p <= 37: fg = BASE[p - 30]
+        elif 90 <= p <= 97: fg = BASE[p - 82]
+        elif 40 <= p <= 47: bg = BASE[p - 40]
+        elif 100 <= p <= 107: bg = BASE[p - 92]
+        elif p == 39: fg = None
+        elif p == 49: bg = None
+        elif p in (38, 48):
+            col = None
+            if ps[i + 1:i + 2] == [5] and len(ps) > i + 2: col = colour256(ps[i + 2] & 255); i += 2
+            elif ps[i + 1:i + 2] == [2] and len(ps) > i + 4: col = "#%02x%02x%02x" % tuple(x & 255 for x in ps[i + 2:i + 5]); i += 4
+            else: break
+            if p == 38: fg = col
+            else: bg = col
+        i += 1
+    return (fg, bg, bold, dim, ita, und, rev)
+def css(st):
+    if st == HID: return "color:#c586c0"
+    fg, bg, bold, dim, ita, und, rev = st
+    if rev: fg, bg = bg or "#1e1e1e", fg or "#d4d4d4"
+    out = []
+    if fg: out.append("color:" + fg)
+    if bg: out.append("background:" + bg)
+    if bold: out.append("font-weight:bold")
+    if dim: out.append("opacity:0.6")
+    if ita: out.append("font-style:italic")
+    if und: out.append("text-decoration:underline")
+    return ";".join(out)
+def pane_html(raw):
+    """(the page, how many keys and tokens were hidden)"""
+    st = (None, None, False, False, False, False, False); rows = []; hidden = 0; in_key = False
+    for line in raw.split("\n")[:1000]:
+        line = MARKS.sub("", line[:4000]); text = []; sty = []; last = 0
+        for m in ESC.finditer(line):   # a colour sequence changes the style; every other sequence and control character is dropped
+            text.append(line[last:m.start()]); sty.extend([st] * (m.start() - last)); last = m.end()
+            if m.group(3) == "m" and not m.group(2): st = sgr(m.group(1), st)
+        text.append(line[last:]); sty.extend([st] * (len(line) - last)); text = "".join(text).replace("\t", " ")
+        # a private key over several lines is one marker: from its BEGIN line to its END line (its lines above, when the BEGIN is not in the pane)
+        if in_key:
+            end = PK_END.search(text)
+            if not end: continue
+            in_key = False; text = text[end.end():]; sty = sty[end.end():]
+            if not text.strip(): continue
+        else:
+            begin = PK_BEGIN.search(text)
+            if begin and not PK_END.search(text, begin.end()): in_key = True
+            elif not begin and PK_END.search(text):
+                while rows and PK_LINE.fullmatch(rows[-1][0].strip() or " "): rows.pop()
+        text, sty, n = hide(text, sty); hidden += n; rows.append((text, sty))
+    while rows and not rows[-1][0].strip(): rows.pop()
+    out = []
+    for text, sty in rows:
+        i = 0; parts = []
+        while i < len(text):
+            j = i
+            while j < len(text) and sty[j] == sty[i]: j += 1
+            c = css(sty[i]) if sty[i] else ""; t = html.escape(text[i:j], quote=True)
+            parts.append('<span style="%s">%s</span>' % (c, t) if c else t); i = j
+        out.append("".join(parts))
+    page = ("<!doctype html><html><head><meta charset=\"utf-8\">"
+            "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; style-src 'unsafe-inline'\">"
+            "<style>html,body{margin:0;background:#1e1e1e}pre{display:inline-block;margin:0;padding:12px 14px;white-space:pre;"
+            "font:13px/1.35 'DejaVu Sans Mono','Menlo','Liberation Mono','Consolas',monospace;color:#d4d4d4}</style></head>"
+            "<body><pre id=\"t\">%s\n</pre></body></html>\n" % "\n".join(out))
+    return page, hidden
+if op == "pane":
+    tmp = os.path.realpath(A[0])
+    with open(os.path.join(tmp, "pane"), "rb") as f: raw = f.read(4 << 20).decode("utf-8", "replace")
+    page, hidden = pane_html(raw); p = os.path.join(tmp, "pane.html")
+    with open(os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "w", encoding="utf-8") as f: f.write(page)
+    data, _ = capture("file://" + urllib.parse.quote(p), tmp, 1600, False, tmp, element=True)
+    open(os.path.join(tmp, "shot.png"), "wb").write(data); os.unlink(os.path.join(tmp, "pane"))
+    print("redaction: keys and tokens hidden in the captured text before rendering (%d hidden)" % hidden); sys.exit(0)
+
+# --- xwd: an X window dump (xwd -root, what the ADE Computer's image has) to a PNG ---
+def png(w, h, rows):
+    def chunk(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(b"".join(b"\0" + r for r in rows), 6)) + chunk(b"IEND", b""))
+if op == "xwd":
+    no = "this display's picture format is not one ade reads (xwd: 24 or 32 bits a pixel); install ImageMagick (import) instead; nothing saved"
+    d = open(A[0], "rb").read(512 << 20)
+    if len(d) < 100: die(1, no)
+    (hs, ver, fmt, depth, w, h, xoff, order, unit, bitorder, pad, bpp, bpl, vclass, rm, gm, bm, bits, cmap, ncol) = struct.unpack(">20I", d[:80])
+    step = bpp // 8; off = hs + ncol * 12
+    if ver != 7 or fmt != 2 or bpp not in (24, 32) or (rm, gm, bm) != (0xff0000, 0xff00, 0xff) or not (0 < w <= 16384 and 0 < h <= 16384) \
+       or bpl < w * step or len(d) < off + bpl * h: die(1, no)
+    r0, g0, b0 = (2, 1, 0) if order == 0 else (step - 3, step - 2, step - 1)
+    rows = []
+    for y in range(h):
+        row = d[off + y * bpl:off + y * bpl + w * step]; line = bytearray(w * 3)
+        line[0::3] = row[r0::step]; line[1::3] = row[g0::step]; line[2::3] = row[b0::step]; rows.append(bytes(line))
+    open(A[1], "wb").write(png(w, h, rows)); sys.exit(0)
+
+# --- save: into <root>/.ade/evidence/<UTC date>/, never through a link, never over another shot ---
+if op == "save":
+    root, mode, name, src, target, notes = A
+    data = open(src, "rb").read(256 << 20)
+    if data[:8] != b"\x89PNG\r\n\x1a\n" or data[12:16] != b"IHDR": die(1, "the capture is not a PNG; nothing saved")
+    w, h = struct.unpack(">II", data[16:24])
+    try: now = datetime.datetime.strptime(os.environ.get("ADE_NOW", ""), "%Y-%m-%dT%H:%M:%SZ")
+    except ValueError: now = datetime.datetime.now(datetime.timezone.utc)
+    # each folder is opened from its parent's descriptor without following a link, and everything is created through
+    # the day folder's descriptor: no level can be swapped for a link between the check and the write
+    DIR = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0); NOF = getattr(os, "O_NOFOLLOW", 0)
+    try: fd = os.open(root, DIR)
+    except OSError as e: die(1, "could not open %s (%s); nothing saved" % (shown(root), e.strerror))
+    folder = root; ev_fd = None
+    for part, mode_bits in ((".ade", 0o755), ("evidence", 0o700), (now.strftime("%Y-%m-%d"), 0o700)):
+        folder = os.path.join(folder, part)
+        try: os.mkdir(part, mode_bits, dir_fd=fd)
+        except FileExistsError: pass
+        except OSError as e: die(1, "could not make %s (%s); nothing saved" % (shown(folder), e.strerror))
+        try: nfd = os.open(part, DIR | NOF, dir_fd=fd)
+        except OSError: die(1, "%s is a symbolic link or not a folder; nothing saved" % shown(folder))
+        if mode_bits == 0o700:
+            try: os.fchmod(nfd, 0o700)
+            except OSError: die(1, "%s is not a folder of yours; nothing saved" % shown(folder))
+        if part == "evidence": ev_fd = nfd
+        fd = nfd
+    def create(name, at): return os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOF, 0o600, dir_fd=at)
+    def there(name):
+        try: os.stat(name, dir_fd=fd, follow_symlinks=False); return True
+        except OSError: return False
+    try:   # shots can hold private things: git does not see them unless one is added with -f
+        with os.fdopen(create(".gitignore", ev_fd), "w") as f: f.write("*\n")
+    except OSError: pass
+    stem = None
+    for n in range(1, 1000):
+        s = "%s-%s%s" % (now.strftime("%H%M%S"), name, "" if n == 1 else "-%d" % n)
+        if there(s + ".txt") or there(s + ".png"): continue
+        try: out = create(s + ".png", fd)
+        except FileExistsError: continue
+        except OSError as e: die(1, "could not write in %s (%s); nothing saved" % (shown(folder), e.strerror))
+        stem = s; break
+    if stem is None: die(1, "too many shots with that name this second; nothing saved")
+    with os.fdopen(out, "wb") as f: f.write(data)
+    what = {"url": "a page (ade shot url)", "screen": "the whole screen (ade shot screen)", "agent": "an agent's terminal (ade shot agent)"}[mode]
+    lines = ["what: " + what, "when: " + now.strftime("%Y-%m-%dT%H:%M:%SZ"), "command: " + " ".join(plain_hide(os.environ.get("ADE_SHOT_CMD", ""), 4000).split())[:500]]
+    if mode == "url": lines.append("address: " + plain_hide(urllib.parse.unquote(target) if target.startswith("file://") else target, 2048))
+    elif mode == "agent": lines.append("agent: " + shown(target))
+    notes = [shown(l, 300) for l in notes.split("\n") if l.strip()]
+    lines += [l for l in notes if not l.startswith("redaction: ")]
+    lines.append("size: %dx%d px, %d bytes" % (w, h, len(data)))
+    lines += [l for l in notes if l.startswith("redaction: ")] or [
+        "redaction: none: a %s shot cannot be redacted; look at it before you share it" % ("page" if mode == "url" else "screen")]
+    with os.fdopen(create(stem + ".txt", fd), "w", encoding="utf-8") as f: f.write("\n".join(lines) + "\n")
+    print(os.path.join(folder, stem + ".png")); sys.exit(0)
+die(2, "unknown shot step")
+PY
+  python3 -I -c "$src" "$@"
+}
+# shot_screen_gate <yes-screen 0|1> <project root>: who may capture the whole screen. A person at a terminal, after a
+# yes typed there (the flag answers nothing). An agent session: only with --yes-screen and only where its settings put
+# a permission prompt before this command line (the person's Allow there is the approval; ade cannot see the prompt,
+# so it checks that the rule is there and that no settings file lets the session skip permissions: shot_py asks).
+# Nobody else: a pipe or a job has no one to ask. SHOT_NOTE says how it was approved.
+shot_screen_gate() {
+  local what="ade shot screen captures everything on your screen, including other apps"
+  if agent_context; then
+    [ "$1" = 1 ] || die 2 "$what. From an agent session it runs only with --yes-screen, and only after your own Allow at the session's permission prompt for this command; nothing captured"
+    shot_py asks "$2" "$SHOT_CMD" || die 2 "$what. This session's settings do not ask before this command (no permissions.ask rule matching it in the project's .claude/settings.json, or a settings file lets the session skip permissions or cannot be read), so nobody approved it; nothing captured (the hub's settings ask)"
+    SHOT_NOTE="approved: the session's permission prompt for this command (--yes-screen)"; return 0
+  fi
+  { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || die 2 "$what, so ade asks a person at a terminal first; refused without one; nothing captured"
+  SHOT_NOTE="approved: a yes at the terminal"
+  ask_say "$what."; tty_confirm "Capture it now?" || die 2 "nothing captured"
+}
+# shot_screen <png>: the whole desktop into the file; ade changes no system setting
+shot_screen() {
+  if on_macos; then
+    screencapture -x "$1" 2> /dev/null && [ -s "$1" ] && return 0
+    die 1 "macOS did not let this terminal capture the screen. Allow it in System Settings > Privacy & Security > Screen Recording (your terminal app), then run it again; ade changes no setting"
+  fi
+  [ -n "${DISPLAY:-}" ] || die 1 "there is no X display here (DISPLAY is not set); ade shot screen captures an X display, as in an ADE Computer; nothing captured"
+  if command -v import > /dev/null 2>&1; then import -window root "$1" 2> /dev/null
+  elif command -v xwd > /dev/null 2>&1; then xwd -root -silent > "$1.xwd" 2> /dev/null && shot_py xwd "$1.xwd" "$1"
+  else die 1 "ade shot screen needs xwd (sudo apt-get install x11-utils) or ImageMagick's import on Linux; nothing captured"; fi
+  [ -s "$1" ] || die 1 "the X display $(plain "$DISPLAY") could not be captured; nothing saved"
+}
+# shot_pane <agent> <tmp>: the one tab of ade ui that the name means (the tab's name, its folder, the folder's last
+# part, or the agent's name), its text with colour sequences into <tmp>/pane; SHOT_WIN is the tab's name
+shot_pane() {
+  local hub s rows n
+  hub="$(find_hub)" || exit $?; s="$(ui_session "$hub")"
+  rows="$(ui_tmux list-windows -t "=$s" -F "#{window_index}$TAB#{window_name}" 2> /dev/null)" || die 2 "ade ui is not running for this hub, so there is no agent tab to capture (ade ui starts it); nothing captured"
+  rows="$(printf '%s\n' "$rows" | awk -F '\t' -v n="$1" '{ f = $2; sub(/:.*/, "", f); b = f; sub(/.*\//, "", b); a = ""; if (index($2, ":")) { a = $2; sub(/^[^:]*:/, "", a) } } $2 == n || f == n || b == n || a == n')"
+  n="$(printf '%s\n' "$rows" | grep -c .)"
+  [ "$n" != 0 ] || die 2 "no tab of ade ui is named $1 (ade status lists the agents); nothing captured"
+  [ "$n" = 1 ] || die 2 "more than one tab of ade ui is named $1; name its folder (projects/$1 or ops/$1); nothing captured"
+  SHOT_WIN="$(plain "${rows#*"$TAB"}")"
+  ui_tmux capture-pane -p -e -J -t "=$s:${rows%%"$TAB"*}" > "$2/pane" 2> /dev/null || die 1 "tmux could not read that tab; nothing captured"
+}
+# shot_tg <png> <caption>: the saved shot to the owner through the hub's bin/chat send, only when the hub says the bot is locked
+shot_tg() {
+  local hub out rc cap
+  hub="$( (find_hub) 2> /dev/null)" || die 2 "not sent: --tg sends through a hub's Telegram bot and no hub was found; the shot is saved"
+  [ -x "$hub/bin/chat" ] || die 2 "not sent: this hub has no bin/chat; the shot is saved"
+  tg_chat "$hub"; [ "$TG_LOCK" = yes ] || die 2 "not sent: the hub's Telegram bot is not locked to you (ade chat status; ade setup --telegram locks it); the shot is saved"
+  cap="$(shot_py caption "$2")"; [ -n "$cap" ] || cap="$(basename "$1")"
+  out="$(printf '%s' "$cap" | hub_run "$hub" chat send "$1" 2>&1)"; rc=$?
+  [ "$rc" != 0 ] || { echo "sent to you on Telegram"; return 0; }
+  case "$out" in usage:*) die 2 "not sent: this hub's bin/chat cannot send a file yet (ade update brings it); the shot is saved" ;; esac
+  [ "$rc" = 2 ] || rc=1
+  die "$rc" "not sent: $(plain "$(printf '%s\n' "$out" | tail -1)"); the shot is saved"
+}
+cmd_shot() {
+  local mode="${1:-}" target="" name="" full=0 width=1280 yes=0 tg=0 cap="" root plan note="" out
+  [ $# -gt 0 ] || { shot_help; return 0; }
+  SHOT_CMD="ade shot $*"; SHOT_NOTE=""; SHOT_WIN=""; shift
+  case "$mode" in
+    url|agent) [ $# -gt 0 ] || die 2 "$SHOT_USAGE"; target="$1"; shift ;;
+    screen) ;;
+    help|--help|-h) shot_help; return 0 ;;
+    *) die 2 "$SHOT_USAGE" ;;
+  esac
+  while [ $# -gt 0 ]; do
+    case "$mode:$1" in
+      *:--name) [ $# -ge 2 ] || die 2 "$SHOT_USAGE"; name="$2"; [ -n "$name" ] || name=" "; shift ;;
+      url:--full-page) full=1 ;;
+      url:--width) [ $# -ge 2 ] || die 2 "$SHOT_USAGE"; width="$2"; shift ;;
+      screen:--yes-screen) yes=1 ;;
+      *:--tg) tg=1; if [ $# -ge 2 ]; then case "$2" in --*) ;; *) cap="$2"; shift ;; esac; fi ;;
+      *) die 2 "$SHOT_USAGE" ;;
+    esac; shift
+  done
+  root="$(git rev-parse --show-toplevel 2> /dev/null)" || root="$( (find_hub) 2> /dev/null)" || die 2 "ade shot saves into a project's or a hub's .ade/evidence/: run it inside a git repository or a hub; nothing captured"
+  plan="$(shot_py plan "$mode" "$root" "$name" "$target" "$width")" || exit $?
+  IFS="$US" read -r name target <<EOF
+$plan
+EOF
+  SHOT_TMP="$(mk_tmp)" || die 1 "could not make a temp folder"; trap 'rm_tmp "$SHOT_TMP"' EXIT; trap 'exit 130' INT TERM HUP
+  case "$mode" in
+    url) note="$(shot_py url "$target" "$root" "$width" "$full" "$SHOT_TMP")" || exit $? ;;
+    screen) shot_screen_gate "$yes" "$root"; shot_screen "$SHOT_TMP/shot.png"; note="$SHOT_NOTE" ;;
+    agent) shot_pane "$target" "$SHOT_TMP"; target="$SHOT_WIN"; note="$(shot_py pane "$SHOT_TMP")" || exit $? ;;
+  esac
+  out="$(ADE_SHOT_CMD="$SHOT_CMD" shot_py save "$root" "$mode" "$name" "$SHOT_TMP/shot.png" "$target" "$note")" || exit $?
+  rm_tmp "$SHOT_TMP"; echo "$out"
+  [ "$tg" = 0 ] || shot_tg "$out" "$cap"
+}
+
 cmd_version() {
   local v="$ADE_VERSION"
   local p="$0" l
@@ -4434,6 +5057,7 @@ case "$cmd" in
   update) cmd_update "$@" ;;
   reset) cmd_reset reset "$@" ;;
   uninstall) cmd_reset uninstall "$@" ;;
+  shot) cmd_shot "$@" ;;
   version|--version|-v) cmd_version ;;
   help|--help|-h) usage ;;
   *) usage >&2; die 2 "unknown command: $cmd" ;;

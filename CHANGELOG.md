@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+- `ade shot`: screenshots as proof (A20). `ade shot url <address>` saves a PNG of a page through the headless Chromium
+  the hub already has (Playwright's; `ade` downloads nothing, and says how to get it when it is missing), with
+  `--full-page` and `--width W`; only `http`, `https` and `file` addresses, a file only inside the project.
+  `ade shot screen` captures the whole screen (macOS: `screencapture -x`; Linux and the ADE Computer: the X display)
+  after a yes at the terminal; an agent can run it only with `--yes-screen` where its session asks you before that
+  command. `ade shot agent <name>` saves a focus agent's tab in `ade ui` as a picture, keys and tokens hidden first.
+  Shots go to `<project>/.ade/evidence/<date>/<time>-<name>.png` with a `.txt` beside it (0700 folders, 0600 files,
+  never overwritten, ignored by git); `--name N` names one. A page or screen shot cannot be redacted. `--tg [caption]`
+  sends the picture to you on Telegram through the hub's new `bin/chat send`, only while the bot is locked to you.
+  `ade doctor` lists Chromium. A page never gets a file outside the project, a `.env`, key or `.git` file of it, or a
+  link-local or metadata address. `ade reset`, `ade files` and the other commands that ask a person now also see an
+  agent session by `CLAUDE_PID`, `CLAUDE_CODE_CHILD_SESSION` and `CLAUDE_CODE_EXECPATH`.
+
 ## 0.2.7
 - Telegram: the guide's step is not "working" until the bot is locked to you, as the hub's own `bin/chat status` says
   it ("locked to you": the policy allowlist, your account in it, no groups), not by the policy's name alone. Once it
