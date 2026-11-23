@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.6
 - bun already in `~/.bun/bin` but not on the PATH (bun's own installer, or an earlier ade): `ade setup` and
   `ade setup --tools` now add the one marked PATH line to the shell's start file, as after ade's own install, so a new
   terminal (and the hub's `bin/chat start`) finds it. Never from an agent session.
