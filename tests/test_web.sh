@@ -52,7 +52,8 @@ secret_lines() {   # <label>: one line per secret, with a word before and after 
 }
 
 fixture() {
-  fresh; farm; F="$T/fake"; mkdir -p "$F"; CALLS="$T/calls"; : > "$CALLS"; export CALLS
+  fresh; trap 'stop; drop_t' EXIT   # after fresh, which sets its own: a failed check must not leave a server running
+  farm; F="$T/fake"; mkdir -p "$F"; CALLS="$T/calls"; : > "$CALLS"; export CALLS
   H="$T/hub"; S="$T/state"; make_hub "$H" hub; echo "HUB_NAME=acme" > "$H/hub.conf"
   mkdir -p "$H/journal" "$H/projects/api" "$H/projects/link" "$H/ops/infra" "$S/logs" "$T/outside"
   echo "CANARY-OUTSIDE" > "$T/outside/STATE.md"; echo "CANARY-CONF" >> "$H/hub.conf"
@@ -113,7 +114,6 @@ stop() {
   while kill -0 "$SRV" 2> /dev/null; do i=$((i + 1)); [ "$i" -lt 100 ] || { kill -9 "$SRV"; fail "ade web did not stop within 10 s of SIGTERM"; }; sleep 0.1; done
   wait "$SRV" 2> /dev/null; SRV=""
 }
-trap 'stop; drop_t' EXIT
 # get <path> [curl args]: one request to the server's own address; CODE, the body in $T/body, the headers in $T/head.
 # The cookie jar is used only when asked for (-b), so each request shows what it alone is allowed.
 get() {
