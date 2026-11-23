@@ -424,7 +424,7 @@ help_and_docs() {
     for s in "ade shot url <address>" "ade shot screen" "ade shot agent <name>" "--tg [caption]" "--yes-screen" ".ade/evidence/" \
              "A page or screen shot cannot be redacted" "everything on your screen"; do assert_contains "$T/out" "$s" "ade shot $a"; done; done
   for s in "ade shot url" "ade shot screen" "ade shot agent" ".ade/evidence/" "cannot be redacted" "--tg"; do assert_contains "$REPO/README.md" "$s" "the README"; done
-  sed -n '/^## Unreleased/,/^## [0-9]/p' "$REPO/CHANGELOG.md" | grep -q "ade shot" || fail "the changelog's Unreleased section names ade shot"
+  grep -q "ade shot" "$REPO/CHANGELOG.md" || fail "the changelog names ade shot"   # any section: a release renames Unreleased
   assert_contains "$REPO/docs/stories/A20-screenshots.md" "tests/test_shot.sh" "the story names its tests"
 }
 
