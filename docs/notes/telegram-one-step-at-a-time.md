@@ -25,3 +25,17 @@
   named and the step waits. A failed install is said in one line from the installer's message, for every tool.
   (Since `docs/notes/install-bun.md`: bun is a required tool, installed from its own release, never by Homebrew.)
 - Left for the hub (not changed here): see the pull request.
+
+## Later change (2026-11-23): lock, then auto mode
+- Owner's words: "i think if telegram is on, auto mode should be on?", then yes to: auto only once the bot is locked
+  to an allowlist. Risk: high (who can act through the owner's agent without a question). The hub's `bin/chat` now
+  picks `auto` only when the channel's `access.json` reads an allowlist with the owner's account and no groups.
+- The rule lives in the hub alone. `ade` reads `bin/chat status` (`locked to you` / `not locked`, and the `mode:`
+  line) and never the file. The guide's `allowlist` step was already before the test; it is now checked against the
+  hub's lock, not the policy's name, so an allowlist with groups or with nobody in it is not "locked".
+- No restart is needed on the usual path: `ade` stops the person's session for the test and `bin/schedule install`
+  starts a new one, which starts in the new mode. Only a session that started before the lock needs one; `ade`
+  restarts it when `bin/sessions` shows the main agent idle (as `ade update` does), and otherwise says what to type.
+- The mode is explained only when the run did something, so `ade setup --telegram` on a finished hub stays one line.
+- Tests: `tg_lock_then_auto` in `tests/test_telegram.sh`. The golden guide transcript answers no to Telegram, so it
+  is unchanged.

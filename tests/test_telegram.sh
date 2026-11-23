@@ -26,7 +26,9 @@ for src in ("/usr/bin", "/bin", "/usr/sbin", "/sbin"):
 PY
 }
 # the world: $W/running (the session runs; its content follows "running" in the status line), $W/access (the policy
-# when paired), $W/<name>.fail (a fake fails once per line of it, that line on stderr; brew prints the whole file)
+# when paired), $W/unlocked (the policy allowlist is not a lock: the hub's reason), $W/mode (HUB_CHAT_MODE), $W/stale
+# (the mode of a session that started before the lock), $W/busy (the main agent is busy), $W/oldhub (a hub whose
+# status names neither the lock nor the mode), $W/<name>.fail (a fake fails once per line of it, that line on stderr; brew prints the whole file)
 world() {
   fresh; F="$T/fakebin"; W="$T/tg"; H="$T/hub"; mkdir -p "$F" "$W" "$T/cwd"; farm
   export CALLS="$T/calls" ENVS="$T/envs" FT="$T" ADE_HUB="$H" ADE_TG_WAIT=1; : > "$CALLS"; : > "$ENVS"
@@ -45,8 +47,17 @@ STUB
 echo "chat $*" >> "$CALLS"; env >> "$ENVS"; . "$FT/fails.sh"; W="$FT/tg"
 case "${1:-}" in
   status) if [ -f "$W/running" ]; then echo "acme: running$(cat "$W/running") (pid 4242, since 2026-11-23T01:00Z)"; else echo "acme: stopped"; fi
-    if [ -s "$W/access" ]; then echo "telegram: policy $(cat "$W/access"), groups: 0"; else echo "telegram: not paired yet (bin/chat setup telegram)"; fi ;;
-  stop) [ -f "$W/stop.stuck" ] || rm -f "$W/running"; echo "stopped (pid 4242)" ;;
+    lk="not locked"
+    if [ -s "$W/access" ]; then pol="$(cat "$W/access")"; [ "$pol" != allowlist ] || [ -f "$W/unlocked" ] || lk="locked to you"
+      if [ -f "$W/oldhub" ]; then echo "telegram: policy $pol, groups: 0"; else echo "telegram: policy $pol, groups: 0, $lk"; fi
+    else echo "telegram: not paired yet (bin/chat setup telegram)"; fi
+    [ ! -f "$W/oldhub" ] || exit 0
+    if [ -s "$W/mode" ]; then m="mode: $(cat "$W/mode") (HUB_CHAT_MODE)"
+    elif [ "$lk" = "locked to you" ]; then m="mode: auto (telegram is locked to you; HUB_CHAT_MODE=manual in hub.conf turns it off)"
+    else m="mode: manual (not locked: telegram has groups; in the session: /telegram:access policy allowlist)"; fi
+    [ ! -f "$W/running" ] || [ ! -s "$W/stale" ] || m="$m; the running session is in $(cat "$W/stale"): bin/chat stop, then bin/chat start"
+    echo "$m" ;;
+  stop) [ -f "$W/stop.stuck" ] || rm -f "$W/running" "$W/stale"; echo "stopped (pid 4242)" ;;
   test) [ ! -f "$W/running" ] || { echo "chat: the orchestrator runs (pid 4242) and reads the bot's messages" >&2; exit 1; }
     fails test.fail && exit 1
     echo "chat: sent a test message to the paired owner; waiting up to 120 s for a reply"; echo "chat: reply received from the paired owner" ;;
@@ -56,6 +67,7 @@ case "${1:-}" in
   *) echo "chat: ade must not run this" >&2; exit 1 ;;
 esac
 STUB
+  printf '#!/bin/bash\necho "NAME FOLDER ROLE STATUS"; if [ -f "$FT/tg/busy" ]; then echo "main . orchestrator busy"; else echo "main . orchestrator idle"; fi\n' > "$H/bin/sessions"
   cat > "$H/bin/schedule" <<'STUB'
 #!/bin/bash
 echo "schedule $*" >> "$CALLS"; env >> "$ENVS"; . "$FT/fails.sh"; fails schedule.fail && exit 1
@@ -164,8 +176,8 @@ tg_full_run() {   # 2, 4: every step, to a bot that passed the test; the one end
   grep -q '"bot": "@acme_bot"' "$H/.ade/connections.json" || fail "the channel is recorded with the bot's public name"
   no_token; no_wall; fits
   assert_eq "$(grep -c 'Your turn' "$T/out")" 3 "three steps for the person, each shown once"
-  A setup --check < /dev/null; assert_contains "$T/out" "telegram: on" "ade setup --check: on"
-  A < /dev/null; assert_contains "$T/out" "telegram: on" "ade alone: on"
+  A setup --check < /dev/null; assert_eq "$(grep '^telegram:' "$T/out")" "telegram: on (auto)" "ade setup --check: on, and the mode"
+  A < /dev/null; assert_contains "$T/out" "telegram: on (auto)" "ade alone: on, and the mode"
   : > "$CALLS"; A setup --telegram < /dev/null; assert_eq "$?" 0 "run again, finished"
   assert_eq "$(cat "$T/out")" "Telegram is working: your bot passed its test, and its session is running." "nothing asked or shown again, the one line"
   ! grep -qE "^(keys set|brew|curl|claude|chat (stop|test)|schedule)" "$CALLS" || fail "and nothing done again"
@@ -232,6 +244,66 @@ tg_states() {   # 4: ade setup --check, ade alone and the guide's list say on, n
   A setup < /dev/null; grep -E '\[x\] 6\. Telegram \(optional\) +on' "$T/out" > /dev/null || fail "the guide's list: on"
   world; token_there; plugin_there; talk "later\n" setup
   assert_contains "$T/out" "checked: Telegram is not finished; ade setup --telegram comes back to it" "the guide's check line"; assert_contains "$T/out" "All set" "the guide still ends"
+}
+
+tg_lock_then_auto() {   # never "working" before the bot is locked to the person; then what auto mode means, and the mode shown
+  local AUTO="The chat now runs in auto mode: your main agent acts on your Telegram"
+  line_of() { grep -nF -- "$1" "$T/out" | head -1 | cut -d: -f1; }
+  # the full run: the one line to type, waited for, checked by the hub's own status, then the mode
+  world; person; token_there; plugin_there
+  talk "$START\n$PAIR\n$LOCK\n" setup --telegram; rc=$?; assert_eq "$rc" 0 "it finished"
+  [ -z "${SHOW_EXCHANGE:-}" ] || sed "s#$T#<T>#g" "$T/out" >&2
+  for s in "Your turn: in the same Claude Code window, type:" "  /telegram:access policy allowlist" \
+    "After this, only your Telegram account reaches your main agent, and the" "chat can run in auto mode (no questions at the terminal)." \
+    "checked: only your account reaches the bot" "$AUTO" "messages without asking at the terminal. Claude Code's auto mode still refuses" \
+    "risky actions. To turn it off: HUB_CHAT_MODE=manual in hub.conf."; do assert_contains "$T/out" "$s" "the lock exchange: $s"; done
+  [ "$(line_of "checked: only your account reaches the bot")" -lt "$(line_of "Next: the test.")" ] || fail "locked before the test"
+  [ "$(line_of "checked: the session is running in the background")" -lt "$(line_of "$AUTO")" ] || fail "the mode is said once the new session runs"
+  assert_eq "$(last_line)" "Telegram is working: your bot passed its test, and its session is running." "the ending"; fits; no_wall
+  # the policy allowlist alone is not the lock: the hub says whether only the person gets in
+  world; person; token_there; plugin_there; : > "$W/running"; echo allowlist > "$W/access"; : > "$W/unlocked"
+  A setup --check < /dev/null; assert_contains "$T/out" "telegram: not finished: allow only your account (ade setup --telegram)" "an allowlist that is not a lock: not finished"
+  talk "\nlater\n" setup --telegram
+  assert_contains "$T/out" "  /telegram:access policy allowlist" "the lock step is shown"
+  assert_contains "$T/out" "The bot is not locked to your account alone yet (policy allowlist, not locked)" "Enter with no lock: checked with the hub, and said"
+  assert_eq "$(last_line)" "Telegram is not finished: allow only your account, then ade setup --telegram" "not working until locked"
+  assert_not_contains "$CALLS" "chat test" "no test before the lock"; assert_not_contains "$H/hub.conf" "HUB_CHAT" "and nothing switched on"
+  assert_not_contains "$T/out" "auto mode:" "no word of auto mode before the lock"
+  talk "!rm $W/unlocked\n" setup --telegram; assert_eq "$?" 0 "locked: to the end"
+  assert_contains "$T/out" "$AUTO" "then auto mode is explained"; assert_eq "$(last_line)" "Telegram is working: your bot passed its test, and its session is running." "working"
+  # a bot that is on but no longer locked: on, in manual mode, said so; ade setup --telegram offers the lock, then
+  # restarts the session (it started before the lock) when the main agent is idle
+  world; person; token_there; plugin_there; : > "$W/running"; echo allowlist > "$W/access"; : > "$W/unlocked"; echo HUB_CHAT=telegram >> "$H/hub.conf"
+  A setup --check < /dev/null; assert_eq "$(grep '^telegram:' "$T/out")" "telegram: on (manual: not locked)" "on, manual: not locked"
+  : > "$CALLS"; talk "!rm $W/unlocked; echo manual > $W/stale\n" setup --telegram; rc=$?; assert_eq "$rc" 0 "locked and restarted"
+  assert_contains "$T/out" "checked: only your account reaches the bot" "the lock is checked"
+  assert_contains "$T/out" "Next: restarting the session with your bot, so it runs in auto mode." "said before"
+  assert_contains "$T/out" "checked: the session is running again, in auto mode" "checked after"
+  assert_eq "$(did)" "chat stop;schedule install;" "the restart: the hub's own stop, then its schedule"
+  assert_contains "$T/out" "$AUTO" "and what auto mode means"; assert_eq "$(last_line)" "Telegram is working: your bot passed its test, and its session is running." "working"; fits
+  A setup --check < /dev/null; assert_eq "$(grep '^telegram:' "$T/out")" "telegram: on (auto)" "then on (auto)"
+  # a busy main agent is never interrupted: the person is told exactly how
+  echo manual > "$W/stale"; : > "$W/busy"; : > "$CALLS"
+  A setup --check < /dev/null; assert_eq "$(grep '^telegram:' "$T/out")" "telegram: on (manual: restart for auto, ade setup --telegram)" "a session from before the lock"
+  A setup --telegram < /dev/null; assert_eq "$?" 0 "busy: the step ends"
+  assert_contains "$T/out" "busy, so ade does not restart it. When it is idle, type:" "said"; assert_contains "$T/out" "  ade chat stop && ade setup --telegram" "exactly how"
+  assert_not_contains "$CALLS" "chat stop" "not stopped"; assert_not_contains "$CALLS" "schedule" "nor restarted"
+  assert_not_contains "$T/out" "Telegram is working" "and not called working in the new mode"; fits
+  # a restart that does not come back is said, never believed
+  rm "$W/busy"; touch "$W/service.down"; A setup --telegram < /dev/null
+  assert_contains "$T/out" "The session did not restart" "a restart that fails"; assert_not_contains "$T/out" "auto mode:" "no auto line then"
+  # HUB_CHAT_MODE in hub.conf is the person's own choice: shown, never argued with
+  world; token_there; plugin_there; : > "$W/running"; echo allowlist > "$W/access"; echo HUB_CHAT=telegram >> "$H/hub.conf"; echo manual > "$W/mode"
+  A setup --check < /dev/null; assert_eq "$(grep '^telegram:' "$T/out")" "telegram: on (manual)" "HUB_CHAT_MODE=manual"
+  echo plan > "$W/mode"; A < /dev/null; assert_contains "$T/out" "telegram: on (plan)" "ade alone, another mode"
+  A setup --telegram < /dev/null; assert_eq "$(cat "$T/out")" "Telegram is working: your bot passed its test, and its session is running." "run again: the one line"
+  world; person; token_there; plugin_there; echo manual > "$W/mode"; talk "$START\n$PAIR\n$LOCK\n" setup --telegram
+  assert_contains "$T/out" "The chat runs in manual mode (HUB_CHAT_MODE in hub.conf)." "a run with HUB_CHAT_MODE set says that mode"; assert_not_contains "$T/out" "auto mode:" "not auto"
+  # a hub whose status names neither the lock nor the mode (an older one): as before
+  world; person; token_there; plugin_there; : > "$W/oldhub"; talk "$START\n$PAIR\n$LOCK\n" setup --telegram; assert_eq "$?" 0 "an older hub finishes"
+  assert_not_contains "$T/out" "auto mode:" "no mode is claimed for it"; assert_eq "$(last_line)" "Telegram is working: your bot passed its test, and its session is running." "working"
+  A setup --check < /dev/null; assert_eq "$(grep '^telegram:' "$T/out")" "telegram: on" "and its line names no mode"
+  ! grep -rqE "access\.json" "$CALLS" || fail "ade never reads access.json itself"
 }
 
 tg_steps_fail() {   # 2: each step ade does goes through the shared failure function
@@ -309,6 +381,6 @@ tools_report_brew_failures() {   # the same two failures in ade setup --tools, a
   FAKE_OS=Linux talk "y\n" setup --tools required; grep -qE "^apt-get install -y tmux gitleaks$" "$CALLS" || { cat "$CALLS" "$T/out"; fail "apt has gitleaks (Ubuntu 24.04)"; }
 }
 
-ALL="tg_token_asked_once tg_full_run tg_one_step_at_a_time tg_resumes tg_states tg_steps_fail tg_bun_fails tools_report_brew_failures"
+ALL="tg_token_asked_once tg_full_run tg_lock_then_auto tg_one_step_at_a_time tg_resumes tg_states tg_steps_fail tg_bun_fails tools_report_brew_failures"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

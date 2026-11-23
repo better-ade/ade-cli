@@ -297,7 +297,10 @@ In plain words:
   unless you ask for public (A3).
 - **Only you can talk to it on Telegram.** The Telegram channel pairs your own Telegram account and switches on
   an allowlist before it sends its first test message (A5, done by the hub's `bin/chat`). The bot token is treated like
-  a key.
+  a key. Once the bot is locked to you (the hub decides: an allowlist with your account, no groups), the chat runs in
+  Claude Code's auto mode: your main agent acts on your Telegram messages without asking at the terminal, and auto
+  mode still refuses risky actions. `HUB_CHAT_MODE=manual` in `hub.conf` turns that off. `ade setup --check` shows
+  `telegram: on (auto)` or `telegram: on (manual: not locked)`.
 - **No skipped permissions.** Agents run with Claude Code's normal permission checks. `ade claude` refuses
   `--dangerously-skip-permissions` anywhere in its arguments (A4).
 - **Viewing only reads.** `ade files`, `ade view` and the link picker never edit, move or delete. A path outside the

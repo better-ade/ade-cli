@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+- Telegram: the guide's step is not "working" until the bot is locked to you, as the hub's own `bin/chat status` says
+  it ("locked to you": the policy allowlist, your account in it, no groups), not by the policy's name alone. Once it
+  is, the guide says what follows: the chat runs in auto mode, so your main agent acts on your Telegram messages
+  without asking at the terminal; Claude Code's auto mode still refuses risky actions; `HUB_CHAT_MODE=manual` in
+  `hub.conf` turns that off. Needs a hub whose `bin/chat` chooses the mode this way; an older hub is read as before.
+- `ade`, `ade setup --check`: the line reads `telegram: on (auto)`, `telegram: on (manual: not locked)`, or
+  `telegram: on (<mode>)` when `HUB_CHAT_MODE` is set.
+- `ade setup --telegram` on a bot that is on but not locked shows the one line to type and checks it. A session that
+  started before the lock is restarted so the new mode applies, only when your main agent is idle; a busy one is
+  never interrupted, and you are told what to type (`ade chat stop && ade setup --telegram`).
+
 ## 0.2.6
 - bun already in `~/.bun/bin` but not on the PATH (bun's own installer, or an earlier ade): `ade setup` and
   `ade setup --tools` now add the one marked PATH line to the shell's start file, as after ade's own install, so a new
