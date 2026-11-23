@@ -10,7 +10,9 @@
   Shots go to `<project>/.ade/evidence/<date>/<time>-<name>.png` with a `.txt` beside it (0700 folders, 0600 files,
   never overwritten, ignored by git); `--name N` names one. A page or screen shot cannot be redacted. `--tg [caption]`
   sends the picture to you on Telegram through the hub's new `bin/chat send`, only while the bot is locked to you.
-  `ade doctor` lists Chromium.
+  `ade doctor` lists Chromium. A page never gets a file outside the project, a `.env`, key or `.git` file of it, or a
+  link-local or metadata address. `ade reset`, `ade files` and the other commands that ask a person now also see an
+  agent session by `CLAUDE_PID`, `CLAUDE_CODE_CHILD_SESSION` and `CLAUDE_CODE_EXECPATH`.
 
 ## 0.2.7
 - Telegram: the guide's step is not "working" until the bot is locked to you, as the hub's own `bin/chat status` says

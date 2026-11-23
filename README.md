@@ -357,8 +357,9 @@ In plain words:
   `--dangerously-skip-permissions` anywhere in its arguments (A4).
 - **Screenshots ask first.** `ade shot screen` captures only after your yes at the terminal; from an agent session
   only with `--yes-screen` where the session's settings ask you before that command (the hub's do), never from a pipe
-  or a job. `ade shot url` opens only `http`, `https` and `file` addresses, a file only inside the project, and stops
-  a page from pulling in a file from outside it. Shots are private files (0600) that git ignores; a terminal shot has
+  or a job, and never where a settings file lets the session skip permissions. `ade shot url` opens only `http`,
+  `https` and `file` addresses, a file only inside the project, and stops a page from pulling in a file from outside
+  it, a `.env`, key or `.git` file of it, or a link-local or metadata address. Shots are private files (0600) that git ignores; a terminal shot has
   its keys hidden, a page or screen shot cannot be redacted. `--tg` sends only through the hub, only to you, only
   while the bot is locked to you.
 - **Viewing only reads.** `ade files`, `ade view` and the link picker never edit, move or delete. A path outside the

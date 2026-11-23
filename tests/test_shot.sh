@@ -172,7 +172,23 @@ url_addresses() {
   shot url "file://$P/docs/report.html"; assert_eq "$RC" 0 "a file page with requests"
   assert_eq "$(cdp Fetch.continueRequest | tr -d '\n')" '{"requestId": "R0"}{"requestId": "R1"}{"requestId": "R3"}' "the page, a project file and the web go on"
   assert_eq "$(cdp Fetch.failRequest | tr -d '\n')" '{"errorReason": "BlockedByClient", "requestId": "R2"}{"errorReason": "BlockedByClient", "requestId": "R4"}{"errorReason": "BlockedByClient", "requestId": "R5"}' "files outside it are stopped"
-  assert_contains "$(ev)/$HMS-report.html.txt" "blocked requests: 3" "the sidecar counts them"
+  assert_contains "$(ev)/$HMS-report.html.txt" "blocked requests: 3 (a file outside the project: 2; an address that is not http, https or file: 1)" "the sidecar says what was stopped"
+  # files of the project that hold keys are not for a page either: .env, keys, .git; and no page reaches a link-local or metadata address
+  shot_fixture; mkdir -p "$P/.git/x" "$P/conf"
+  printf '%s\n' "file://$P/.env" "file://$P/conf/.env.local" "file://$P/conf/prod.env" "file://$P/conf/server.pem" "file://$P/conf/tls.key" "file://$P/conf/id_fake" \
+    "file://$P/.git/config" "file://$P/docs/a.css" "http://169.254.169.254/latest/meta-data/" "http://[fd00:ec2::254]/" "http://metadata.google.internal/x" \
+    "https://METADATA.google.internal./x" "http://[::ffff:169.254.1.1]/" "http://[fe80::1]/" "https://example.test/ok.js" > "$T/log/requests"
+  shot url "file://$P/docs/report.html"; assert_eq "$RC" 0 "a file page asking for keys [$(cat "$T/err")]"
+  assert_eq "$(cdp Fetch.continueRequest | tr -d '\n')" '{"requestId": "R0"}{"requestId": "R8"}{"requestId": "R15"}' "only the page, a plain project file and the web go on"
+  assert_eq "$(cdp Fetch.failRequest | grep -c BlockedByClient)" 13 "the rest are stopped"
+  assert_contains "$(ev)/$HMS-report.html.txt" "blocked requests: 13 (a key, .env or .git file of the project: 7; a link-local or metadata address: 6)" "the sidecar says what was stopped"
+  shot_fixture; printf '%s\n' "http://169.254.169.254/latest/" "https://example.test/ok.js" > "$T/log/requests"; shot url https://example.test/
+  assert_eq "$(cdp Fetch.failRequest)" '{"errorReason": "BlockedByClient", "requestId": "R1"}' "a web page reaches no metadata address either"
+  # such an address, or such a file, as the page itself: refused before a browser starts
+  shot_fixture; cp "$P/docs/report.html" "$P/.env"; cp "$P/docs/report.html" "$P/docs/site.key"; cp "$P/docs/report.html" "$P/.git/page.html"
+  printf '%s\n' "http://169.254.169.254/" "http://[fd00:ec2::254]/" "http://metadata.google.internal/" "http://Metadata.Google.Internal./" "http://[fe80::1]/" \
+    "http://[::ffff:169.254.169.254]/" "file://$P/.env" "file://$P/docs/site.key" "file://$P/.git/page.html" > "$T/addresses"
+  while IFS= read -r a; do shot url "$a"; assert_eq "$RC" 2 "refused: [$a]"; no_capture "[$a]"; done < "$T/addresses"
   # from a web page: no file at all
   shot_fixture; printf '%s\n' "file://$P/docs/report.html" "https://example.test/b.css" > "$T/log/requests"
   shot url "https://example.test/"; assert_eq "$RC" 0 "a web page with requests"
@@ -189,32 +205,61 @@ screen_asks() {
   assert_contains "$(ev)/$HMS-screen.txt" "redaction: none: a screen shot cannot be redacted" "the sidecar says it is not redacted"
   for a in 'n\n' '\n' 'maybe\n' ''; do shot_fixture; pty_run "$a" bash "$ADE" shot screen > "$T/out" 2>&1; assert_eq "$?" 2 "answer [$a]"
     assert_contains "$T/out" "nothing captured" "it says so"; no_capture "answer [$a]"; done
-  # --yes-screen at a terminal is the person's own yes; with no terminal there is nobody to ask, flag or not
-  shot_fixture; pty_run '' bash "$ADE" shot screen --yes-screen --name desk > "$T/out" 2>&1 || fail "--yes-screen at a terminal"
-  [ -f "$(ev)/$HMS-desk.png" ] || fail "saved"; grep -q "Capture it now" "$T/out" && fail "--yes-screen still asked"
+  # --yes-screen answers nothing at a terminal: the person is still asked; with no terminal there is nobody to ask, flag or not
+  shot_fixture; pty_run '' bash "$ADE" shot screen --yes-screen > "$T/out" 2>&1; assert_eq "$?" 2 "--yes-screen at a terminal, no answer"; no_capture "--yes-screen, no answer"
+  pty_run 'y\n' bash "$ADE" shot screen --yes-screen --name desk > "$T/out" 2>&1 || fail "--yes-screen and a yes"
+  [ -f "$(ev)/$HMS-desk.png" ] || fail "saved"; assert_contains "$T/out" "Capture it now" "--yes-screen is still asked at a terminal"
   shot_fixture; shot screen < /dev/null; assert_eq "$RC" 2 "no terminal"; assert_contains "$T/err" "asks a person at a terminal" "it says why"; no_capture "no terminal"
   shot screen --yes-screen < /dev/null; assert_eq "$RC" 2 "no terminal, with the flag"; no_capture "no terminal, --yes-screen"
   echo y | bash "$ADE" shot screen > /dev/null 2>&1; assert_eq "$?" 2 "a piped yes"; no_capture "a piped yes"
 }
 
-# AC4: from an agent session: only with --yes-screen and a permission prompt for this very command in that session
+# AC4: from an agent session: only with --yes-screen, only where the session's own settings put a permission prompt
+# before this very command line, and never where any settings file lets the session skip permissions
+ASK='{"permissions": {"ask": ["Bash(*ade shot screen*)"]}}'; BYPASS='{"permissions": {"defaultMode": "bypassPermissions"}}'
+agent_fixture() { shot_fixture; export CLAUDECODE=1; mkdir -p "$P/.claude" "$HOME/.claude"; printf '%s\n' "$ASK" > "$P/.claude/settings.json"; }
+refused() { shot screen --yes-screen "${@:2}"; assert_eq "$RC" 2 "$1"; assert_contains "$T/err" "nothing captured" "$1: it says so"; no_capture "$1"; }
 screen_agent_session() {
   shot_fixture; export CLAUDECODE=1
   shot screen; assert_eq "$RC" 2 "an agent, no flag"; assert_contains "$T/err" "--yes-screen" "it names the flag"
   assert_contains "$T/err" "permission prompt" "it says what the approval is"; no_capture "an agent, no flag"
   pty_run 'y\n' bash "$ADE" shot screen > "$T/out" 2>&1; assert_eq "$?" 2 "an agent cannot answer the question"; no_capture "an agent at a terminal"
   # the flag alone is not an approval: the session's settings must ask the person before this command
-  shot screen --yes-screen; assert_eq "$RC" 2 "the flag, no ask rule"; assert_contains "$T/err" "do not ask before" "it says why"; no_capture "no ask rule"
+  refused "the flag, no settings"; assert_contains "$T/err" "do not ask before" "it says why"
   mkdir -p "$P/.claude"; echo '{"permissions": {"allow": ["Bash(*ade shot screen*)"], "ask": ["Bash(*bin/chat send*)"]}}' > "$P/.claude/settings.json"
-  shot screen --yes-screen; assert_eq "$RC" 2 "an allow rule is not an ask rule"; no_capture "an allow rule"
-  echo 'not json' > "$P/.claude/settings.json"; shot screen --yes-screen; assert_eq "$RC" 2 "unreadable settings"; no_capture "unreadable settings"
-  echo '{"permissions": {"ask": ["Bash(*ade shot screen*)"]}}' > "$P/.claude/settings.json"
-  mkdir -p "$P/src/deep"; cd "$P/src/deep" || fail cd
+  refused "an allow rule is not an ask rule"
+  echo 'not json' > "$P/.claude/settings.json"; refused "unreadable settings"
+  # the rule and the flag: captured, from a folder below the project too; the sidecar says how it was approved
+  agent_fixture; mkdir -p "$P/src/deep"; cd "$P/src/deep" || fail cd
   shot screen --yes-screen; assert_eq "$RC" 0 "the flag and an ask rule [$(cat "$T/err")]"; [ -f "$(ev)/$HMS-screen.png" ] || fail "saved"
   assert_contains "$(ev)/$HMS-screen.txt" "approved: the session's permission prompt" "the sidecar says how it was approved"
-  # a session that skips permissions shows no prompt, so nothing approved it
-  shot_fixture; export CLAUDECODE=1; mkdir -p "$P/.claude"; echo '{"permissions": {"ask": ["Bash(*ade shot screen*)"], "defaultMode": "bypassPermissions"}}' > "$P/.claude/settings.json"
-  shot screen --yes-screen; assert_eq "$RC" 2 "a session that skips permissions"; no_capture "bypassPermissions"
+  agent_fixture; printf '%s\n' '{"permissions": {"ask": ["Bash(ade shot screen:*)"]}}' > "$P/.claude/settings.local.json"; echo '{}' > "$P/.claude/settings.json"
+  shot screen --yes-screen --name desk; assert_eq "$RC" 0 "a prefix rule in settings.local.json [$(cat "$T/err")]"
+  # a session that may skip permissions shows no prompt, so nothing approved it: wherever a settings file says so
+  agent_fixture; printf '%s\n' '{"permissions": {"ask": ["Bash(*ade shot screen*)"], "defaultMode": "bypassPermissions"}}' > "$P/.claude/settings.json"; refused "bypass in the project's settings.json"
+  agent_fixture; printf '%s\n' "$BYPASS" > "$P/.claude/settings.local.json"; refused "bypass in the project's settings.local.json"
+  agent_fixture; printf '%s\n' "$BYPASS" > "$HOME/.claude/settings.json"; refused "bypass in ~/.claude/settings.json"
+  agent_fixture; mkdir -p "$T/cfg"; printf '%s\n' "$BYPASS" > "$T/cfg/settings.json"; CLAUDE_CONFIG_DIR="$T/cfg" refused "bypass in \$CLAUDE_CONFIG_DIR/settings.json"
+  agent_fixture; echo 'not json' > "$HOME/.claude/settings.json"; refused "user settings that cannot be read"
+  agent_fixture; echo 'not json' > "$P/.claude/settings.local.json"; refused "local settings that cannot be read"
+  # only the session's project counts: not a folder the agent made and entered, not a parent of the project
+  agent_fixture; rm "$P/.claude/settings.json"; mkdir -p "$T/x/.claude"; printf '%s\n' '{"permissions": {"ask": ["Bash(*)"]}}' > "$T/x/.claude/settings.json"
+  cd "$T/x" || fail cd; refused "a folder the agent made, with its own settings"
+  cd "$P" || fail cd; mkdir -p "$T/.claude"; printf '%s\n' "$ASK" > "$T/.claude/settings.json"; refused "a rule only in a parent of the project"; rm -rf "$T/.claude"
+  mkdir -p "$P/sub/.claude"; printf '%s\n' "$ASK" > "$P/sub/.claude/settings.json"; cd "$P/sub" || fail cd; refused "a rule only in a folder below the project's root"
+  # CLAUDE_PROJECT_DIR, when the session sets it, is the project: its settings count and no other's
+  agent_fixture; mkdir -p "$T/other/.claude"; echo '{}' > "$T/other/.claude/settings.json"; CLAUDE_PROJECT_DIR="$T/other" refused "the session's project has no rule"
+  agent_fixture; rm "$P/.claude/settings.json"; printf '%s\n' "$ASK" > "$T/other/.claude/settings.json" 2>/dev/null || { mkdir -p "$T/other/.claude"; printf '%s\n' "$ASK" > "$T/other/.claude/settings.json"; }
+  CLAUDE_PROJECT_DIR="$T/other" shot screen --yes-screen; assert_eq "$RC" 0 "the session's project has the rule [$(cat "$T/err")]"
+  # the rule must match the command line as it is: an exact rule for fewer arguments does not
+  agent_fixture; printf '%s\n' '{"permissions": {"ask": ["Bash(ade shot screen --yes-screen)"]}}' > "$P/.claude/settings.json"
+  refused "an exact rule, a longer command" --name desk; refused "an exact rule, --tg added" --tg hello
+  shot screen --yes-screen; assert_eq "$RC" 0 "an exact rule, the exact command [$(cat "$T/err")]"
+  # every sign of an agent session counts, also with the usual three variables removed and a pseudo-terminal made
+  local v
+  for v in CLAUDE_PID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_EXECPATH CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID; do
+    shot_fixture; export "$v=1"; pty_run 'y\n' bash "$ADE" shot screen --yes-screen < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "$v set, a pseudo-terminal"
+    assert_contains "$T/out" "do not ask before" "$v: an agent session"; no_capture "$v"; unset "$v"; done
   unset CLAUDECODE
 }
 
@@ -279,12 +324,16 @@ agent_redacted() {
     printf -- '-----BEGIN RSA PRIVATE KEY-----\n%s\n%s\n-----END RSA PRIVATE KEY-----\nafter the key\n' "$pk" "$pk"
     printf '<script>alert(1)</script> & <img src=x onerror=alert(2)>\n'
     printf '\033]0;title\007\033[2J\033[10;10Hmoved\033]8;;https://evil.example.test\033\\link\033]8;;\033\\\n'
-    printf 'bell\007 and \033[1;38;5;196;48;2;1;2;3mloud\033[0m\n'; } > "$T/log/pane.raw"
+    printf 'bell\007 and \033[1;38;5;196;48;2;1;2;3mloud\033[0m\n'
+    # characters that draw nothing (a soft hyphen, a grapheme joiner, a zero-width space) inside a key; cookies
+    printf 'soft sk-fake\302\255fake\315\217fakefake end\n'; printf 'zw %s\342\200\213%s end\n' "${long%????????????????????}" "$(printf 'Q7%.0s' 1 2 3 4 5 6 7 8 9 10)"
+    printf 'Cookie: sid=%s; theme=dark\n' "c-$pw"; printf 'set-cookie: sid=%s; HttpOnly\n' "c-$pw"; } > "$T/log/pane.raw"
   shot agent db; assert_eq "$RC" 0 "a terminal shot [$(cat "$T/err")]"
-  for a in "$bot" "$run" "$sk" "$long" "$pw" "$pk" "fakefakefakefake"; do
+  for a in "$bot" "$run" "$sk" "$long" "$pw" "$pk" "fakefakefakefake" "Q7Q7Q7Q7" "theme=dark" "HttpOnly"; do
     grep -qF -- "$a" "$T/log/page.html" && fail "a secret reached the picture: [$a]"; grep -rqF -- "$a" "$(ev)" && fail "a secret reached the evidence folder: [$a]"; done
   for a in "bot <hidden token> end" "key <hidden key> end" "run <hidden> end" "split <hidden key> end" "DB_PASSWORD=<hidden>" "Authorization: <hidden>" \
-           "https://<hidden>@example.test/x" "<hidden private key>" "after the key"; do
+           "https://<hidden>@example.test/x" "<hidden private key>" "after the key" \
+           "soft <hidden key> end" "zw <hidden> end" "Cookie: <hidden>" "set-cookie: <hidden>"; do
     python3 - "$T/log/page.html" "$a" <<'PY' || fail "the picture's text should read [$a]"
 import html, re, sys
 text = html.unescape(re.sub(r"<[^>]+>", "", open(sys.argv[1], encoding="utf-8").read().split("<pre", 1)[1]))
@@ -298,7 +347,7 @@ PY
   grep -q "evil.example.test\|title" "$T/log/page.html" && fail "a title or link sequence reached the page"
   assert_contains "$T/log/page.html" "moved" "the text after a cursor sequence stays"
   assert_contains "$T/log/page.html" 'color:#ff0000;background:#010203;font-weight:bold">loud</span>' "256 and true colours"
-  assert_contains "$(ev)/$HMS-agent-db.txt" "redaction: keys and tokens hidden in the captured text before rendering (8 hidden)" "the sidecar says what was done"
+  assert_contains "$(ev)/$HMS-agent-db.txt" "redaction: keys and tokens hidden in the captured text before rendering (12 hidden)" "the sidecar says what was done"
 }
 
 # AC8: where shots go: the project's evidence folder, private, named, never overwritten, with a sidecar
@@ -332,6 +381,12 @@ redaction: none: a page shot cannot be redacted; look at it before you share it"
   shot_fixture; mkdir -p "$P/.ade" "$T/elsewhere"; ln -s "$T/elsewhere" "$P/.ade/evidence"; shot url https://example.test/; assert_eq "$RC" 1 "a linked evidence folder"
   assert_contains "$T/err" "symbolic link" "it says why"; [ -z "$(ls "$T/elsewhere")" ] || fail "written through the link"
   shot_fixture; ln -s "$T/log" "$P/.ade"; shot url https://example.test/; assert_eq "$RC" 1 "a linked .ade"; [ ! -e "$T/log/evidence" ] || fail "written through the link"
+  shot_fixture; mkdir -p "$P/.ade/evidence" "$T/elsewhere"; ln -s "$T/elsewhere" "$P/.ade/evidence/$DAY"; shot url https://example.test/; assert_eq "$RC" 1 "a linked day folder"
+  assert_contains "$T/err" "symbolic link" "it says why"; [ -z "$(ls "$T/elsewhere")" ] || fail "written through the linked day folder"
+  # a link planted where the shot or its sidecar would go: never written through; the shot takes the next free name
+  shot_fixture; mkdir -p "$(ev)" "$T/elsewhere"; ln -s "$T/elsewhere/a.png" "$(ev)/$HMS-example.test.png"; ln -s "$T/elsewhere/b.txt" "$(ev)/$HMS-example.test-2.txt"
+  shot url https://example.test/; assert_eq "$RC" 0 "planted file links"; assert_eq "$(cat "$T/out")" "$(ev)/$HMS-example.test-3.png" "the next free name"
+  [ -z "$(ls "$T/elsewhere")" ] || fail "written through a planted file link"
   # inside the hub (no project): the hub's own evidence folder; nowhere: refused
   shot_fixture; cd "$T/hub" || fail cd; shot url https://example.test/; assert_eq "$RC" 0 "in the hub [$(cat "$T/err")]"
   assert_eq "$(cat "$T/out")" "$T/hub/.ade/evidence/$DAY/$HMS-example.test.png" "the hub's evidence folder"

@@ -2020,7 +2020,7 @@ shq() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; }
 # confirm <question>: yes or no (Enter, or no answer, is no); ade clean and ade restore, at a terminal
 confirm() { local ASK_EOF=no; ask_yn "$1" n; }
 # reset and uninstall ask a person at a terminal: answers come from /dev/tty, never a pipe or an agent session
-agent_context() { [ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}${CLAUDE_CODE_SESSION_ID:-}" ]; }
+agent_context() { [ -n "${CLAUDECODE:-}${CLAUDE_CODE_ENTRYPOINT:-}${CLAUDE_CODE_SESSION_ID:-}${CLAUDE_PID:-}${CLAUDE_CODE_CHILD_SESSION:-}${CLAUDE_CODE_EXECPATH:-}" ]; }
 tty_ready() {
   agent_context && die 2 "ade $1 asks a person at a terminal; it refuses inside a Claude Code session (an agent cannot answer for you); nothing changed"
   { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || die 2 "ade $1 asks a person at a terminal; it refuses piped or missing answers; nothing changed"
@@ -4417,12 +4417,14 @@ Screenshots as proof: a PNG and a .txt beside it (what, when, the command, the a
 yours alone (0700, files 0600), a shot never replaces another, and git ignores them unless you add one with -f.
 
   url <address>   a page, through the headless Chromium the hub already has (Playwright's; ade downloads nothing).
-                  http, https and file addresses only; a file only inside this project. --full-page: the whole
+                  http, https and file addresses only; a file only inside this project, never a .env, a key
+                  or a .git file; no link-local or metadata address. --full-page: the whole
                   page, not only the window; --width W: the window's width (320 to 3840, default 1280)
   screen          everything on your screen, including other apps (macOS: screencapture -x; Linux and the ADE
-                  Computer: the X display). At a terminal ade asks first. From an agent session it runs only with
-                  --yes-screen and only where the session asks you before this command (the hub's settings do):
-                  your Allow at that permission prompt is the approval. ade never changes a system setting
+                  Computer: the X display). At a terminal ade always asks first. From an agent session it runs
+                  only with --yes-screen, only where the session's settings ask you before this command (the
+                  hub's do) and none lets it skip permissions: your Allow at that prompt is the approval. ade
+                  never changes a system setting
   agent <name>    a focus agent's tab in ade ui, as a picture of its text; keys and tokens are hidden first
   --tg [caption]  then send the picture to you on Telegram, through the hub's bin/chat send (only when the bot is
                   locked to you). The caption comes right after --tg; it is cleaned and cut to 200 characters
@@ -4447,7 +4449,9 @@ def shown(s, n=200): return "".join(c if " " <= c <= "~" else "?" for c in s)[:n
 # of ade web (A19): Authorization headers, bearer tokens, the value after a name ending in password, secret, token or
 # key, the user and password of a URL, AWS key ids, sk_ keys, GitHub tokens, private key blocks
 ESC = re.compile(r"\x1b\[([0-?]*)([ -/]*)([@-~])|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)?|\x1b[@-_]?|[\x00-\x08\x0b-\x1f\x7f\x80-\x9f]")
-MARKS = re.compile("[​-‏ -‮⁠-⁩﻿]")
+# characters that draw nothing or reorder text (default-ignorable and zero-width ones): removed before any matching, so one cannot split a key
+MARKS = re.compile("[\u00ad\u034f\u061c\u115f\u1160\u17b4\u17b5\u180b-\u180f\u200b-\u200f\u2028-\u202e\u2060-\u206f\u3164\ufe00-\ufe0f\ufeff\uffa0\ufff0-\ufff8"
+                   "\U0001bca0-\U0001bca3\U0001d173-\U0001d17a\U000e0000-\U000e0fff]")
 PK_BEGIN = re.compile(r"-----BEGIN [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----")
 PK_END = re.compile(r"-----END [A-Z0-9 ]{0,40}PRIVATE KEY(?: BLOCK)?-----")
 PK_LINE = re.compile(r"(?:[A-Za-z0-9+/=]+|<hidden>)")
@@ -4455,6 +4459,7 @@ PK = "<hidden private key>"
 HIDE = [(re.compile(r"[0-9]{6,12}:[A-Za-z0-9_-]{30,}"), "<hidden token>"), (re.compile(r"[A-Za-z0-9]{16,}\.[A-Za-z0-9_-]{8,}"), "<hidden key>"),
         (re.compile(r"(sk|pk|ak|key)-[A-Za-z0-9_-]{8,}"), "<hidden key>"), (re.compile(r"[A-Za-z0-9_-]{32,}"), "<hidden>"),
         (re.compile(r"(?i)(authorization\s{0,8}[:=]\s{0,8})\S.*"), r"\1<hidden>"),
+        (re.compile(r"(?i)((?:set-)?cookie\s{0,8}[:=]\s{0,8})\S.*"), r"\1<hidden>"),
         (re.compile(r"(?i)\b(bearer\s{1,8})[A-Za-z0-9._~+/=-]{8,}"), r"\1<hidden>"),
         (re.compile(r"(?i)((?:password|passwd|secret|token|key)(?:\\?[\"'])?\s{0,8}[:=]\s{0,8})(?:\\?\"[^\"]*\"?|\\?'[^']*'?|<hidden[^>]{0,16}>|[^\s\"'&,;]+)"), r"\1<hidden>"),
         (re.compile(r"(://)[^\s/@]{1,512}(@)"), r"\1<hidden>\2"),
@@ -4474,7 +4479,7 @@ def hide(text, sty=None):
             out.append(rep); so.extend([HID] * len(rep)); last = m.end()
         out.append(text[last:]); so.extend(sty[last:]); text = "".join(out); sty = so
     return text, sty, n
-def plain_hide(s, n): return hide(MARKS.sub("", ESC.sub(" ", s)))[0].strip()[:n]
+def plain_hide(s, n): return hide(ESC.sub(" ", MARKS.sub("", s)))[0].strip()[:n]
 
 # --- plan: the name and the address, checked before anything is captured ---
 def clean_name(name, default):
@@ -4485,6 +4490,19 @@ def clean_name(name, default):
     if not name: die(2, "a shot's name is letters, digits, . _ and - (no path, no leading . or -); nothing captured")
     return name
 def inside(path, root): return path == root or path.startswith(root.rstrip("/") + "/")
+def keyfile(path, root):
+    """a file of the project that the hub never sends either: .env, a key, anything under .git"""
+    parts = os.path.relpath(path, root).split(os.sep); n = parts[-1]
+    return ".git" in parts[:-1] or n == ".env" or n.startswith(".env.") or n.endswith((".env", ".pem", ".key")) or n.startswith("id_")
+def meta_host(host):
+    """a link-local or cloud metadata address: 169.254.0.0/16, fe80::/10, fd00:ec2::254, metadata.google.internal"""
+    import ipaddress
+    h = (host or "").strip("[]").rstrip(".").lower()
+    if h == "metadata.google.internal": return True
+    try: ip = ipaddress.ip_address(h)
+    except ValueError: return False
+    if ip.version == 6 and ip.ipv4_mapped: ip = ip.ipv4_mapped
+    return ip.is_link_local or ip == ipaddress.ip_address("fd00:ec2::254")
 def address(a, root):
     """the address to open, or exit 2: http, https or file only; a file only a regular file inside the project"""
     no = "ade shot url takes an http, https or file address (a file only inside this project); nothing captured"
@@ -4493,12 +4511,14 @@ def address(a, root):
     except ValueError: die(2, no)
     if u.scheme in ("http", "https"):
         if not host or u.username is not None or u.password is not None or "@" in u.netloc: die(2, no + " (no user or password in the address)")
+        if meta_host(host): die(2, "ade shot url does not open a link-local or metadata address; nothing captured")
         return a, host
     if u.netloc not in ("", "localhost") or u.query or u.fragment: die(2, no)
     raw = urllib.parse.unquote(u.path)
     if "\x00" in raw or not raw.startswith("/") or os.path.islink(raw) or not os.path.isfile(raw): die(2, no)
     real = os.path.realpath(raw)
     if not inside(real, os.path.realpath(root)): die(2, no)
+    if keyfile(real, os.path.realpath(root)): die(2, "ade shot url does not open a .env, a key or a .git file of the project; nothing captured")
     return "file://" + urllib.parse.quote(real), os.path.basename(real)
 if op == "plan":
     mode, root, name, target, width = A
@@ -4515,19 +4535,35 @@ if op == "plan":
 if op == "caption":
     print(" ".join(plain_hide(A[0], 4000).split())[:200].strip()); sys.exit(0)
 
-# --- asks: this agent session is asked before `ade shot screen` (its nearest .claude/settings.json, here or above) ---
+# --- asks <project root> <the command line>: this agent session is asked before this very command ---
+# The session's settings are the project's (.claude/settings.json and settings.local.json in CLAUDE_PROJECT_DIR when the
+# session sets it, else the git or hub root ade saves into; never the shell's folder, a folder below or above), the
+# user's (CLAUDE_CONFIG_DIR or ~/.claude) and the managed ones of this system. Any of them that lets the session skip
+# permissions, or cannot be read, means no prompt can be counted on. Then one ask rule of the project's or the user's
+# must match the command line as it is (a wildcard or prefix rule; an exact rule only for exactly that command).
 if op == "asks":
-    d = os.getcwd()
-    while True:
-        f = os.path.join(d, ".claude", "settings.json")
-        if os.path.isfile(f):
-            try: perms = json.load(open(f, encoding="utf-8")).get("permissions") or {}
-            except Exception: sys.exit(1)
-            if not isinstance(perms, dict) or perms.get("defaultMode") == "bypassPermissions": sys.exit(1)
-            pats = [r[5:-1] for r in perms.get("ask") or [] if isinstance(r, str) and r.startswith("Bash(") and r.endswith(")")]
-            sys.exit(0 if any(fnmatch.fnmatchcase("ade shot screen --yes-screen", p) for p in pats) else 1)
-        if os.path.dirname(d) == d: sys.exit(1)
-        d = os.path.dirname(d)
+    root, cmdline = A
+    project = os.environ.get("CLAUDE_PROJECT_DIR") or root
+    user = os.environ.get("CLAUDE_CONFIG_DIR") or os.path.expanduser("~/.claude")
+    files = [os.path.join(project, ".claude", "settings.json"), os.path.join(project, ".claude", "settings.local.json"), os.path.join(user, "settings.json")]
+    managed = ["/Library/Application Support/ClaudeCode/managed-settings.json", "/etc/claude-code/managed-settings.json"]
+    rules = []
+    for f in files + managed:
+        if not os.path.lexists(f): continue
+        try:
+            with open(f, encoding="utf-8") as fh: d = json.load(fh)
+        except Exception: sys.exit(1)
+        if not isinstance(d, dict): sys.exit(1)
+        perms = d.get("permissions", {})
+        if not isinstance(perms, dict): sys.exit(1)
+        if "bypass" in str(perms.get("defaultMode", "")).lower() or "bypass" in str(d.get("defaultMode", "")).lower(): sys.exit(1)
+        ask = perms.get("ask") or []
+        if not isinstance(ask, list): sys.exit(1)
+        if f in files: rules += [r[5:-1] for r in ask if isinstance(r, str) and r.startswith("Bash(") and r.endswith(")")]
+    for r in rules:
+        if r.endswith(":*"): r = r[:-2] + "*"   # the older way to write a prefix rule
+        if fnmatch.fnmatchcase(cmdline, r): sys.exit(0)
+    sys.exit(1)
 
 # --- Chromium: Playwright's, where the hub finds it (PLAYWRIGHT_BROWSERS_PATH, else its cache folders); a system browser does not count ---
 def chromium():
@@ -4554,7 +4590,7 @@ class Chrome:
     No port is opened. Every request the page makes is held (Fetch) and let go only when allowed() says so."""
     def __init__(self, exe, tmp, width, height, allowed, deadline):
         self.allowed = allowed; self.deadline = deadline; self.n = 0; self.buf = bytearray(); self.loaded = False
-        self.status = None; self.blocked = 0; self.session = None
+        self.status = None; self.blocked = {}; self.session = None
         profile = os.path.join(tmp, "profile"); os.mkdir(profile, 0o700)
         args = [exe, "--headless", "--remote-debugging-pipe", "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check",
                 "--disable-gpu", "--hide-scrollbars", "--mute-audio", "--disable-extensions", "--disable-background-networking",
@@ -4603,9 +4639,9 @@ class Chrome:
     def event(self, m):
         me = m.get("method"); p = m.get("params") or {}
         if me == "Fetch.requestPaused":
-            ok = self.allowed(str((p.get("request") or {}).get("url", "")))
-            if ok: self.send("Fetch.continueRequest", {"requestId": p.get("requestId")})
-            else: self.blocked += 1; self.send("Fetch.failRequest", {"requestId": p.get("requestId"), "errorReason": "BlockedByClient"})
+            why = self.allowed(str((p.get("request") or {}).get("url", "")))
+            if not why: self.send("Fetch.continueRequest", {"requestId": p.get("requestId")})
+            else: self.blocked[why] = self.blocked.get(why, 0) + 1; self.send("Fetch.failRequest", {"requestId": p.get("requestId"), "errorReason": "BlockedByClient"})
         elif me == "Page.javascriptDialogOpening": self.send("Page.handleJavaScriptDialog", {"accept": False})
         elif me == "Page.loadEventFired": self.loaded = True
         elif me == "Network.responseReceived" and self.status is None and p.get("type") == "Document":
@@ -4647,14 +4683,22 @@ def capture(url, tmp, width, full, file_root, element=None):
     try: total = min(300, max(5, int(os.environ.get("ADE_SHOT_TIMEOUT", "45"))))
     except ValueError: total = 45
     root = os.path.realpath(file_root) if file_root else None
+    OUT, KEY, META, OTHER = ("a file outside the project", "a key, .env or .git file of the project", "a link-local or metadata address",
+                             "an address that is not http, https or file")
     def allowed(u):
+        """None when the page may have it, else why not"""
         s = u.split(":", 1)[0].lower()
-        if s in ("http", "https"): return not element
-        if s in ("data", "blob", "about"): return True
-        if s != "file" or not root: return False
-        try: sp = urllib.parse.urlsplit(u)
-        except ValueError: return False
-        return sp.netloc in ("", "localhost") and inside(os.path.realpath(urllib.parse.unquote(sp.path)), root)
+        if s in ("data", "blob", "about"): return None
+        try: sp = urllib.parse.urlsplit(u); host = sp.hostname
+        except ValueError: return OTHER
+        if s in ("http", "https", "ws", "wss"):
+            if meta_host(host): return META
+            return OTHER if element else None
+        if s != "file": return OTHER
+        if not root or sp.netloc not in ("", "localhost"): return OUT
+        path = os.path.realpath(urllib.parse.unquote(sp.path))
+        if not inside(path, root): return OUT
+        return KEY if keyfile(path, root) and not element else None
     def bye(n, _): raise KeyboardInterrupt
     for s in (signal.SIGTERM, signal.SIGHUP): signal.signal(s, bye)
     c = None; notes = []
@@ -4689,7 +4733,7 @@ def capture(url, tmp, width, full, file_root, element=None):
         except ValueError: data = b""
         if data[:8] != b"\x89PNG\r\n\x1a\n": raise Timeout("the browser did not return a PNG")
         if c.status is not None and url.startswith("http"): notes.insert(0, "http status: %d" % c.status)
-        if c.blocked: notes.append("blocked requests: %d (a file outside the project, or an address that is not http, https or file)" % c.blocked)
+        if c.blocked: notes.append("blocked requests: %d (%s)" % (sum(c.blocked.values()), "; ".join("%s: %d" % (k, c.blocked[k]) for k in (OUT, KEY, META, OTHER) if k in c.blocked)))
         return data, notes
     except Timeout as e: die(1, "%s; nothing saved" % e)
     except OSError as e: die(1, "the browser stopped before the shot was taken (%s); nothing saved" % (e.strerror or e.__class__.__name__))
@@ -4829,31 +4873,41 @@ if op == "save":
     w, h = struct.unpack(">II", data[16:24])
     try: now = datetime.datetime.strptime(os.environ.get("ADE_NOW", ""), "%Y-%m-%dT%H:%M:%SZ")
     except ValueError: now = datetime.datetime.now(datetime.timezone.utc)
-    folder = root
+    # each folder is opened from its parent's descriptor without following a link, and everything is created through
+    # the day folder's descriptor: no level can be swapped for a link between the check and the write
+    DIR = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0); NOF = getattr(os, "O_NOFOLLOW", 0)
+    try: fd = os.open(root, DIR)
+    except OSError as e: die(1, "could not open %s (%s); nothing saved" % (shown(root), e.strerror))
+    folder = root; ev_fd = None
     for part, mode_bits in ((".ade", 0o755), ("evidence", 0o700), (now.strftime("%Y-%m-%d"), 0o700)):
         folder = os.path.join(folder, part)
-        if os.path.islink(folder) or (os.path.lexists(folder) and not os.path.isdir(folder)):
-            die(1, "%s is a symbolic link or not a folder; nothing saved" % shown(folder))
-        try: os.mkdir(folder, mode_bits)
+        try: os.mkdir(part, mode_bits, dir_fd=fd)
         except FileExistsError: pass
         except OSError as e: die(1, "could not make %s (%s); nothing saved" % (shown(folder), e.strerror))
+        try: nfd = os.open(part, DIR | NOF, dir_fd=fd)
+        except OSError: die(1, "%s is a symbolic link or not a folder; nothing saved" % shown(folder))
         if mode_bits == 0o700:
-            try: os.chmod(folder, 0o700)
+            try: os.fchmod(nfd, 0o700)
             except OSError: die(1, "%s is not a folder of yours; nothing saved" % shown(folder))
-    def create(path): return os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        if part == "evidence": ev_fd = nfd
+        fd = nfd
+    def create(name, at): return os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOF, 0o600, dir_fd=at)
+    def there(name):
+        try: os.stat(name, dir_fd=fd, follow_symlinks=False); return True
+        except OSError: return False
     try:   # shots can hold private things: git does not see them unless one is added with -f
-        with os.fdopen(create(os.path.join(os.path.dirname(folder), ".gitignore")), "w") as f: f.write("*\n")
+        with os.fdopen(create(".gitignore", ev_fd), "w") as f: f.write("*\n")
     except OSError: pass
     stem = None
     for n in range(1, 1000):
-        s = os.path.join(folder, "%s-%s%s" % (now.strftime("%H%M%S"), name, "" if n == 1 else "-%d" % n))
-        if os.path.lexists(s + ".txt"): continue
-        try: fd = create(s + ".png")
+        s = "%s-%s%s" % (now.strftime("%H%M%S"), name, "" if n == 1 else "-%d" % n)
+        if there(s + ".txt") or there(s + ".png"): continue
+        try: out = create(s + ".png", fd)
         except FileExistsError: continue
         except OSError as e: die(1, "could not write in %s (%s); nothing saved" % (shown(folder), e.strerror))
         stem = s; break
     if stem is None: die(1, "too many shots with that name this second; nothing saved")
-    with os.fdopen(fd, "wb") as f: f.write(data)
+    with os.fdopen(out, "wb") as f: f.write(data)
     what = {"url": "a page (ade shot url)", "screen": "the whole screen (ade shot screen)", "agent": "an agent's terminal (ade shot agent)"}[mode]
     lines = ["what: " + what, "when: " + now.strftime("%Y-%m-%dT%H:%M:%SZ"), "command: " + " ".join(plain_hide(os.environ.get("ADE_SHOT_CMD", ""), 4000).split())[:500]]
     if mode == "url": lines.append("address: " + plain_hide(urllib.parse.unquote(target) if target.startswith("file://") else target, 2048))
@@ -4863,25 +4917,26 @@ if op == "save":
     lines.append("size: %dx%d px, %d bytes" % (w, h, len(data)))
     lines += [l for l in notes if l.startswith("redaction: ")] or [
         "redaction: none: a %s shot cannot be redacted; look at it before you share it" % ("page" if mode == "url" else "screen")]
-    with os.fdopen(create(stem + ".txt"), "w", encoding="utf-8") as f: f.write("\n".join(lines) + "\n")
-    print(stem + ".png"); sys.exit(0)
+    with os.fdopen(create(stem + ".txt", fd), "w", encoding="utf-8") as f: f.write("\n".join(lines) + "\n")
+    print(os.path.join(folder, stem + ".png")); sys.exit(0)
 die(2, "unknown shot step")
 PY
   python3 -I -c "$src" "$@"
 }
-# shot_screen_gate <yes-screen 0|1>: who may capture the whole screen. A person at a terminal, after a yes (the flag is
-# that yes). An agent session: only with --yes-screen and only where its settings put a permission prompt before this
-# command (the person's Allow there is the approval; ade cannot see the prompt, so it checks that the rule is there
-# and that the session does not skip permissions). Nobody else: a pipe or a job has no one to ask. SHOT_NOTE says how.
+# shot_screen_gate <yes-screen 0|1> <project root>: who may capture the whole screen. A person at a terminal, after a
+# yes typed there (the flag answers nothing). An agent session: only with --yes-screen and only where its settings put
+# a permission prompt before this command line (the person's Allow there is the approval; ade cannot see the prompt,
+# so it checks that the rule is there and that no settings file lets the session skip permissions: shot_py asks).
+# Nobody else: a pipe or a job has no one to ask. SHOT_NOTE says how it was approved.
 shot_screen_gate() {
   local what="ade shot screen captures everything on your screen, including other apps"
   if agent_context; then
     [ "$1" = 1 ] || die 2 "$what. From an agent session it runs only with --yes-screen, and only after your own Allow at the session's permission prompt for this command; nothing captured"
-    shot_py asks || die 2 "$what. This session's settings do not ask before \`ade shot screen\` (no permissions.ask rule for it in the nearest .claude/settings.json, or the session skips permissions), so nobody approved it; nothing captured (run it from the hub, whose settings ask)"
+    shot_py asks "$2" "$SHOT_CMD" || die 2 "$what. This session's settings do not ask before this command (no permissions.ask rule matching it in the project's .claude/settings.json, or a settings file lets the session skip permissions or cannot be read), so nobody approved it; nothing captured (the hub's settings ask)"
     SHOT_NOTE="approved: the session's permission prompt for this command (--yes-screen)"; return 0
   fi
   { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || die 2 "$what, so ade asks a person at a terminal first; refused without one; nothing captured"
-  SHOT_NOTE="approved: a yes at the terminal"; [ "$1" = 1 ] && return 0
+  SHOT_NOTE="approved: a yes at the terminal"
   ask_say "$what."; tty_confirm "Capture it now?" || die 2 "nothing captured"
 }
 # shot_screen <png>: the whole desktop into the file; ade changes no system setting
@@ -4950,7 +5005,7 @@ EOF
   SHOT_TMP="$(mk_tmp)" || die 1 "could not make a temp folder"; trap 'rm_tmp "$SHOT_TMP"' EXIT; trap 'exit 130' INT TERM HUP
   case "$mode" in
     url) note="$(shot_py url "$target" "$root" "$width" "$full" "$SHOT_TMP")" || exit $? ;;
-    screen) shot_screen_gate "$yes"; shot_screen "$SHOT_TMP/shot.png"; note="$SHOT_NOTE" ;;
+    screen) shot_screen_gate "$yes" "$root"; shot_screen "$SHOT_TMP/shot.png"; note="$SHOT_NOTE" ;;
     agent) shot_pane "$target" "$SHOT_TMP"; target="$SHOT_WIN"; note="$(shot_py pane "$SHOT_TMP")" || exit $? ;;
   esac
   out="$(ADE_SHOT_CMD="$SHOT_CMD" shot_py save "$root" "$mode" "$name" "$SHOT_TMP/shot.png" "$target" "$note")" || exit $?

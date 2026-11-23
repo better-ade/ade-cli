@@ -23,18 +23,37 @@ library only.
   `#rrggbb` values ade computes from the colour sequences (nothing from the pane is copied into a style), and a
   Content-Security-Policy of `default-src 'none'` lets it load and run nothing.
 - **Redaction happens on text, before any pixel.** Escape sequences are parsed out first (so one cannot split a key),
-  then the hub's rule (`bin/agent.py`: bot tokens, `<id>.<secret>` keys, `sk-` keys, runs of 32 or more) and the
-  additions of A19 run on each line; styles are carried across the replacements. `tmux capture-pane -J` joins lines
+  characters that draw nothing (soft hyphen, grapheme joiner, zero-width and other default-ignorable ones)
+  are removed, then the hub's rule (`bin/agent.py`: bot tokens, `<id>.<secret>` keys, `sk-` keys, runs of 32 or more) and the
+  additions of A19 and `Cookie:` / `Set-Cookie:` values run on each line; styles are carried across the replacements. `tmux capture-pane -J` joins lines
   tmux wrapped, so a key tmux wrapped is one line again. A key the program itself printed on two lines can be missed;
   the help says so.
-- **The screen gate.** A person at a terminal answers a question (`tty_confirm`, A9). An agent cannot answer for the
-  person, so from an agent session the approval is the session's own permission prompt for this command:
-  `--yes-screen` says the caller knows what it captures, and ade checks that the nearest `.claude/settings.json` (the
-  working folder or above) has a `permissions.ask` rule matching `ade shot screen --yes-screen` and does not set
-  `bypassPermissions`. ade cannot see the prompt itself; it checks that the rule that makes it is there. The hub's
-  root and focus folder settings carry the rule (ade-brain, `.ade/context/chat.md`).
-  Known limit: a session started with a command-line flag that skips permissions shows no prompt and ade cannot
-  tell; the hub never starts one (`ade claude` and the hub's `bin/chat` refuse the flag).
+- **The screen gate.** A person at a terminal answers a question (`tty_confirm`, A9); `--yes-screen` answers nothing
+  there. An agent cannot answer for the person, so from an agent session (any of six variables Claude Code sets, so
+  removing the usual three and making a pseudo-terminal changes nothing) the approval is the session's own permission
+  prompt for this command. ade cannot see that prompt; `shot_py asks` checks what makes it appear:
+  - the session's project is `CLAUDE_PROJECT_DIR` when the session sets it, else the git or hub root ade saves into;
+    never the shell's current folder, a folder below it or one above (an agent can make a folder with its own
+    settings and enter it);
+  - no settings file may let the session skip permissions: the project's `.claude/settings.json` and
+    `settings.local.json`, the user's `settings.json` (`CLAUDE_CONFIG_DIR`, else `~/.claude`) and the managed settings
+    of this system; a `defaultMode` of `bypassPermissions` in any, or one that cannot be read, refuses;
+  - one `permissions.ask` rule of the project's or the user's must match the command line as ade got it
+    (`ade shot screen --yes-screen ...`): a wildcard rule, a `:*` prefix rule, or an exact rule for exactly that command.
+  The hub's root and focus folder settings carry `Bash(*ade shot screen*)` (ade-brain, `.ade/context/chat.md`).
+  Known limits: a session started with a command-line flag that skips permissions shows no prompt and ade cannot tell
+  (the hub never starts one); without `CLAUDE_PROJECT_DIR` (Claude Code sets it for hooks, not for the Bash tool
+  today) an agent that makes a new git repository with its own ask rule and enters it passes ade's check, and only
+  the session's real rule, which matches the text of that command too, prompts.
+- **What a page may load.** Besides files outside the project, a page never gets a `.env`, a key (`*.pem`, `*.key`,
+  `id_*`) or anything under `.git/` of the project (the files the hub's `bin/chat send` never sends), nor a
+  link-local or metadata address (169.254.0.0/16, `fe80::/10`, `fd00:ec2::254`, `metadata.google.internal`, also
+  IPv4-mapped); such an address or file as the page itself is refused before a browser starts. Chromium reports
+  each request with its canonical address, so `http://2852039166/` is seen as 169.254.169.254. A name that resolves
+  to such an address is not caught. The sidecar counts what was stopped, by kind.
+- **Saving.** Each level (`.ade`, `evidence`, the day) is made and then opened from its parent's descriptor with
+  `O_NOFOLLOW`; the PNG, the sidecar and the `.gitignore` are created through those descriptors with `O_EXCL`. No
+  level can be swapped for a link between a check and a write.
 - **Evidence is private by default.** `.ade/evidence/` is 0700 and gets a `.gitignore` holding `*`: a picture of a
   screen is not committed by an `add -A`. To commit a shot as the record of a story, `git add -f` it.
 - **`--tg`** never talks to Telegram: it runs the hub's `bin/chat send <file>` with the caption on stdin, after
