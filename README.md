@@ -33,12 +33,12 @@ Inside a hub (a copy of [ade-brain](https://github.com/better-ade/ade-brain)) it
 the hub stays the single source of truth and `ade` stays thin. Inside a project it sets up the ADE method, specialist
 agents and skills from their own repos, at pinned versions, and never overwrites a file you already have.
 
-> **Status:** version `0.2.8`. Built: the hub and project commands (A1), orchestrators (A2), `hub new` (A3),
+> **Status:** version `0.2.9`. Built: the hub and project commands (A1), orchestrators (A2), `hub new` (A3),
 > `ade claude` (A4), `ade setup` (A5), `ade ui` (A6), skills (A7), `clean`, `reset` and `uninstall` (A9), `restore`
 > (A10), `update` and update notices (A11, A12), the file viewer (A15), the guided first run (A18), `ade web` (A19),
-> `ade shot` (A20) and `ade project` (A21). Not built yet: keys and the clipboard
-> ([A13](docs/stories/A13-keys-and-clipboard.md)), the vault ([A14](docs/stories/A14-ade-vault.md)) and `ade connect`
-> ([A16](docs/stories/A16-ade-connect.md), [A17](docs/stories/A17-connect-check-doctor-restore.md)).
+> `ade shot` (A20), `ade project` (A21), `ade connect` (A16) and a raw Ubuntu install (A22). Not built yet: keys and the
+> clipboard ([A13](docs/stories/A13-keys-and-clipboard.md)), the vault ([A14](docs/stories/A14-ade-vault.md)) and the
+> connect checks ([A17](docs/stories/A17-connect-check-doctor-restore.md)).
 
 ## Install
 
@@ -79,7 +79,7 @@ downloads `bun` itself, and asks for your git name and email when git has none y
 
 ```bash
 ade help                         # every command, one line each
-ade version                      # ade 0.2.8
+ade version                      # ade 0.2.9
 
 # In a project (any git repo); no hub needed
 ade init                         # copy ade-method at its pinned tag; lists what it kept
