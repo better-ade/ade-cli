@@ -197,6 +197,23 @@ tests_clean_up() {   # review: every test's folder is removed when it ends (the 
   t2="$(fresh; a="$T"; fresh; [ ! -e "$a" ] && echo "$T")"; [ -n "$t2" ] && [ ! -e "$t2" ] || fail "a second fresh removes the first folder"
 }
 
+suite_guard() {   # review: tests/run.sh fails a test file that changes ~/.config/ade, and never reads a file's content there
+  fresh; local c="$HOME/.config/ade"; mkdir -p "$c"; echo "secret-one" > "$c/key"; chmod 600 "$c/key"
+  printf '#!/bin/bash\necho added > "$HOME/.config/ade/new"; echo ok\n' > "$T/test_adds.sh"
+  ADE_TESTS="$T/test_adds.sh" bash "$REPO/tests/run.sh" > "$T/out" 2>&1; assert_eq "$?" 1 "a change fails the run"
+  assert_contains "$T/out" "FAIL  the real $c changed while $T/test_adds.sh ran" "says which file ran"; assert_contains "$T/out" "        $c/new" "names what changed"
+  assert_not_contains "$T/out" "        $c/key" "only what changed"; assert_not_contains "$T/out" "secret-one" "no content shown"
+  cat > "$T/test_same.sh" <<'F'
+#!/bin/bash
+python3 -I -c 'import os, sys
+p = sys.argv[1]; st = os.stat(p); open(p, "w").write("secret-two\n")
+os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns))' "$HOME/.config/ade/key"; echo ok
+F
+  rm "$c/new"; ADE_TESTS="$T/test_same.sh" bash "$REPO/tests/run.sh" > "$T/out" 2>&1 || { cat "$T/out"; fail "same name, mode, size and time: not compared further"; }
+  assert_contains "$T/out" "ok    $T/test_same.sh" "the content is never read"
+}
+
+
 # conflict_lines <folder>: the tracked text files' lines that are a merge conflict marker (file:line:text)
 conflict_lines() { git -C "$1" grep -nIE '^(<<<<<<<( |$)|=======$|>>>>>>>( |$))' -- . 2> /dev/null; }
 no_conflict_markers() {   # a merge left unresolved never ships: no marker line in any tracked text file
@@ -210,6 +227,6 @@ no_conflict_markers() {   # a merge left unresolved never ships: no marker line 
   assert_eq "$(conflict_lines "$T/m" | cut -d: -f1 | sort | tr '\n' ' ')" "one.md three.md two.md " "each planted marker is found, and only those"
 }
 
-ALL="no_conflict_markers tests_clean_up finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors init_installs_templates install_templates_guard symlinked_version"
+ALL="no_conflict_markers suite_guard tests_clean_up finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors init_installs_templates install_templates_guard symlinked_version"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

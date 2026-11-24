@@ -75,6 +75,7 @@ Project commands (no hub needed):
   init        copy ade-method at its pinned tag into this project (git top level, or --here); never overwrites
   agent       ade agent list | ade agent add <name>: specialists from ade-agent-registry
   skills      ade skills list | add <plugin> | enable <skill> | disable <skill> | search <word>: skills and plugins on the fly
+  connect     ade connect [<service> | status [<service>] | disconnect <service>]: ADE's connectors; each person signs in at their own terminal
   open        open in the ADE app (inside the ADE app only)
   version     print the version
   help        this list
@@ -377,6 +378,7 @@ cmd_skills() {
     --pin) echo "$ADE_SKILLS_REF"; return 0 ;;
     list|search|add)
       case "$sub" in list) [ $# -eq 0 ] || die 2 "$SKILLS_USAGE" ;; *) [ $# -eq 1 ] && [ -n "$1" ] || die 2 "$SKILLS_USAGE" ;; esac
+      [ "$sub" != add ] || project_folder_ok "$top" "skills add"
       if src="$(fetch "$ADE_SKILLS_REPO" "$ADE_SKILLS_REF" 2> /dev/null)"; then
         mkt="$src/.claude-plugin/marketplace.json"; SKILLS_TMP="$(dirname "$src")"; trap 'rm_tmp "$SKILLS_TMP"' EXIT
         [ -f "$mkt" ] || die 1 "ade-skills has no .claude-plugin/marketplace.json at $ADE_SKILLS_REF"
@@ -390,13 +392,7 @@ cmd_skills() {
         search) skills_py search "$top" "$mkt" "$1"; exit $? ;;
       esac
       skills_py plugin "$top" "$mkt" "$1" || exit $?
-      command -v claude > /dev/null 2>&1 || die 2 "claude is not on PATH; install Claude Code first"
-      if ! claude plugin marketplace list 2>/dev/null | grep -q 'ade-skills'; then
-        local msrc="$ADE_SKILLS_REPO"; [ "$msrc" = https://github.com/better-ade/ade-skills ] && msrc=better-ade/ade-skills
-        claude plugin marketplace add "$msrc" || die 1 "could not add the ade-skills marketplace"
-      fi
-      claude plugin install "$1@ade-skills" --scope project || exit $?
-      conn_record "$top" marketplace ade-skills "$ADE_SKILLS_REPO"; conn_record "$top" plugin "$1" ade-skills "$ADE_SKILLS_REF"
+      plugin_add "$top" "$1"
       skills_hint "$top" "plugin $1 installed in $(basename "$top"): run /reload-plugins in its open sessions to load it" ;;
     enable|disable)
       [ $# -eq 1 ] && [ -n "$1" ] || die 2 "$SKILLS_USAGE"
@@ -409,6 +405,34 @@ cmd_skills() {
       skills_hint "$top" "skill $1 changed in $(basename "$top"): it applies on the next prompt (Claude Code reloads its settings)" ;;
     *) die 2 "$SKILLS_USAGE" ;;
   esac
+}
+
+# project_folder_ok <folder> <command>: a project, never the home folder or / (there, "project scope" would be the
+# person's own Claude Code settings for every folder); else exit 2, nothing changed
+project_folder_ok() {
+  local h; h="$(cd "$HOME" 2> /dev/null && pwd -P)"
+  if [ "$1" = / ] || [ "$1" = "$h" ]; then die 2 "ade $2 runs inside a project, not in your home folder or /: cd into the project (a git repository) and run it there; nothing changed"; fi
+}
+# abs_tool <name> <folder>: the absolute path of a tool on PATH, resolved before ade changes into the folder; a copy
+# that lies inside the folder (a repository could ship one) is refused (exit 2, which callers pass on)
+abs_tool() {
+  local p d; p="$(command -v "$1" 2> /dev/null)" || return 1
+  case "$p" in /*) ;; *) p="$(pwd -P)/$p" ;; esac
+  d="$(cd "$(dirname "$p")" 2> /dev/null && pwd -P)" || return 1
+  case "$d/" in "$2"/*) die 2 "refused: the $1 on PATH ($d/$(basename "$p")) lies inside $2; ade runs only a $1 from outside the project" ;; esac
+  printf '%s\n' "$d/$(basename "$p")"
+}
+# plugin_add <project> <plugin>: the ade-skills marketplace once, the plugin in project scope, then recorded in
+# .ade/connections.json (ade skills add, ade connect). Stated limit: Claude Code installs <plugin>@ade-skills from
+# whatever marketplace it has under the name ade-skills; ade checks the name exactly, not where it points.
+plugin_add() {
+  local cl; cl="$(abs_tool claude "$1")" || { [ $? = 2 ] && exit 2; die 2 "claude is not on PATH; install Claude Code first"; }
+  if ! "$cl" plugin marketplace list 2>/dev/null | awk '{ for (i = 1; i <= NF; i++) if ($i == "ade-skills") f = 1 } END { exit !f }'; then
+    local msrc="$ADE_SKILLS_REPO"; [ "$msrc" = https://github.com/better-ade/ade-skills ] && msrc=better-ade/ade-skills
+    "$cl" plugin marketplace add "$msrc" || die 1 "could not add the ade-skills marketplace"
+  fi
+  "$cl" plugin install "$2@ade-skills" --scope project || exit $?
+  conn_record "$1" marketplace ade-skills "$ADE_SKILLS_REPO"; conn_record "$1" plugin "$2" ade-skills "$ADE_SKILLS_REF"
 }
 
 cmd_open() {
@@ -1529,7 +1553,7 @@ guide_about() {   # <step>: what it is and what it changes, before it runs
   esac   # github: github_ready says what it is and what it runs
 }
 guide_install_claude() {
-  local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"   # file:// only for tests
+  local proto="=https"; file_urls_ok && proto="=https,file"   # file:// only for tests
   case "$ADE_CLAUDE_INSTALLER" in https://*) ;; file://*) [ "$proto" != "=https" ] || die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;;
     *) die 1 "the installer must be an https URL (got $ADE_CLAUDE_INSTALLER)" ;; esac
   local rc why
@@ -2625,7 +2649,7 @@ for e in (es if isinstance(es, list) else [es] if isinstance(es, dict) else []):
     if not isinstance(e, dict):
         continue
     pp = e.get("projectPath")
-    if e.get("scope") in ("project", "local") and isinstance(pp, str) and os.path.realpath(pp) != sys.argv[2]:
+    if e.get("scope") in ("project", "local") and (not isinstance(pp, str) or os.path.realpath(pp) != sys.argv[2]):
         continue
     v = e.get("version")
     print(v if isinstance(v, str) and re.fullmatch(r"[0-9A-Za-z.+_-]{1,40}", v) else "unknown"); sys.exit(0)
@@ -2875,15 +2899,575 @@ EOF
   echo "every connection is ready"
 }
 
+# connectors (story A16; contract: ade-skills .ade/context/connectors.md): a recipe per service in ade-skills
+# (plugins/guard/connectors/<service>.json, format 1) says how a person signs in; ade reads recipes only at the pinned
+# ade-skills tag, each one only when its sha256 matches that release's release.json, and runs nothing from one. The
+# project commits names only, in <folder>/.ade/connectors.json; no secret ever passes through ade.
+CONNECT_SINCE=0.7.0   # the first ade-skills release that ships recipes (no override: the pin check stays on)
+CONNECT_USAGE="usage: ade connect [<service> | status [<service>] | disconnect <service>]"
+CONNECT_DEFAULT_REPO=https://github.com/better-ade/ade-skills CONNECT_DEFAULT_RELEASES=https://github.com
+# the variables a Claude Code session sets (the same ten as ade key, A13): any one set, even empty, is an agent session
+CONNECT_SESSION_VARS="CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_BRIDGE_SESSION_ID
+  CLAUDE_PROJECT_DIR CLAUDE_PLUGIN_ROOT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT"
+# connect_tty <what>: a person at a terminal. This stops accidents; an agent running as you can get round it (a
+# pseudo-terminal with these variables unset passes).
+connect_tty() {
+  local v; for v in $CONNECT_SESSION_VARS; do
+    printenv "$v" > /dev/null 2>&1 && die 2 "ade $1 asks a person at a terminal; it refuses inside a Claude Code session ($v is set); nothing changed"; done
+  tty_ready "$1"
+}
+# connectors_py <record> get|add <name>: the record checked whole on every read (names only, sorted, unique); add
+# holds the folder's lock, reads, checks and writes through ade_write, only when the name is new. Exit 2 with the
+# reason when it is not exactly the contract's shape.
+connectors_py() {
+  write_py "$@" <<'PY'
+import json, os, re, sys
+p, op, a = sys.argv[1], sys.argv[2], sys.argv[3:]
+NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
+safe = lambda s: re.sub(r"[^\x20-\x7e]", "?", s)[:200]
+class Bad(Exception):
+    pass
+def pairs(kv):
+    seen = {}
+    for k, v in kv:
+        if k in seen: raise Bad("a key appears twice")
+        seen[k] = v
+    return seen
+def check(d):
+    if not isinstance(d, dict) or set(d) != {"format", "connectors"}: raise Bad("it must hold exactly format and connectors")
+    if type(d["format"]) is not int or d["format"] != 1: raise Bad("format is not 1")
+    c = d["connectors"]
+    if not isinstance(c, list) or len(c) > 64: raise Bad("connectors is not a list of at most 64 names")
+    if not all(isinstance(n, str) and NAME.fullmatch(n) for n in c): raise Bad("a name is not ^[a-z][a-z0-9-]{0,31}$")
+    if c != sorted(set(c)): raise Bad("the names are not sorted and unique")
+def refuse(why):
+    sys.stderr.write("ade: %s is not a valid connectors record (%s); nothing in it is used\n" % (safe(p), why)); sys.exit(2)
+def load():
+    if not (os.path.lexists(p) or os.path.islink(os.path.dirname(p))): return {"format": 1, "connectors": []}
+    try:
+        if os.path.islink(p) or os.path.islink(os.path.dirname(p)) or not os.path.isfile(p): raise Bad("it is not a plain file")
+        if os.path.getsize(p) > 65536: raise Bad("it is larger than 64 KiB")
+        with open(p, encoding="utf-8") as fh: d = json.load(fh, object_pairs_hook=pairs)
+        check(d); return d
+    except (Bad, ValueError, OSError, RecursionError) as e:
+        refuse(e if isinstance(e, Bad) else "it is not valid JSON")
+d = load()
+if op == "get":
+    for n in d["connectors"]: print(n)
+elif op == "add":
+    ade_hold(p); d = load()   # read again under the lock: two runs never lose a name
+    if a[0] not in d["connectors"]:
+        d["connectors"] = sorted(d["connectors"] + [a[0]]); check(d)
+        ade_write(p, json.dumps(d) + "\n"); print("added")
+PY
+}
+# recipes_py <checkout> <file> <sha256>...: each recipe against format 1 (contract amendment 1, section 1 "Checks"),
+# with the rules in the order and, where sensible, the words of ade-skills' own checker
+# (plugins/guard/scripts/check-recipe.sh). Each file is opened without following a link, its bytes hashed and compared
+# with release.json before they are parsed. Prints one line per recipe, US-separated: ok service title job tier state
+# held kind plugin cli connector admin reaches docs revoke q1id q1ask q2id q2ask, or refused <service> <reason>. A
+# failure across files prints "folder<US><US><reason>" alone and exits 3 (the whole folder is refused). Deliberately
+# stricter than the checker: every string is printable ASCII; sign_in.plugin equals the service for every kind; the
+# guard's hook files must be regular files, not links. Nothing in a recipe is ever run.
+recipes_py() {
+  python3 -I - "$@" <<'PY'
+import hashlib, json, os, re, stat, sys, unicodedata
+MAX_BYTES = 65536
+NAME = r"[a-z][a-z0-9-]{0,31}"
+CONNECTOR = r"[A-Za-z0-9_]{1,40}"
+TOP = {"format", "service", "title", "job", "tier", "state", "held", "sign_in", "questions", "guard", "hosts", "pages", "reaches"}
+TOP_REQUIRED = TOP - {"held"}
+JOBS = {"tickets", "code", "mail", "chat"}
+STATES = {"ready", "held"}
+KINDS = {"plugin", "cli", "claude-ai"}
+SIGN_IN = {"kind", "plugin", "cli", "connector", "admin"}
+CLIS = {"gh"}
+QUESTION = {"id", "ask", "to"}
+TARGETS = {"gate"}
+GUARD = {"prefixes", "read", "commands"}
+PROGRAMS = {"gh", "git"}
+LISTS = {"free", "deny"}
+FREE_ENTRY = {"words", "flags", "args"}
+ARGS = {"any", "none", "names"}
+PAGES = {"docs", "revoke"}
+LINE_MAX = 200
+TITLE_MAX = 40
+BAD_CATEGORIES = {"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"}
+PLUGIN_PREFIX = re.compile(r"mcp__plugin_(%s)_([A-Za-z0-9-]{1,40})__" % NAME)
+TOOL = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,127}")
+WORD = re.compile(r"[a-z][a-z0-9-]*")
+FLAG = re.compile(r"(-[A-Za-z0-9]+|--[a-z0-9][a-z0-9-]*)(=[A-Za-z0-9._,-]*)?")
+DENY_ELEMENT = re.compile(r"[a-z][a-z0-9-]*|-[A-Za-z0-9]|--[a-z0-9][a-z0-9-]*")
+HOST = re.compile(r"(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+")
+URL = re.compile(r"https://([a-z0-9.-]+)(/[A-Za-z0-9._~!$&'()*+,;=:@%/-]*)?")
+HOOK_FILES = ["plugins/guard/hooks/hooks.json", "plugins/guard/hooks/guard.sh"]
+class Bad(Exception):
+    pass
+def no(why):
+    raise Bad(why)
+def show(v):
+    try: return re.sub(r"[^\x20-\x7e]", "?", json.dumps(v, ensure_ascii=True))[:120]
+    except (TypeError, ValueError): return "?"
+def is_int(v): return isinstance(v, int) and not isinstance(v, bool)
+def one_of(v, allowed): return isinstance(v, str) and v in allowed
+def text_ok(v, where):   # every string, keys too: refused, never stripped; ade also holds recipes to printable ASCII
+    if isinstance(v, dict):
+        for k, x in v.items(): text_ok(k, where + " key"); text_ok(x, where)
+    elif isinstance(v, list):
+        for x in v: text_ok(x, where)
+    elif isinstance(v, str):
+        for c in v:
+            cat = unicodedata.category(c)
+            if cat in BAD_CATEGORIES: no("%s holds the character U+%04X (category %s), which a recipe may not hold" % (where, ord(c), cat))
+            if not " " <= c <= "~": no("%s holds the character U+%04X; a recipe is printable ASCII" % (where, ord(c)))
+def obj(v, where, allowed, required=()):
+    if not isinstance(v, dict): no("%s is not an object" % where)
+    extra = sorted(set(v) - set(allowed))
+    if extra: no("%s has an unknown field %s" % (where, show(extra[0])))
+    for k in sorted(required):
+        if k not in v: no("%s has no %s" % (where, show(k)))
+    return v
+def line(v, where, most=LINE_MAX):
+    if not isinstance(v, str) or not v.strip(): no("%s is not a non-empty string" % where)
+    if len(v) > most: no("%s is longer than %d characters" % (where, most))
+    return v
+def names(v, where, pattern):
+    if not isinstance(v, list): no("%s is not a list" % where)
+    for x in v:
+        if not isinstance(x, str) or not pattern.fullmatch(x): no("%s has an entry that is not allowed: %s" % (where, show(x)))
+    if len(v) != len(set(v)): no("%s names an entry twice" % where)
+    return v
+def check_commands(c):   # the shape of guard.commands; only the guard interprets it
+    obj(c, "guard.commands", PROGRAMS)
+    for prog, v in c.items():
+        obj(v, "guard.commands.%s" % prog, LISTS, LISTS)
+        if not isinstance(v["free"], list): no("guard.commands.%s.free is not a list" % prog)
+        seen = set()
+        for i, e in enumerate(v["free"]):
+            where = "guard.commands.%s.free[%d]" % (prog, i)
+            obj(e, where, FREE_ENTRY, FREE_ENTRY)
+            w = e["words"]
+            if not isinstance(w, list) or not 1 <= len(w) <= 3: no("%s.words is not a list of 1 to 3 words" % where)
+            names(w, where + ".words", WORD)
+            if tuple(w) in seen: no("%s.words %s is listed twice for %s" % (where, show(w), prog))
+            seen.add(tuple(w))
+            f = e["flags"]
+            if not isinstance(f, list): no("%s.flags is not a list" % where)
+            for x in f:
+                if not isinstance(x, str) or not (x == "-" or FLAG.fullmatch(x)): no("%s.flags has an entry that is not a flag: %s" % (where, show(x)))
+            if len(f) != len(set(f)): no("%s.flags names a flag twice" % where)
+            if not one_of(e["args"], ARGS): no("%s.args %s is not one of %s" % (where, show(e["args"]), sorted(ARGS)))
+        if not isinstance(v["deny"], list): no("guard.commands.%s.deny is not a list" % prog)
+        for i, run in enumerate(v["deny"]):
+            where = "guard.commands.%s.deny[%d]" % (prog, i)
+            if not isinstance(run, list) or not 1 <= len(run) <= 4: no("%s is not a run of 1 to 4 elements" % where)
+            names(run, where, DENY_ELEMENT)
+def check(r, service, root):
+    text_ok(r, "the recipe")
+    obj(r, "the recipe", TOP, TOP_REQUIRED)
+    if not is_int(r["format"]) or r["format"] != 1: no("format is %s; only 1 is known" % show(r["format"]))
+    if not isinstance(r["service"], str) or not re.fullmatch(NAME, r["service"]): no("service is not a name ^[a-z][a-z0-9-]{0,31}$")
+    if r["service"] != service: no("service %s is not the file name %s" % (show(r["service"]), show(service)))
+    line(r["title"], "title", TITLE_MAX)
+    if not one_of(r["job"], JOBS): no("job %s is not one of %s" % (show(r["job"]), sorted(JOBS)))
+    if not is_int(r["tier"]) or not 0 <= r["tier"] <= 4: no("tier %s is not 0 to 4" % show(r["tier"]))
+    if not one_of(r["state"], STATES): no("state %s is not one of %s" % (show(r["state"]), sorted(STATES)))
+    if r["state"] == "held": line(r.get("held"), "held")
+    elif "held" in r: no("held is set, but state is not held")
+    s = obj(r["sign_in"], "sign_in", SIGN_IN, {"kind"})
+    kind = s["kind"]
+    if not one_of(kind, KINDS): no("sign_in.kind %s is not one of %s" % (show(kind), sorted(KINDS)))
+    if "plugin" in s and (not isinstance(s["plugin"], str) or not re.fullmatch(NAME, s["plugin"])): no("sign_in.plugin is not a plugin name")
+    if kind == "plugin" and "plugin" not in s: no("sign_in.plugin is required for kind plugin")
+    if "plugin" in s and s["plugin"] != r["service"]: no("sign_in.plugin is not its service (ade installs no other plugin)")
+    if kind == "cli":
+        if not one_of(s.get("cli"), CLIS): no("sign_in.cli %s is not one of %s" % (show(s.get("cli")), sorted(CLIS)))
+    elif "cli" in s: no("sign_in.cli is only for kind cli")
+    if kind == "claude-ai":
+        if not isinstance(s.get("connector"), str) or not re.fullmatch(CONNECTOR, s["connector"]): no("sign_in.connector is not a connector name ^[A-Za-z0-9_]{1,40}$")
+    elif "connector" in s: no("sign_in.connector is only for kind claude-ai")
+    if "admin" in s: line(s["admin"], "sign_in.admin")
+    if r["tier"] == 4 and "admin" not in s: no("sign_in.admin is required for tier 4")
+    q = r["questions"]
+    if not isinstance(q, list): no("questions is not a list")
+    if len(q) > 2: no("questions has more than 2 entries")
+    ids = []
+    for i, x in enumerate(q):
+        obj(x, "questions[%d]" % i, QUESTION, QUESTION)
+        if not isinstance(x["id"], str) or not re.fullmatch(r"[a-z][a-z0-9_-]{0,31}", x["id"]): no("questions[%d].id is not a name" % i)
+        line(x["ask"], "questions[%d].ask" % i)
+        if not one_of(x["to"], TARGETS): no("questions[%d].to %s is not a known answer target (%s)" % (i, show(x["to"]), sorted(TARGETS)))
+        ids.append(x["id"])
+    if len(ids) != len(set(ids)): no("questions has an id twice")
+    g = obj(r["guard"], "guard", GUARD, {"prefixes", "read"})
+    pre = names(g["prefixes"], "guard.prefixes", re.compile(r".+"))
+    read = names(g["read"], "guard.read", TOOL)
+    if kind == "plugin":
+        for p in pre:
+            if not PLUGIN_PREFIX.fullmatch(p): no("guard.prefixes entry %s is not mcp__plugin_<p>_<s>__ (a plugin recipe carries plugin prefixes only)" % show(p))
+        if "mcp__plugin_%s_%s__" % (s["plugin"], s["plugin"]) not in pre: no("guard.prefixes does not hold the plugin's own mcp__plugin_%s_%s__" % (s["plugin"], s["plugin"]))
+    if kind == "claude-ai" and pre != ["mcp__claude_ai_%s__" % s["connector"]]:
+        no("guard.prefixes of a claude-ai recipe must be exactly [\"mcp__claude_ai_%s__\"]" % s["connector"])
+    if kind == "cli":
+        if pre: no("guard.prefixes of a cli recipe must be []")
+        if read: no("guard.read of a cli recipe must be []")
+        if "commands" not in g: no("guard.commands is required for kind cli")
+        check_commands(g["commands"])
+    elif "commands" in g: no("guard.commands is only for kind cli")
+    names(r["hosts"], "hosts", HOST)
+    pg = obj(r["pages"], "pages", PAGES)
+    for k, u in pg.items():
+        if not isinstance(u, str) or not URL.fullmatch(u) or not HOST.fullmatch(URL.fullmatch(u).group(1)): no("pages.%s is not a plain https address" % k)
+    line(r["reaches"], "reaches")
+    if kind == "plugin":   # the plugin's shipped read list is the read list
+        pd = os.path.join(root, "plugins", s["plugin"])
+        if os.path.isdir(pd) and not os.path.islink(pd):
+            try: want = [l.split("#", 1)[0].strip() for l in open(os.path.join(pd, "hooks", "read-tools.txt"), encoding="utf-8")]
+            except OSError: no("plugins/%s has no hooks/read-tools.txt" % s["plugin"])
+            if sorted(read) != sorted(w for w in want if w): no("guard.read is not exactly the names in plugins/%s/hooks/read-tools.txt" % s["plugin"])
+        else:
+            if r["state"] != "held": no("state is ready, but plugins/%s does not exist" % s["plugin"])
+            if read: no("guard.read names tools, but plugins/%s (and its read-tools.txt) does not exist" % s["plugin"])
+    row = [r["service"], r["title"], r["job"], str(r["tier"]), r["state"], r.get("held", ""), kind, s.get("plugin", ""),
+           s.get("cli", ""), s.get("connector", ""), s.get("admin", ""), r["reaches"], pg.get("docs", ""), pg.get("revoke", "")] + \
+          sum(([x["id"], x["ask"]] for x in q), []) + [""] * (4 - 2 * len(q))
+    return row
+def across(recipes, root):   # recipes: {service: recipe}, each valid on its own; a failure refuses the whole folder
+    for key in ["connector", "plugin"]:
+        seen = {}
+        for s, r in sorted(recipes.items()):
+            v = r["sign_in"].get(key)
+            if v is None: continue
+            if v in seen: no("sign_in.%s %s is in both %s and %s" % (key, show(v), seen[v], s))
+            seen[v] = s
+    pre = [(p, s) for s, r in sorted(recipes.items()) for p in r["guard"]["prefixes"]]
+    for p, s in pre:
+        for q, t in pre:
+            if s != t and q.startswith(p): no("the prefix %s of %s equals or starts the prefix %s of %s" % (p, s, q, t))
+    for prog in sorted(PROGRAMS):
+        have = [s for s, r in sorted(recipes.items()) if prog in r["guard"].get("commands", {})]
+        if len(have) > 1: no("guard.commands.%s is in more than one recipe: %s" % (prog, ", ".join(have)))
+    missing = [f for f in HOOK_FILES if not (os.path.isfile(os.path.join(root, f)) and not os.path.islink(os.path.join(root, f)))]
+    ready = [s for s, r in sorted(recipes.items()) if r["state"] == "ready"]
+    if missing and ready:
+        no("%s %s ready, but this checkout has no %s (a recipe is never ready without the guard's hook)" % (", ".join(ready), "is" if len(ready) == 1 else "are", missing[0]))
+def no_dupes(pairs):
+    seen = {}
+    for k, v in pairs:
+        if k in seen: raise Bad("the key %s appears twice" % show(k))
+        seen[k] = v
+    return seen
+def load(f, want):   # the open file: no link, a regular file, at most 64 KiB, its sha256 the published one, then JSON
+    try: fd = os.open(f, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0))
+    except OSError: no("it is not a plain file")
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode): no("it is not a regular file")
+        with os.fdopen(fd, "rb", closefd=False) as fh: raw = fh.read(MAX_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(raw) > MAX_BYTES: no("the file is over 64 KiB")
+    if hashlib.sha256(raw).hexdigest() != want: no("its sha256 does not match release.json (connector-%s)" % os.path.basename(f))
+    try: text = raw.decode("utf-8")
+    except UnicodeDecodeError: no("is not UTF-8")
+    try: return json.loads(text, object_pairs_hook=no_dupes, parse_constant=lambda c: no("holds %s, which is not JSON" % c))
+    except RecursionError: no("is nested too deeply")
+    except ValueError: no("it is not valid JSON")
+root, a = sys.argv[1], sys.argv[2:]
+out, good = [], {}
+for f, want in zip(a[0::2], a[1::2]):
+    service = os.path.basename(f)[:-5]
+    try:
+        r = load(f, want); row = check(r, service, root); good[service] = r; out.append(["ok"] + row)
+    except Bad as e:
+        out.append(["refused", service, str(e)])
+    except Exception as e:   # a rule that could not be applied refuses, it never passes
+        out.append(["refused", service, "it could not be checked (%s)" % type(e).__name__])
+try:
+    across(good, root)
+except Bad as e:
+    print("folder\x1f\x1f" + str(e)); sys.exit(3)
+for r in out: print("\x1f".join(r))
+PY
+}
+# connect_manifest_py <release.json>: the recipe entries of the release manifest (already A12-checked for component and
+# version), as "<service> <sha256>" lines; exit 1 with the reason when a key appears twice, an entry is named twice or a
+# connector entry is not connector-<service>.json with a 64-hex sha256
+connect_manifest_py() {
+  python3 -I - "$1" <<'PY'
+import json, re, sys
+def pairs(kv):
+    seen = {}
+    for k, v in kv:
+        if k in seen: print("a key appears twice in it"); sys.exit(1)
+        seen[k] = v
+    return seen
+try: d = json.load(open(sys.argv[1], encoding="utf-8"), object_pairs_hook=pairs)
+except (OSError, ValueError, RecursionError): print("it is not valid JSON"); sys.exit(1)
+files = d.get("files") if isinstance(d, dict) else None
+if not isinstance(files, list): print("it has no files list"); sys.exit(1)
+seen, out = set(), []
+for f in files:
+    n = f.get("name") if isinstance(f, dict) else None
+    if not isinstance(n, str): print("a file entry has no name"); sys.exit(1)
+    if n in seen: print("it names %s twice" % re.sub(r"[^\x20-\x7e]", "?", n)[:80]); sys.exit(1)
+    seen.add(n)
+    if not n.startswith("connector-"): continue
+    m = re.fullmatch(r"connector-([a-z][a-z0-9-]{0,31})\.json", n); sha = f.get("sha256")
+    if not m or not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha):
+        print("its entry %s is not connector-<service>.json with a sha256" % re.sub(r"[^\x20-\x7e]", "?", n)[:80]); sys.exit(1)
+    out.append("%s %s" % (m.group(1), sha))
+for l in out: print(l)
+PY
+}
+# connect_sources: one line on stderr, before anything else, when the recipes or their manifest come from somewhere
+# other than ade's defaults (ADE_SKILLS_REPO, ADE_RELEASES_BASE); CONNECT_OTHER names them for the connect question
+connect_sources() {
+  CONNECT_OTHER=""
+  [ "$ADE_SKILLS_REPO" = "$CONNECT_DEFAULT_REPO" ] || CONNECT_OTHER="recipes from $ADE_SKILLS_REPO (ADE_SKILLS_REPO)"
+  [ "$ADE_RELEASES_BASE" = "$CONNECT_DEFAULT_RELEASES" ] || CONNECT_OTHER="${CONNECT_OTHER:+$CONNECT_OTHER and }release.json from $ADE_RELEASES_BASE (ADE_RELEASES_BASE)"
+  CONNECT_OTHER="$(printf '%s' "$CONNECT_OTHER" | no_ctl | tr -d '\t\n')"
+  [ -z "$CONNECT_OTHER" ] || echo "ade: connect uses $CONNECT_OTHER, not ade's defaults" >&2
+}
+# connect_recipes: the pinned ade-skills checkout, its release.json and every recipe checked; CONNECT_ROWS holds the
+# recipes_py lines (refused ones too). Exit 2 when the pin cannot carry verified recipes.
+connect_recipes() {
+  local ref="$ADE_SKILLS_REF" ver src m f b svc sha why ok="" shas d
+  matches "$ref" '^v[0-9]+\.[0-9]+\.[0-9]+$' || die 2 "ade connect reads recipes only at a vX.Y.Z tag of ade-skills; ADE_SKILLS_REF=$(printf '%s' "$ref" | LC_ALL=C tr -c 'A-Za-z0-9._/-' '?') is not one"
+  ver="${ref#v}"
+  ver_ge "$ver" "$CONNECT_SINCE" || die 2 "the pinned ade-skills release $ref has no connectors yet (they arrive with ade-skills v$CONNECT_SINCE); an ade update brings them"
+  src="$(fetch "$ADE_SKILLS_REPO" "$ref")" || exit 2
+  CONNECT_TMP="$(dirname "$src")"; trap 'rm_tmp "$CONNECT_TMP"' EXIT; CONNECT_SRC="$src"; d="$src/plugins/guard/connectors"
+  [ -d "$d" ] && [ ! -L "$d" ] && [ ! -L "$src/plugins/guard" ] && [ ! -L "$src/plugins" ] || die 2 "ade-skills $ref has no plugins/guard/connectors folder (or it is a link); nothing to connect"
+  [ -n "$(ls -A "$d")" ] || die 2 "ade-skills $ref has an empty plugins/guard/connectors; refused"
+  m="$CONNECT_TMP/release.json"   # at most 64 KiB, and checked again after the download
+  ADE_DL_MAX=65536 dl "$ADE_RELEASES_BASE/better-ade/ade-skills/releases/download/$ref/release.json" "$m" ||
+    die 2 "there is no release.json for ade-skills $ref (or it is over 64 KiB); recipes are used only when it names their sha256"
+  why="$(manifest_py "$m" ade-skills "$ver")" || die 2 "the release.json of ade-skills $ref is not valid: $why"
+  shas="$(connect_manifest_py "$m")" || die 2 "the release.json of ade-skills $ref is not valid: $(printf '%s' "$shas" | no_ctl)"
+  while read -r svc sha; do   # a recipe the manifest names must be in the checkout
+    [ -n "$svc" ] || continue
+    [ -e "$d/$svc.json" ] || [ -L "$d/$svc.json" ] || die 2 "release.json of ade-skills $ref names connector-$svc.json, which its checkout does not have; refused"
+  done <<EOF
+$shas
+EOF
+  CONNECT_ROWS=""
+  for f in "$d"/* "$d"/.[!.]*; do
+    [ -e "$f" ] || [ -L "$f" ] || continue; b="$(basename "$f")"; svc="${b%.json}"
+    if ! matches "$b" '^[a-z][a-z0-9-]{0,31}\.json$'; then
+      CONNECT_ROWS="${CONNECT_ROWS}refused$US$(printf '%s' "$b" | LC_ALL=C tr -c 'A-Za-z0-9._-' '?')${US}its file name is not <service>.json
+"; continue; fi
+    if [ -L "$f" ] || [ ! -f "$f" ]; then CONNECT_ROWS="${CONNECT_ROWS}refused$US$svc${US}it is not a plain file
+"; continue; fi
+    sha="$(printf '%s\n' "$shas" | awk -v s="$svc" '$1 == s { print $2; exit }')"
+    if [ -z "$sha" ]; then CONNECT_ROWS="${CONNECT_ROWS}refused$US$svc${US}release.json names no sha256 for connector-$b
+"; continue; fi
+    ok="$ok$f
+$sha
+"
+  done
+  if [ -n "$ok" ]; then
+    local list=() l rows rc
+    while IFS= read -r l; do [ -n "$l" ] && list+=("$l"); done <<EOF
+$ok
+EOF
+    rows="$(recipes_py "$src" "${list[@]}")"; rc=$?
+    [ "$rc" != 3 ] || die 2 "the recipes of ade-skills $ref are refused together: $(printf '%s' "${rows#folder"$US$US"}" | no_ctl)"
+    [ "$rc" = 0 ] || die 1 "could not read the recipes"
+    CONNECT_ROWS="$CONNECT_ROWS$rows"
+  fi
+}
+# connect_row <service>: the fields of its recipe into R_* (0), refused (1, the reason in R_WHY), unknown (2)
+connect_row() {
+  local tag
+  # shellcheck disable=SC2034  # every field of the row is read, so the ones a caller uses keep their place
+  while IFS="$US" read -r tag R_SERVICE R_TITLE R_JOB R_TIER R_STATE R_HELD R_KIND R_PLUGIN R_CLI R_CONNECTOR R_ADMIN R_REACHES R_DOCS R_REVOKE R_Q1 R_A1 R_Q2 R_A2; do
+    [ "$R_SERVICE" = "$1" ] || continue
+    [ "$tag" = ok ] && return 0
+    R_WHY="$R_TITLE"; return 1
+  done <<EOF
+$CONNECT_ROWS
+EOF
+  return 2
+}
+connect_name() {   # <name>: a service name, else exit 2 (nothing is looked up)
+  matches "$1" '^[a-z][a-z0-9-]{0,31}$' || die 2 "not a connector name: $(printf '%s' "$1" | LC_ALL=C tr -c 'A-Za-z0-9._-' '?' | cut -c1-40) (ade connect lists them)"
+}
+connect_pick() {   # <name>: the recipe of a known, verified service into R_*, else exit 2 with the reason or the closest names
+  local rc; connect_row "$1"; rc=$?
+  case "$rc" in
+    1) die 2 "the recipe of $1 is refused: $(printf '%s' "$R_WHY" | no_ctl)" ;;
+    2) local near; near="$(printf '%s\n' "$CONNECT_ROWS" | awk -F "$US" '{ print $2 }' | python3 -c 'import difflib,sys; n=[l.strip() for l in sys.stdin if l.strip()]; print(", ".join(difflib.get_close_matches(sys.argv[1], n, n=3, cutoff=0.5)))' "$1")"
+      die 2 "no connector named $1${near:+ (closest: $near)}; ade connect lists them" ;;
+  esac
+}
+tier_words() {
+  case "$1" in 0) echo "nothing to set up" ;; 1) echo "the vendor's published app id sits in the plugin" ;; 2) echo "a sign-in you already have" ;;
+    3) echo "your own app (client id and secret)" ;; *) echo "an administrator must act first" ;; esac
+}
+connect_folder() { git rev-parse --show-toplevel 2> /dev/null || pwd -P; }
+connect_has() { grep -qxF -- "$2" <<EOF
+$1
+EOF
+}
+# connect_installed <folder> <plugin>: that ade-skills plugin is installed for this folder (Claude Code's own list)
+connect_installed() { plugin_version "" "$1" "$2@ade-skills" > /dev/null; }
+# connect_gh_signed_in <gh>: signed in to github.com's active account (read-only; its output, masked token lines
+# included, is never shown). A gh older than --active (multi-account gh) is asked about github.com alone. (The guide
+# has its own gh_signed_in, for $GH_HOST.)
+connect_gh_signed_in() {
+  local err; err="$("$1" auth status --hostname github.com --active 2>&1 > /dev/null < /dev/null)" && return 0
+  case "$err" in *"unknown flag: --active"*) "$1" auth status --hostname github.com > /dev/null 2>&1 < /dev/null ;; *) return 1 ;; esac
+}
+gh_token_env() { local v; for v in GH_TOKEN GITHUB_TOKEN; do printenv "$v" > /dev/null 2>&1 && { echo "$v"; return 0; }; done; return 1; }
+
+connect_list() {
+  local top names tag s t j tier st rest here refused=0
+  connect_sources
+  top="$(connect_folder)"; names="$(connectors_py "$top/.ade/connectors.json" get)" || exit 2
+  connect_recipes
+  printf '%-12s %-8s %-4s %-6s %s\n' service job tier state here
+  while IFS="$US" read -r tag s t j tier st rest; do
+    [ -n "$tag" ] || continue
+    if [ "$tag" = refused ]; then echo "ade: the recipe of $s is refused: $(printf '%s' "$t" | no_ctl)" >&2; refused=1; continue; fi
+    here=-; connect_has "$names" "$s" && here=connected
+    printf '%-12s %-8s %-4s %-6s %s\n' "$s" "$j" "$tier" "$st" "$here" | no_ctl
+  done <<EOF
+$CONNECT_ROWS
+EOF
+  echo; echo "tiers: what you do before signing in"
+  for tier in 0 1 2 3 4; do echo "  $tier  $(tier_words "$tier")"; done
+  [ "$refused" = 0 ] || exit 2
+}
+
+connect_service() {
+  local name="$1" top names p added gh="" via v
+  connect_name "$name"
+  connect_sources
+  connect_tty connect
+  top="$(connect_folder)"; project_folder_ok "$top" connect
+  names="$(connectors_py "$top/.ade/connectors.json" get)" || exit 2
+  connect_recipes; connect_pick "$name"
+  { echo "$R_TITLE ($R_JOB)"
+    echo "  setup: tier $R_TIER, $(tier_words "$R_TIER")"
+    echo "  reaches: $R_REACHES"
+    case "$R_KIND" in
+      plugin) echo "  Reading needs no question; every change asks."
+        echo "  If you also add $R_TITLE as a connector to your Claude account, the guard does not cover that connector's tools: Claude Code's own permission settings decide for them, in every folder." ;;
+      cli) echo "  Reading, fetching and ordinary local git work need no question; pushing and every other change on GitHub asks in this folder." ;;
+      *) echo "  Reading needs no question; every change asks, in folders where ade installed the guard. In other folders, Claude Code's own permission settings decide." ;;
+    esac
+    [ -z "$R_DOCS" ] || echo "  docs: $R_DOCS"; } | no_ctl
+  if [ "$R_STATE" = held ]; then printf '%s is not available yet: %s\n' "$name" "$R_HELD" | no_ctl; fi
+  if [ "$R_TIER" = 4 ]; then printf 'Your administrator must first: %s\n' "$R_ADMIN" | no_ctl; echo "ade sends nothing; forward this yourself."; exit 3; fi
+  [ "$R_STATE" != held ] || exit 3
+  for p in "$R_A1" "$R_A2"; do   # the recipe's gates: a yes at the terminal, kept nowhere; named as the recipe's own
+    [ -n "$p" ] || continue
+    tty_confirm "$(printf '%s asks: %s' "$R_TITLE" "$p" | no_ctl)" || { ANSWER=""; echo "stopped: nothing changed"; exit 1; }
+  done; ANSWER=""
+  if [ "$R_KIND" = cli ]; then gh="$(abs_tool gh "$top")" || { [ $? = 2 ] && exit 2; die 1 "gh is not installed: ade setup --tools installs it; nothing changed"; }; fi
+  via=""; [ -z "$CONNECT_OTHER" ] || via=", with $CONNECT_OTHER"
+  tty_confirm "Connect $name in $top$via?" || { ANSWER=""; echo "stopped: nothing changed"; exit 1; }; ANSWER=""
+  cd "$top" || die 1 "cannot enter $top"
+  for p in guard $R_PLUGIN; do
+    if connect_installed "$top" "$p"; then echo "$p@ade-skills: already installed here"
+    else skills_py plugin "$top" "$CONNECT_SRC/.claude-plugin/marketplace.json" "$p" || exit 2; plugin_add "$top" "$p" < /dev/null; fi
+  done
+  case "$R_KIND" in
+    plugin) echo "Sign in yourself, in Claude Code: open it in $top, run /mcp, pick plugin:$R_PLUGIN:$R_PLUGIN, choose Authenticate, and sign in in the browser." | no_ctl
+      if [ "$R_TIER" = 1 ] && [ -n "$R_ADMIN" ]; then printf 'Your administrator must first: %s\n' "$R_ADMIN" | no_ctl; fi ;;
+    cli) if connect_gh_signed_in "$gh"; then
+        if v="$(gh_token_env)"; then echo "gh is signed in to github.com through $v (gh auth status); ade never reads the token"
+        else echo "gh is signed in to github.com (gh auth status); ade never reads its token"; fi
+      elif tty_confirm "Sign in to GitHub (github.com) with gh now?"; then ANSWER=""
+        "$gh" auth login --hostname github.com < /dev/tty || die 1 "the gh sign-in did not finish; run gh auth login --hostname github.com, then ade connect $name again"
+        connect_gh_signed_in "$gh" || die 1 "gh is still not signed in to github.com; run gh auth login --hostname github.com, then ade connect $name again"
+      else ANSWER=""; die 1 "gh is not signed in to github.com: run gh auth login --hostname github.com yourself, then ade connect $name again"; fi ;;
+    claude-ai) printf 'Nothing to run here: the %s connector is on in your Claude account (claude.ai, Settings, Connectors), and is shared by every folder of that account; ade cannot see that sign-in.\n' "$R_CONNECTOR" ;;
+  esac
+  added="$(connectors_py "$top/.ade/connectors.json" add "$name")" || exit 2
+  if [ "$added" = added ]; then
+    local hub; hub="$( (find_hub) 2> /dev/null)" && journal_line "$hub" "ade connect: $name connected in $(basename "$top")"
+  fi
+  echo "$name: connected in $top (.ade/connectors.json)"
+  echo "next: ade connect status $name"
+}
+
+connect_status() {
+  local top names want="${1:-}" n st why gaps=0 p gh v
+  [ -z "$want" ] || connect_name "$want"
+  connect_sources
+  top="$(connect_folder)"; names="$(connectors_py "$top/.ade/connectors.json" get)" || exit 2
+  [ -n "$names" ] || { echo "no connectors recorded in $top (.ade/connectors.json)"; [ -z "$want" ] || exit 1; return 0; }
+  if [ -n "$want" ]; then connect_has "$names" "$want" || { echo "connector $want: not in $top/.ade/connectors.json"; exit 1; }; names="$want"; fi
+  connect_recipes
+  while IFS= read -r n; do
+    [ -n "$n" ] || continue
+    if ! connect_row "$n"; then st=missing; why="no verified recipe at ade-skills $ADE_SKILLS_REF"
+    elif [ "$R_STATE" = held ]; then st=missing; why="held: $R_HELD"
+    else st=""; why=""
+      for p in guard $R_PLUGIN; do connect_installed "$top" "$p" || { st=missing; why="plugin $p is not installed here"; break; }; done
+      if [ -z "$st" ]; then case "$R_KIND" in
+        cli) gh="$(abs_tool gh "$top" 2> /dev/null)"; v=$?
+             if [ "$v" = 2 ]; then st=missing; why="the gh on PATH lies inside $top; ade does not run it"
+             elif [ "$v" != 0 ]; then st=missing; why="gh is not installed: ade setup --tools"
+             elif connect_gh_signed_in "$gh"; then st=ready; v="$(gh_token_env)" && why="the sign-in comes from $v"
+             else st=missing; why="gh is not signed in to github.com: gh auth login --hostname github.com"; fi ;;
+        plugin) st=unknown; why="ade cannot see this sign-in; /mcp in Claude Code shows it" ;;
+        *) st=unknown; why="the sign-in is in your Claude account; ade cannot see it" ;;
+      esac; fi
+    fi
+    echo "connector $n: $st${why:+ ($why)}" | no_ctl
+    case "$st" in missing|outside) gaps=$((gaps + 1)) ;; esac
+  done <<EOF
+$names
+EOF
+  [ "$gaps" = 0 ] || exit 1
+}
+
+connect_disconnect() {
+  local name="${1:-}" top cl
+  [ -n "$name" ] || die 2 "$CONNECT_USAGE"; connect_name "$name"
+  connect_sources
+  connect_tty "connect disconnect"
+  top="$(connect_folder)"; project_folder_ok "$top" "connect disconnect"
+  connect_recipes; connect_pick "$name"
+  case "$R_KIND" in
+    plugin) tty_confirm "Sign out of $name in Claude Code (claude mcp logout plugin:$R_PLUGIN:$R_PLUGIN)?" || { ANSWER=""; echo "stopped: nothing changed"; exit 1; }; ANSWER=""
+      cl="$(abs_tool claude "$top")" || { [ $? = 2 ] && exit 2; die 1 "claude is not on PATH; install Claude Code first"; }
+      (cd "$top" && "$cl" mcp logout "plugin:$R_PLUGIN:$R_PLUGIN" < /dev/null) || die 1 "claude mcp logout plugin:$R_PLUGIN:$R_PLUGIN failed"
+      echo "$name: signed out (claude mcp logout plugin:$R_PLUGIN:$R_PLUGIN)" ;;
+    cli) echo "$name: ade changes nothing (the gh sign-in is shared by every folder of this machine user); to sign out there: gh auth logout --hostname github.com" ;;
+    *) printf '%s: ade changes nothing (the %s connector is shared by every folder of your Claude account); to sign out: the connector settings of your Claude account (claude.ai, Settings, Connectors)\n' "$name" "$R_CONNECTOR" ;;
+  esac
+  if [ -n "$R_REVOKE" ]; then printf 'to revoke its access at %s too: %s\n' "$R_TITLE" "$R_REVOKE" | no_ctl; fi
+  echo "the record (.ade/connectors.json) is left as it is: dropping $name from this project is a reviewed edit of that file"
+}
+
+cmd_connect() {
+  [ $# -gt 0 ] || { connect_list; return; }
+  case "$1" in
+    status) [ $# -le 2 ] || die 2 "$CONNECT_USAGE"; [ $# -eq 1 ] || connect_name "$2"; connect_status "${2:-}" ;;
+    disconnect) [ $# -eq 2 ] || die 2 "$CONNECT_USAGE"; connect_disconnect "$2" ;;
+    test|--check) die 2 "ade connect $1 is not in this version of ade yet" ;;
+    *) [ $# -eq 1 ] || die 2 "$CONNECT_USAGE"; connect_service "$1" ;;
+  esac
+}
+
 # ade update (story A11): everything current while every session, agent and orchestrator keeps running. ade itself is
 # replaced by one rename (bash reads a script as it runs it, so the running file is never written); nothing is killed.
 ADE_CLI_BASE="${ADE_CLI_BASE:-https://raw.githubusercontent.com/better-ade/ade-cli}"
 RESTART_FILES="bin/chat bin/chat.py bin/brain bin/brain.py"   # the orchestrator's code: a running one needs a restart
 ver_gt() { awk -v a="$1" -v b="$2" 'BEGIN { split(a, x, "."); split(b, y, "."); for (i = 1; i <= 3; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 }; exit 1 }'; }
-dl() {   # dl <url> [file]: https only (file:// for tests), never more than ADE_UPDATE_TIMEOUT seconds
-  local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"
-  if [ -n "${2:-}" ]; then curl --proto "$proto" --proto-redir "$proto" -fsSL --max-time "${ADE_UPDATE_TIMEOUT:-20}" "$1" -o "$2" 2> /dev/null
-  else curl --proto "$proto" --proto-redir "$proto" -fsSL --max-time "${ADE_UPDATE_TIMEOUT:-20}" "$1" 2> /dev/null; fi
+# file:// URLs only in the test suite: ADE_TEST_ALLOW_FILE_URLS=1 counts only with the marker ADE_TEST_SUITE=1 (tests
+# only; tests/helpers.sh sets it), and ade says so on stderr whenever both are set
+file_urls_ok() { [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && [ "${ADE_TEST_SUITE:-}" = 1 ]; }
+dl() {   # dl <url> [file]: https only, redirects too (file:// for tests), never more than ADE_UPDATE_TIMEOUT seconds;
+  # ADE_DL_MAX caps the size of the download (curl --max-filesize) and is checked again after it
+  local proto="=https" max=(); file_urls_ok && proto="=https,file"
+  [ -z "${ADE_DL_MAX:-}" ] || max=(--max-filesize "$ADE_DL_MAX")
+  if [ -n "${2:-}" ]; then curl --proto "$proto" --proto-redir "$proto" -fsSL "${max[@]+"${max[@]}"}" --max-time "${ADE_UPDATE_TIMEOUT:-20}" "$1" -o "$2" 2> /dev/null || return 1
+    [ -z "${ADE_DL_MAX:-}" ] || [ "$(wc -c < "$2" | tr -d ' ')" -le "$ADE_DL_MAX" ]
+  else curl --proto "$proto" --proto-redir "$proto" -fsSL "${max[@]+"${max[@]}"}" --max-time "${ADE_UPDATE_TIMEOUT:-20}" "$1" 2> /dev/null; fi
 }
 latest_version() { local v; v="$(dl "$ADE_CLI_BASE/main/VERSION" | tr -d ' \r\n')"; matches "$v" '^[0-9]+\.[0-9]+\.[0-9]+$' && echo "$v"; }
 UPD_CHANGED=""
@@ -3108,7 +3692,7 @@ comp_installed() {   # <component> <hub>: the installed version (X.Y.Z), or noth
 }
 fetch_manifest() {   # <component>: its latest release.json, checked, into $UPD_DIR/<c>.latest; TERM stops the request
   local c="$1" tmp proto="=https" line cp=""
-  [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"
+  file_urls_ok && proto="=https,file"
   tmp="$(mktemp "$UPD_DIR/.$c.XXXXXX")" || return 1
   trap '[ -z "$cp" ] || kill "$cp" 2> /dev/null; rm -f "$tmp"; exit 1' TERM
   curl --proto "$proto" --proto-redir "$proto" -fsSL --connect-timeout 2 --max-time 2 \
@@ -3509,7 +4093,7 @@ bun_asset() {   # the release zip for this OS and CPU, without .zip; 1 = bun has
   echo "bun-$os-$cpu"
 }
 bun_get() {   # <url> <file>: https only, redirects too (file:// for tests); curl's own reason in <file>.err
-  local proto="=https"; [ "${ADE_TEST_ALLOW_FILE_URLS:-}" = 1 ] && proto="=https,file"
+  local proto="=https"; file_urls_ok && proto="=https,file"
   curl --proto "$proto" --proto-redir "$proto" --tlsv1.2 -fsSL --connect-timeout 20 --max-time 900 "$1" -o "$2" 2> "$2.err" < /dev/null
 }
 bun_fetch() {   # the pinned bun into ~/.bun/bin/bun; 1 = nothing installed, BUN_WHY (one plain line) and BUN_DETAILS say why
@@ -5363,6 +5947,7 @@ cmd_version() {
   echo "ade ${v:-unknown}"
 }
 
+file_urls_ok && echo "ade: test mode (ADE_TEST_SUITE and ADE_TEST_ALLOW_FILE_URLS): file:// URLs are allowed; for the test suite only" >&2
 bun_path
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 case "$cmd" in   # A12: the daily update check, never for the commands tmux and ade itself run all the time
@@ -5397,6 +5982,7 @@ case "$cmd" in
   open) cmd_open "$@" ;;
   clean) cmd_clean "$@" ;;
   restore) cmd_restore "$@" ;;
+  connect) cmd_connect "$@" ;;
   update) cmd_update "$@" ;;
   reset) cmd_reset reset "$@" ;;
   uninstall) cmd_reset uninstall "$@" ;;

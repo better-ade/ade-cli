@@ -32,6 +32,7 @@ settle() {   # the detached fetch (and an auto-install) has finished
   for i in $(seq 1 150); do [ -d "$U/fetching" ] || [ -d "$U/installing" ] || return 0; sleep 0.1; done; fail "the background job did not finish"
 }
 cmd() { "$A" hub list > /dev/null 2> "$1"; }   # one ordinary command, its banner lines in $1
+quiet() { [ -z "$(grep -v '^ade: test mode ' "$1")" ]; }   # nothing in $1 but ade's test-mode line (A16)
 
 once_a_day_once_per_version() {   # AC2: the first command starts the day's fetch, the next ones read the cache
   fresh; rel_fixture; export ADE_NO_AUTO_UPDATE=1; publish 1.3.0
@@ -119,13 +120,14 @@ PY
 
 offline_never_blocks() {   # AC6
   fresh; rel_fixture; export ADE_RELEASES_BASE="file://$T/nowhere"
-  cmd "$T/err" || fail "a missing manifest never fails a command"; settle; [ ! -s "$T/err" ] || { cat "$T/err"; fail "quiet"; }
+  cmd "$T/err" || fail "a missing manifest never fails a command"; settle
+  quiet "$T/err" || { cat "$T/err"; fail "quiet"; }
   [ -s "$U/checked" ] || fail "retried tomorrow (stamp written)"
   cmd "$T/err"; assert_eq "$(grep -c 'release.json' "$FAKE_LOG")" 1 "not again today"
   fresh; rel_fixture; d="$T/gh/better-ade/ade-cli/releases/latest/download"; mkdir -p "$d"; echo "{not json" > "$d/release.json"
-  cmd "$T/e"; settle; cmd "$T/err" || fail "malformed"; [ ! -s "$T/err" ] || fail "a malformed manifest is ignored"
+  cmd "$T/e"; settle; cmd "$T/err" || fail "malformed"; quiet "$T/err" || fail "a malformed manifest is ignored"
   echo '{"component": "ade-cli", "version": "x"}' > "$d/release.json"; rm -f "$U/checked"
-  cmd "$T/e"; settle; cmd "$T/err" || fail "bad version"; [ ! -s "$T/err" ] || fail "a bad version is ignored"
+  cmd "$T/e"; settle; cmd "$T/err" || fail "bad version"; quiet "$T/err" || fail "a bad version is ignored"
   printf '{"component": "ade-cli", "version": "1.3.0", "summary": "hi \\u001b]0;pwned\\u0007 \\u001b[31mred"}\n' > "$d/release.json"; rm -f "$U/checked"
   export ADE_NO_AUTO_UPDATE=1; cmd "$T/e"; settle; cmd "$T/err"; assert_contains "$T/err" "ade-cli 1.3.0 is out" "the banner"
   ! grep -q "$(printf '\033')" "$T/err" || fail "no escape sequence from a manifest reaches the terminal"

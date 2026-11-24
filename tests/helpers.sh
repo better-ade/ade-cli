@@ -15,6 +15,8 @@ drop_t() {
 fresh() {
   unset ADE_HUB ADE_HOOK_BIN ADE_METHOD_REPO ADE_REGISTRY_REPO ADE_METHOD_REF ADE_REGISTRY_REF ADE_SKILLS_REPO ADE_SKILLS_REF CLAUDE_CONFIG_DIR
   unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID CLAUDE_PID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_EXECPATH CLAUDE_PROJECT_DIR   # never an agent session (ade reset refuses one)
+  unset CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_PLUGIN_ROOT CLAUDE_CODE_SSE_PORT   # the rest of ade connect's ten
+  unset GH_TOKEN GITHUB_TOKEN; export ADE_TEST_SUITE=1   # the tests-only marker: file:// URLs count only with it (ade says so)
   export ADE_NO_UPDATE_CHECK=1 ADE_NO_AUTO_UPDATE=1   # never a real release check (test_releases.sh unsets them)
   drop_t; T="$(mktemp -d "${TMPDIR:-/tmp}/ade-test.XXXXXX")"; T="$(cd "$T" && pwd -P)"; trap drop_t EXIT
   export ADE_NO_CLAUDE_UPDATE=1   # the Claude Code update step is tested on its own (test_update.sh)
@@ -87,6 +89,9 @@ make_skills_repo() {
 JSON
   commit_tag "$K" k v0.1.0; export ADE_SKILLS_REPO="$K" ADE_SKILLS_REF=v0.1.0
 }
+# PATH without gh (for the "gh missing" checks): only the folders holding git, python3, curl and the basics
+no_gh_path() { local d="$T/nogh" c p; mkdir -p "$d"; for c in git python3 bash sed awk grep mkdir cat dirname basename tr head tail mktemp mv chmod rm ls cp find sort printf env pwd date wc curl cut cksum shasum sha256sum uname; do
+  p="$(command -v "$c")" && ln -sf "$p" "$d/$c"; done; echo "$d"; }
 # pty_run <input> <command...>: the command on a fresh pseudo-terminal (its own session), the input typed ahead
 # (\n escapes) with the terminal's echo off, so a typed key never shows in the transcript; prints what the terminal
 # showed and exits with the command's code

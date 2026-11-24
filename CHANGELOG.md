@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+- `ade connect` (A16): the connectors ADE knows, from recipes read only at the pinned ade-skills tag and only when
+  their sha256 matches that release's `release.json`; `ade connect <service>` at a person's terminal installs the
+  guard and the service's plugin in project scope, records the name in `.ade/connectors.json` (names only) and prints
+  the sign-in step the person does themselves; `status` and `disconnect`. ade never reads, stores or prints a token.
+  Until ade pins an ade-skills release with recipes it says so (exit 2).
+
 ## 0.2.8
 - `ade project add <path-or-git-url>... [--name N] [--no-init] [--yes]` (A21): load repos you already have into the hub.
   Each becomes a project folder made by the hub's own `bin/new`, with the Code row of its `ACCESS.md` filled from the

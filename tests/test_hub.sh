@@ -19,9 +19,6 @@ stub_gh() {
   printf '#!/bin/bash\necho "$PWD: $*" >> "$GH_LOG"\n[ "$1 $2" = "repo create" ] && git clone -q "%s" "$3"\nexit 0\n' "$TPL" > "$d/gh"
   chmod +x "$d/gh"; export PATH="$d:$PATH"
 }
-# PATH without gh (for the "gh missing" check): only the folders holding git, python3 and the basics
-no_gh_path() { local d="$T/nogh"; mkdir -p "$d"; for c in git python3 bash sed awk grep mkdir cat dirname basename tr head tail mktemp mv chmod rm ls cp find sort printf env pwd date wc; do
-  p="$(command -v "$c")" && ln -sf "$p" "$d/$c"; done; echo "$d"; }
 
 new_with_github() {   # AC1
   fresh; make_template; stub_gh
