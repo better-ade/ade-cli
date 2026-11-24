@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.10
 - The guide asks which tools you use (A23): a new optional step after your hub lists the services ade has a recipe
   for at the pinned ade-skills tag, then the coming ones, then any other; a ready pick runs `ade connect <service>`
   in the hub (you sign in yourself), a coming or other pick is noted by name in the hub's `.ade/tools.json`. Enter
