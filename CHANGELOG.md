@@ -6,6 +6,8 @@
   guard and the service's plugin in project scope, records the name in `.ade/connectors.json` (names only) and prints
   the sign-in step the person does themselves; `status` and `disconnect`. ade never reads, stores or prints a token.
   Until ade pins an ade-skills release with recipes it says so (exit 2).
+- Pins: ade-skills `v0.1.0` -> `v0.9.0` (the README's `ade skills add notes` works, and `ade connect` has recipes),
+  ade-method `v2.1.0` -> `v2.2.0`; ade-agent-registry stays at `v1.1.0`, its latest release.
 
 ## 0.2.8
 - `ade project add <path-or-git-url>... [--name N] [--no-init] [--yes]` (A21): load repos you already have into the hub.

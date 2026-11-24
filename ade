@@ -6,7 +6,7 @@ set -u
 unset SECRET ANSWER HUB_ANSWER CHOICE
 ADE_VERSION=""   # install.sh stamps this; a repo checkout reads VERSION beside the script
 ADE_METHOD_REPO="${ADE_METHOD_REPO:-https://github.com/better-ade/ade-method}"
-ADE_METHOD_REF="${ADE_METHOD_REF:-v2.1.0}"
+ADE_METHOD_REF="${ADE_METHOD_REF:-v2.2.0}"
 ADE_REGISTRY_REPO="${ADE_REGISTRY_REPO:-https://github.com/better-ade/ade-agent-registry}"
 ADE_REGISTRY_REF="${ADE_REGISTRY_REF:-v1.1.0}"
 
@@ -283,7 +283,7 @@ cmd_agent() {
 # skills on the fly (story A7): BMAD skills via .claude/settings.json skillOverrides (absent = on, "name-only",
 # "off"), ade-skills plugins via the marketplace file and the project's enabledPlugins
 ADE_SKILLS_REPO="${ADE_SKILLS_REPO:-https://github.com/better-ade/ade-skills}"
-ADE_SKILLS_REF="${ADE_SKILLS_REF:-v0.1.0}"   # pinned like the other repos; ADE_SKILLS_REF overrides
+ADE_SKILLS_REF="${ADE_SKILLS_REF:-v0.9.0}"   # pinned like the other repos; ADE_SKILLS_REF overrides
 SKILLS_USAGE="usage: ade skills list | add <plugin> | enable <skill> | disable <skill> | search <word>"
 
 # skills_py <op> <project> [args]: the one place that reads and writes the settings (atomic; other keys kept)

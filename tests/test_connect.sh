@@ -126,8 +126,10 @@ connect_lists() {   # AC1
   assert_contains "$T/out" "0  nothing to set up" "the tier key"; assert_contains "$T/out" "4  an administrator must act first" "every tier"
   mkdir -p "$P/.ade"; echo '{"format": 1, "connectors": ["jira"]}' > "$P/.ade/connectors.json"
   bash "$ADE" connect > "$T/out" 2>&1 || fail "list with a record"; grep -Eq '^jira +tickets +0 +ready +connected$' "$T/out" || { cat "$T/out"; fail "here"; }
-  unset ADE_SKILLS_REF; bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "the default pin has no recipes yet"
+  ADE_SKILLS_REF=v0.6.0 bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "a release before recipes"
   assert_eq "$(body | wc -l | tr -d ' ')" 1 "says so in one line"; assert_contains "$T/out" "has no connectors yet" "the reason"
+  (unset ADE_SKILLS_REF; bash "$ADE" connect > "$T/out" 2>&1)   # the fixture has no tag at the default pin: refused later
+  assert_not_contains "$T/out" "has no connectors yet" "the default pin is a release with recipes"
   ADE_SKILLS_REF=main bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "a branch is refused"; assert_contains "$T/out" "vX.Y.Z tag" "why"
 }
 
