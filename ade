@@ -1582,6 +1582,22 @@ guide_new_hub() {   # a hub whose set-up stopped is picked up; else a name, aske
   [ -n "$name" ] || { ask_hub_name "$HOME/hubs"; name="$ANSWER"; }
   (hub_new "$name") || exit $?
 }
+# guide_git_identity (A22): the hub's first save is a git commit in the person's own name, and a raw machine has no git
+# name or email yet, so before the hub step the guide asks for what git lacks and sets it with git config --global.
+# Known: in git's config, or in both GIT_AUTHOR_<X> and GIT_COMMITTER_<X>; git's own guess (user@host) is not asked for.
+git_known() { [ -n "$(git config --get "user.$1" 2> /dev/null)" ] || { [ -n "$(printenv "GIT_AUTHOR_$2")" ] && [ -n "$(printenv "GIT_COMMITTER_$2")" ]; }; }
+guide_git_identity() {
+  git_known name NAME && git_known email EMAIL && return 0
+  echo "Your hub's commits carry your name and email, and git has none yet here."
+  echo "This sets them for git on this computer (git config --global user.name and user.email)."
+  if ! git_known name NAME; then ask_text "Your name, for git commits:"
+    git config --global user.name "$ANSWER" || die 1 "git could not save your name; run git config --global user.name \"Your Name\", then ade setup"; fi
+  if ! git_known email EMAIL; then
+    while ask_text "Your email, for git commits:"; ! matches "$ANSWER" '^[^@[:space:]]+@[^@[:space:]]+\.[^@[:space:]]+$'; do
+      ask_say "that is not an email address (like you@example.com); type it again"; done
+    git config --global user.email "$ANSWER" || die 1 "git could not save your email; run git config --global user.email you@example.com, then ade setup"; fi
+  echo "checked: git commits here are by $(git config --get user.name 2> /dev/null || echo "${GIT_AUTHOR_NAME:-}") <$(git config --get user.email 2> /dev/null || echo "${GIT_AUTHOR_EMAIL:-}")>"
+}
 guide_run() {   # <step>: the step itself; it stops ade (exit) when it cannot finish
   local hub rc
   case "$1" in
@@ -1592,7 +1608,7 @@ guide_run() {   # <step>: the step itself; it stops ade (exit) when it cannot fi
       agent_context && die 2 "a person signs in to Claude; an agent cannot; then run ade setup"
       until claude auth login; do failed sign-in "The Claude sign-in did not finish"; [ "$CHOICE" = sign-in ] || return 0; done ;;
     github) github_ready ;;
-    hub) guide_hub > /dev/null || guide_new_hub
+    hub) guide_hub > /dev/null || { guide_git_identity; guide_new_hub; }
       hub="$(find_hub)" || exit $?
       [ -n "$(conf_get "$hub" HUB_ROOT_PROVIDER)" ] || { setup_top "$hub"; setup_focus "$hub"; } ;;
     project) while :; do ( cmd_claude -- --permission-mode default "$SETUP_PROMPT" ); rc=$?; [ "$rc" != 0 ] || break
@@ -3993,7 +4009,7 @@ clip_copy() {   # <path>: onto the clipboard on stdin (pbcopy, wl-copy, xclip, x
 # the tools ade uses: the required ones (checked by install.sh and ade setup) and the viewer extras (one step in ade
 # setup); ade setup --tools installs what is missing with Homebrew (macOS) or apt (Ubuntu), after a yes at a terminal;
 # bun comes from its own release (bun_install), with neither
-REQUIRED_TOOLS="git python3 tmux gh gitleaks bun"
+REQUIRED_TOOLS="git python3 curl tmux gh gitleaks bun"   # curl before bun: bun_fetch downloads with it (A22)
 EXTRA_TOOLS="yazi bat glow poppler chafa code"
 tool_bin() { local c; for c in "$1" $([ "$1" = bat ] && echo batcat); do command -v "$c" 2> /dev/null && return 0; done; return 1; }   # Ubuntu names bat batcat
 tool_present() { case "$1" in poppler) command -v pdftotext && command -v pdftoppm ;; *) tool_bin "$1" ;; esac > /dev/null 2>&1; }
@@ -4001,6 +4017,7 @@ tools_missing() { local t out=""; for t in "$@"; do tool_present "$t" || out="${
 tool_what() {
   case "$1" in
     git) echo "required: hubs and projects are git repositories" ;; python3) echo "required: ade reads JSON with it" ;;
+    curl) echo "required: ade downloads bun, Claude Code and its updates with it" ;;
     tmux) echo "required: ade ui" ;; gh) echo "required: ade hub new on GitHub" ;;
     gitleaks) echo "required: the hub's secret scan before each save" ;; bun) echo "required: the Telegram plugin runs on it" ;;
     yazi) echo "extra: ade files with ADE_FILES=yazi; not read-only" ;; bat) echo "extra: syntax colours in ade view, else less -N" ;;
@@ -4042,7 +4059,7 @@ tools_install() {   # <tool>...: the packages (pkgs_install), then bun from its 
   return "$rc"
 }
 pkgs_install() {   # <tool>...: one question at a terminal, then brew install or apt-get install -y; 1 = not installed
-  local m="" t p pkgs="" cmd rc tmp; TOOLS_WHY=""
+  local m="" t p pkgs="" cmd pre rc tmp; TOOLS_WHY=""
   if on_macos; then command -v brew > /dev/null 2>&1 && m=brew; elif command -v apt-get > /dev/null 2>&1; then m=apt; fi
   if [ -z "$m" ]; then
     if on_macos; then echo "Homebrew is not installed (https://brew.sh), so ade cannot install: $*"
@@ -4055,17 +4072,29 @@ pkgs_install() {   # <tool>...: one question at a terminal, then brew install or
     else echo "$t: not in apt; get it from $(tool_page "$t")"; fi
   done
   [ -n "$pkgs" ] || return 1
-  if [ "$m" = brew ]; then cmd="brew install $pkgs"; elif [ "$(id -u)" = 0 ]; then cmd="apt-get install -y $pkgs"; else cmd="sudo apt-get install -y $pkgs"; fi
-  if agent_context; then echo "ade installs nothing from an agent session; run it yourself at a terminal: $cmd"; return 1; fi
-  { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || { echo "to install them, run at a terminal: $cmd (or ade setup --tools)"; return 1; }
-  tty_confirm "Install $pkgs now? This runs: $cmd" || { echo "nothing installed (later: ade setup --tools)"; return 1; }
+  # apt (A22): apt-get update first, always (a raw Ubuntu has no package lists yet, so install alone cannot find a
+  # package), then apt-get install -y; with sudo unless ade runs as root, and nothing without either
+  if [ "$m" = brew ]; then cmd="brew install $pkgs"; pre=""
+  elif [ "$(id -u)" = 0 ]; then cmd="apt-get install -y $pkgs"; pre="apt-get update"
+  else cmd="sudo apt-get install -y $pkgs"; pre="sudo apt-get update"
+    command -v sudo > /dev/null 2>&1 || { echo "there is no sudo here, so ade cannot install: $pkgs; as root, run: apt-get update && apt-get install -y $pkgs"; return 1; }
+  fi
+  local all="${pre:+$pre && }$cmd"
+  if agent_context; then echo "ade installs nothing from an agent session; run it yourself at a terminal: $all"; return 1; fi
+  { [ -t 0 ] && : < /dev/tty; } 2> /dev/null || { echo "to install them, run at a terminal: $all (or ade setup --tools)"; return 1; }
+  tty_confirm "Install $pkgs now? This runs: $all" || { echo "nothing installed (later: ade setup --tools)"; return 1; }
   tmp="$(mk_tmp)" || tmp=""
-  # cmd: ade's own words (the package names above), split on purpose. Its lines are shown as they come and kept, so a
-  # failure can be said in one plain line (install_why); ade repairs nothing itself (no brew trust, no system update)
+  # pre, cmd: ade's own words (the package names above), split on purpose. Their lines are shown as they come and kept,
+  # so a failure can be said in one plain line (install_why); ade repairs nothing itself (no brew trust)
+  if [ -n "$pre" ]; then
+    if [ -n "$tmp" ]; then $pre < /dev/tty 2>&1 | tee "$tmp/out"; rc="${PIPESTATUS[0]}"; else $pre < /dev/tty; rc=$?; fi
+    if [ "$rc" != 0 ]; then [ -z "$tmp" ] || rm_tmp "$tmp"
+      TOOLS_WHY="$pre failed (exit $rc), so nothing is installed; check the network and apt's sources"; echo "$TOOLS_WHY"; return 1; fi
+  fi
   if [ -n "$tmp" ]; then $cmd < /dev/tty 2>&1 | tee "$tmp/out"; rc="${PIPESTATUS[0]}"; else $cmd < /dev/tty; rc=$?; fi
   if [ "$rc" = 0 ]; then [ -z "$tmp" ] || rm_tmp "$tmp"; echo "installed: $pkgs"; return 0; fi
   TOOLS_WHY="$(install_why "${tmp:+$tmp/out}" "$pkgs")"; [ -z "$tmp" ] || rm_tmp "$tmp"
-  [ -n "$TOOLS_WHY" ] || TOOLS_WHY="$cmd failed (exit $rc)$([ "$m" = apt ] && echo '; when apt cannot find a package, run apt-get update first')"
+  [ -n "$TOOLS_WHY" ] || TOOLS_WHY="$cmd failed (exit $rc)"
   echo "$TOOLS_WHY"; return 1
 }
 # bun (the Telegram plugin runs on it) is a required tool that ade installs itself, with neither Homebrew nor the Xcode

@@ -58,6 +58,23 @@ main itself (`ADE_CLI_REF=v0.1.0` picks another release by its tag).
 curl -fsSL https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh | bash
 ```
 
+**On Ubuntu** (server or desktop, 24.04; [A22](docs/stories/A22-raw-ubuntu.md)): a fresh Ubuntu Server has no `curl`,
+`git` or `python3`, and Ubuntu Desktop has no `curl` or `git`. Install them first, or let the installer offer it:
+
+```bash
+sudo apt-get update && sudo apt-get install -y curl git python3
+```
+
+Ubuntu Desktop ships `wget`, so its one line can also be this (the installer then downloads with `wget`):
+
+```bash
+wget -qO- https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh | bash
+```
+
+The installer names anything it still lacks in one line and, after your yes at the terminal, installs it with
+`sudo apt-get update && sudo apt-get install -y`. `ade setup` does the same for the rest (`tmux`, `gh`, `gitleaks`),
+downloads `bun` itself, and asks for your git name and email when git has none yet.
+
 ## Quick start
 
 ```bash
