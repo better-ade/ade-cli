@@ -27,6 +27,7 @@ PY
 # bun is missing, and Homebrew is there only to show it is never asked for bun
 world() {
   fresh; F="$T/fakebin"; H="$T/hub"; B="$HOME/.bun/bin/bun"; mkdir -p "$F" "$T/cwd"; farm
+  export ADE_SKILLS_REPO="$T/no-ade-skills"   # A23: the guide's tools step never fetches recipes from the network here
   export CALLS="$T/calls" ADE_HUB="$H" SHELL=/bin/zsh; : > "$CALLS"; unset FAKE_OS FAKE_CPU FAKE_ROSETTA
   make_hub "$H" acme; printf 'HUB_NAME=acme\nHUB_ROOT_PROVIDER=anthropic\n' > "$H/hub.conf"; mkdir -p "$H/projects/web"
   printf '#!/bin/bash\necho "chat $* bun=$(command -v bun)" >> "$CALLS"\n' > "$H/bin/chat"
@@ -177,7 +178,7 @@ bun_in_the_guide_tools_step() {   # the guide's tools step installs it, before a
   world; rm "$F/brew"; token="$T/keystore"; printf '#!/bin/bash\n[ "${1:-}" = set ] && { cat > /dev/null; : > "%s"; exit 0; }\n[ -f "%s" ] && echo "telegram stored"; exit 0\n' "$token" "$token" > "$H/bin/keys"
   rm -rf "$H/projects/web"; printf '#!/bin/bash\n[ "$1 $2" = "auth status" ] && exit 0\nmkdir -p projects/web\n' > "$F/claude"
   talk "y\ny\n123456789:AAH-S3CRETs3cretS3CRETs3cretS3CRETs3c\nlater\n" setup
-  assert_contains "$T/out" "Step 6 of 6: Telegram (optional)" "a first run reaches the Telegram step"; assert_not_contains "$T/out" "Next: bun" "which has nothing to do about bun"
+  assert_contains "$T/out" "Step 7 of 7: Telegram (optional)" "a first run reaches the Telegram step"; assert_not_contains "$T/out" "Next: bun" "which has nothing to do about bun"
   assert_eq "$(grep -c 'Install bun now' "$T/out")" 1 "asked once, in the tools step"
   world; : > "$CALLS"; PATH="$F:$T/sys" "$BASH" "$REPO/install.sh" "$T/prefix" > "$T/out" 2>&1 < /dev/null
   assert_contains "$T/out" "missing tools ade needs: bun" "install.sh, piped: bun is named"; assert_contains "$T/out" "to install bun, run at a terminal: ade setup --tools" "with how"

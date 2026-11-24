@@ -1503,11 +1503,11 @@ github_ready() {
 # The guide (A18): ade setup walks from nothing to a working hub. The steps are listed with their state; each step
 # not done says what it is and what it changes, runs, and is checked; done steps are skipped, so ade setup again
 # resumes. Optional steps are offered in a run that did a required step. Step ids: .ade/context/hub-interface.md.
-GUIDE_STEPS="claude-code claude-sign-in github hub project telegram"   # A16 adds its "tools" step after "hub"
-GUIDE_OPTIONAL="telegram"
+GUIDE_STEPS="claude-code claude-sign-in github hub tools project telegram"
+GUIDE_OPTIONAL="tools telegram"
 guide_title() {
   case "$1" in claude-code) echo "Claude Code" ;; claude-sign-in) echo "Sign in to Claude" ;; github) echo "Sign in to GitHub" ;;
-    hub) echo "Your hub" ;; project) echo "Your first project" ;; telegram) echo "Telegram (optional)" ;; esac
+    hub) echo "Your hub" ;; tools) echo "Your tools (optional)" ;; project) echo "Your first project" ;; telegram) echo "Telegram (optional)" ;; esac
 }
 guide_hub() { (find_hub) 2> /dev/null; }
 first_project() { local d; for d in "$1"/projects/*/; do [ -d "$d" ] && { basename "$d"; return 0; }; done; return 1; }
@@ -1523,6 +1523,11 @@ guide_state() {   # <step>: its state in a few words; 0 when it is done (an opti
     hub) [ -n "$hub" ] || { echo "none yet"; return 1; }
       [ -n "$(conf_get "$hub" HUB_ROOT_PROVIDER)" ] && { a="$(conf_get "$hub" HUB_PROVIDERS_UNTESTED)"; echo "$(hub_label "$hub") ($(tilde "$hub"))${a:+; $a not tested}"; return 0; }
       echo "$(hub_label "$hub"): its agents are not chosen yet" ;;
+    tools) [ -n "$hub" ] || { echo "none yet"; return 1; }
+      p="$(connectors_py "$hub/.ade/connectors.json" get 2> /dev/null | paste -sd , - | sed 's/,/, /g')"
+      a="$(tools_py "$hub/.ade/tools.json" get 2> /dev/null | paste -sd , - | sed 's/,/, /g')"
+      [ -n "$p$a" ] || { echo "none yet"; return 1; }
+      echo "${p:+connected: $p}${p:+${a:+; }}${a:+noted: $a}"; return 0 ;;
     project) [ -n "$hub" ] && p="$(first_project "$hub")" && { echo "$p"; return 0; }; echo "none yet" ;;
     telegram) [ -n "$hub" ] || { echo off; return 1; }; tg_state "$hub"; return $? ;;
   esac
@@ -1546,6 +1551,8 @@ guide_about() {   # <step>: what it is and what it changes, before it runs
       echo "sign-in is Claude Code's own, in your browser; ade stores nothing." ;;
     hub) echo "Your hub is where ADE keeps its memory: a folder in ~/hubs, saved in a private"
       echo "repository on your GitHub. ADE sets it up, then you pick its agents." ;;
+    tools) echo "Optional: the tools you use for this work. ade connects the ones it has a recipe"
+      echo "for (you sign in yourself, here) and notes the rest by name only; Enter skips." ;;
     project) echo "ADE opens Claude Code at your hub: it asks about your work and sets up your"
       echo "first project with you, asking before each change. /exit comes back here." ;;
     telegram) echo "Optional: a Telegram bot of your own lets you reach your main agent. A yes asks"
@@ -1615,17 +1622,78 @@ guide_run() {   # <step>: the step itself; it stops ade (exit) when it cannot fi
         failed session "Claude Code stopped early (exit $rc)"
         [ "$CHOICE" != go-on ] || { echo "Going on; this step is not done: ade setup comes back to it."; break; }
       done ;;
+    tools) hub="$(find_hub)" || exit $?; guide_tools "$hub" ;;
     telegram) hub="$(find_hub)" || exit $?; setup_telegram "$hub" ;;
   esac
+}
+# guide_tools <hub> (A23): which tools the person uses. The list is the recipes at the pinned ade-skills tag, checked as
+# ade connect checks them: ready ones not connected yet, then held ones ("coming") not noted yet, then other. A ready
+# pick runs ade connect <service> itself, in the hub (the person signs in at this terminal); a coming or other pick is
+# noted by name in the hub's .ade/tools.json. Nothing secret passes through: names only, an answer shaped like an
+# address, key or token is refused and never shown. Enter, the end of input or no terminal skips it.
+guide_tools() {
+  local hub="$1" conn noted rows tag sv ti jb st items=() ready=" " coming=" " pick notes="" n out
+  if ! { [ -t 0 ] && : < /dev/tty; } 2> /dev/null; then echo "skipped: no terminal here; run ade setup at a terminal later to pick your tools"; return 0; fi
+  conn="$(connectors_py "$hub/.ade/connectors.json" get)" || { echo "skipped: the hub's .ade/connectors.json is not valid (above)"; return 0; }
+  noted="$(tools_py "$hub/.ade/tools.json" get)" || { echo "skipped: the hub's .ade/tools.json is not valid (above)"; return 0; }
+  rows="$( (connect_recipes 2> /dev/null; printf '%s' "$CONNECT_ROWS") )" || { echo "skipped: the tool list could not be read; ade connect says why"; return 0; }
+  connect_sources   # the list comes from these: said before it is shown
+  for n in $conn; do echo "done: $n (connected)"; done
+  [ -z "$noted" ] || echo "noted: $(printf '%s\n' "$noted" | paste -sd , - | sed 's/,/, /g')"
+  for st in ready held; do
+    while IFS="$US" read -r tag sv ti jb _ pick _; do
+      [ "$tag" = ok ] && [ "$pick" = "$st" ] || continue
+      if [ "$st" = ready ]; then connect_has "$conn" "$sv" && continue; ready="$ready$sv "; items+=("$sv|$ti ($jb)")
+      else connect_has "$noted" "$sv" && continue; coming="$coming$sv "; items+=("$sv|$ti ($jb), coming: noted, not connected yet"); fi
+    done <<EOF
+$rows
+EOF
+  done
+  items+=("other|another tool: you type its name")
+  CHOICE=""; ASK_MULTI=1 ASK_EOF=no ask_choice "Which tools do you use for this work? Pick any (numbers or names, spaces between; Enter skips)" "" "${items[@]}" || CHOICE=""
+  [ -n "$CHOICE" ] || { echo "skipped: nothing picked; ade setup offers your tools again"; return 0; }
+  for pick in $(printf '%s\n' $CHOICE | awk '!seen[$0]++'); do
+    case "$ready" in *" $pick "*) echo
+      if ( cd "$hub" && connect_service "$pick" ); then :; else echo "$pick: not connected; ade connect $pick (in $(tilde "$hub")) tries again"; fi
+      continue ;; esac
+    case "$coming" in *" $pick "*) notes="$notes $pick"; continue ;; esac
+    [ "$pick" = other ] || continue
+    while ASK_EOF=no ASK_EMPTY_OK=1 ask_text "Its name (several: commas between; Enter: none):"; do
+      [ -n "$ANSWER" ] || break
+      if out="$(tool_names "$ANSWER")"; then notes="$notes $out"; break; fi
+      ask_say "names only (letters, digits, spaces and -, at most 32 each): no address, key or token; type it again"
+    done; ANSWER=""
+  done
+  [ -n "$notes" ] || return 0
+  # shellcheck disable=SC2086  # the names are checked words
+  tools_py "$hub/.ade/tools.json" add $notes > /dev/null || return 0
+  for n in $notes; do echo "$n: not connected yet; noted (.ade/tools.json in your hub)"; done
+}
+# tool_names <answer>: the names in it (commas between), each lower-cased with spaces as -, ^[a-z][a-z0-9-]{0,31}$;
+# exit 1, printing nothing, when one is not a plain name or looks like a key or token (a part of 24 or more characters,
+# or of 16 or more with a digit in it)
+tool_names() {
+  local IFS=, part w out=""
+  for part in $1; do
+    part="$(printf '%s' "$part" | sed 's/^ *//; s/ *$//')"; [ -n "$part" ] || continue
+    matches "$part" '^[A-Za-z][A-Za-z0-9 -]{0,31}$' || return 1
+    for w in $(printf '%s' "$part" | tr ' -' ',,'); do
+      [ "${#w}" -lt 24 ] || return 1; { [ "${#w}" -ge 16 ] && matches "$w" '[0-9]'; } && return 1
+    done
+    w="$(printf '%s' "$part" | tr 'A-Z ' 'a-z-' | tr -s '-')"; matches "$w" '^[a-z][a-z0-9-]{0,31}$' || return 1
+    out="$out $w"
+  done
+  [ -n "$out" ] || return 1; printf '%s\n' "${out# }"
 }
 guide_checked() {   # <step>: one line, after the step, from its state now
   local st; if st="$(guide_state "$1")"; then
     case "$1" in claude-code) echo "checked: Claude Code is installed" ;; claude-sign-in) echo "checked: signed in to Claude ${st#signed in }" ;;
       github) echo "checked: $st to GitHub" | sed 's/^checked: signed in as \(.*\) to GitHub$/checked: signed in to GitHub as \1/' ;;
-      hub) echo "checked: your hub is $st" ;; project) echo "checked: your first project is $st" ;; telegram) echo "checked: Telegram is on" ;; esac
+      hub) echo "checked: your hub is $st" ;; tools) echo "checked: your tools: $st" ;; project) echo "checked: your first project is $st" ;; telegram) echo "checked: Telegram is on" ;; esac
   else
     case "$1" in claude-sign-in) echo "checked: your key is asked at step 4, once your hub is made" ;;
       project) echo "checked: no project yet; ade setup comes back to this step" ;;
+      tools) echo "checked: no tools connected or noted yet" ;;
       telegram) case "$st" in off) echo "checked: Telegram is off" ;; *) echo "checked: Telegram is not finished; ade setup --telegram comes back to it" ;; esac ;;
       *) echo "checked: $(guide_title "$1"): $st" ;; esac
   fi
@@ -1639,6 +1707,10 @@ guide() {   # [1: the list is already shown]: exit 0 at the end, 1 when a step s
   agent_context && die 2 "ade setup asks a person at a terminal; it refuses inside a Claude Code session (an agent cannot answer for you)"
   setup_tools_steps
   for id in $GUIDE_STEPS; do n=$((n + 1))
+    if [ "$id" = tools ]; then   # offered in every run once the hub is there: what is connected, and the rest
+      guide_hub > /dev/null || continue
+      echo; echo "Step $n of $total: $(guide_title "$id")"; guide_about "$id"; guide_run "$id"; guide_checked "$id"; continue
+    fi
     st="$(guide_state "$id")" && continue
     # an optional step: offered in a run that did a required step, and picked up again once it was started
     case " $GUIDE_OPTIONAL " in *" $id "*) [ "$did" = 1 ] || case "$st" in "not finished"*) ;; *) continue ;; esac ;; *) did=1 ;; esac
@@ -2932,13 +3004,16 @@ connect_tty() {
     printenv "$v" > /dev/null 2>&1 && die 2 "ade $1 asks a person at a terminal; it refuses inside a Claude Code session ($v is set); nothing changed"; done
   tty_ready "$1"
 }
-# connectors_py <record> get|add <name>: the record checked whole on every read (names only, sorted, unique); add
-# holds the folder's lock, reads, checks and writes through ade_write, only when the name is new. Exit 2 with the
-# reason when it is not exactly the contract's shape.
-connectors_py() {
+# names_py <record> <key> get|add <name>...: a names-only record, {"format": 1, "<key>": [...]}, checked whole on every
+# read (sorted, unique, at most 64 names ^[a-z][a-z0-9-]{0,31}$, at most 64 KiB); add holds the folder's lock, reads,
+# checks and writes through ade_write, only when a name is new. Exit 2 with the reason when it is not exactly that shape.
+# connectors_py: .ade/connectors.json (A16); tools_py: the hub's .ade/tools.json (A23).
+connectors_py() { names_py "$1" connectors "${@:2}"; }
+tools_py() { names_py "$1" tools "${@:2}"; }
+names_py() {
   write_py "$@" <<'PY'
 import json, os, re, sys
-p, op, a = sys.argv[1], sys.argv[2], sys.argv[3:]
+p, key, op, a = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4:]
 NAME = re.compile(r"[a-z][a-z0-9-]{0,31}")
 safe = lambda s: re.sub(r"[^\x20-\x7e]", "?", s)[:200]
 class Bad(Exception):
@@ -2950,16 +3025,17 @@ def pairs(kv):
         seen[k] = v
     return seen
 def check(d):
-    if not isinstance(d, dict) or set(d) != {"format", "connectors"}: raise Bad("it must hold exactly format and connectors")
+    if not isinstance(d, dict) or set(d) != {"format", key}: raise Bad("it must hold exactly format and %s" % key)
     if type(d["format"]) is not int or d["format"] != 1: raise Bad("format is not 1")
-    c = d["connectors"]
-    if not isinstance(c, list) or len(c) > 64: raise Bad("connectors is not a list of at most 64 names")
+    c = d[key]
+    if not isinstance(c, list): raise Bad("%s is not a list of at most 64 names" % key)
+    if len(c) > 64: raise Bad("it would hold more than 64 names")
     if not all(isinstance(n, str) and NAME.fullmatch(n) for n in c): raise Bad("a name is not ^[a-z][a-z0-9-]{0,31}$")
     if c != sorted(set(c)): raise Bad("the names are not sorted and unique")
 def refuse(why):
-    sys.stderr.write("ade: %s is not a valid connectors record (%s); nothing in it is used\n" % (safe(p), why)); sys.exit(2)
+    sys.stderr.write("ade: %s is not a valid %s record (%s); nothing in it is used\n" % (safe(p), key, why)); sys.exit(2)
 def load():
-    if not (os.path.lexists(p) or os.path.islink(os.path.dirname(p))): return {"format": 1, "connectors": []}
+    if not (os.path.lexists(p) or os.path.islink(os.path.dirname(p))): return {"format": 1, key: []}
     try:
         if os.path.islink(p) or os.path.islink(os.path.dirname(p)) or not os.path.isfile(p): raise Bad("it is not a plain file")
         if os.path.getsize(p) > 65536: raise Bad("it is larger than 64 KiB")
@@ -2969,11 +3045,15 @@ def load():
         refuse(e if isinstance(e, Bad) else "it is not valid JSON")
 d = load()
 if op == "get":
-    for n in d["connectors"]: print(n)
+    for n in d[key]: print(n)
 elif op == "add":
     ade_hold(p); d = load()   # read again under the lock: two runs never lose a name
-    if a[0] not in d["connectors"]:
-        d["connectors"] = sorted(d["connectors"] + [a[0]]); check(d)
+    new = sorted(set(n for n in a if n not in d[key]))
+    if new:
+        d[key] = sorted(d[key] + new)
+        try: check(d)
+        except Bad as e:
+            sys.stderr.write("ade: %s not changed: %s\n" % (safe(p), e)); sys.exit(2)
         ade_write(p, json.dumps(d) + "\n"); print("added")
 PY
 }

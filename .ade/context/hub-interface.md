@@ -268,11 +268,20 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
     list`), not where it points.
 
 ## The guided first run (A18)
-- Step ids, in order (`GUIDE_STEPS` in `ade`): `claude-code`, `claude-sign-in`, `github`, `hub`, `project`,
-  `telegram` (optional). A16 adds `tools` (the tools you use) after `hub`. A step is done by its state alone, never a
-  record: `claude` on PATH; `claude auth status` exit 0 or a key in the hub's `bin/keys`; `gh auth status --hostname
-  github.com` exit 0; a hub with `HUB_ROOT_PROVIDER` set; a folder under `projects/`; `telegram` in `HUB_CHANNELS`.
-  Optional steps are offered only in a run that did a required step.
+- Step ids, in order (`GUIDE_STEPS` in `ade`): `claude-code`, `claude-sign-in`, `github`, `hub`, `tools` (optional,
+  A23), `project`, `telegram` (optional). A step is done by its state alone: `claude` on PATH; `claude auth status`
+  exit 0 or a key in the hub's `bin/keys`; `gh auth status --hostname github.com` exit 0; a hub with
+  `HUB_ROOT_PROVIDER` set; the hub's `.ade/connectors.json` or `.ade/tools.json` naming something; a folder under
+  `projects/`; `telegram` in `HUB_CHANNELS`. `telegram` is offered only in a run that did a required step; `tools` in
+  every run once the hub is there (at a terminal), offering what is not connected or noted yet.
+- `tools` (A23): the list is the recipes at the pinned ade-skills tag, checked as `ade connect` checks them: `ready`
+  ones first, then `held` ones labelled coming, then `other` (one line of free text). A ready pick runs `ade connect
+  <service>`'s own code in the hub. A coming or other pick is noted in the hub's `.ade/tools.json`:
+  `{"format": 1, "tools": [...]}`, names only, sorted, unique, at most 64 names `^[a-z][a-z0-9-]{0,31}$`, at most
+  64 KiB, read and written as `.ade/connectors.json` is (a duplicate key, a link or any other shape rejects the whole
+  file and nothing is written). A typed name with `@ : / . = _`, or a part of 24 or more characters (16 or more with
+  a digit), is refused as a possible address, key or token and never shown. Enter, the end of input or no terminal
+  skips the step and writes nothing.
 - Exit codes of `ade setup` (the guide) and of `ade` alone when it starts it: 0 = it ran to its end (the last line
   says "All set" or which step is left); 1 = it stopped at a step (end of input, a declined install, a sign-in that
   did not finish), with one line saying how to come back; 2 = refused (an agent session, no terminal for a sign-in,
