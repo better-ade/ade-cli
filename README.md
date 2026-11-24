@@ -33,7 +33,7 @@ Inside a hub (a copy of [ade-brain](https://github.com/better-ade/ade-brain)) it
 the hub stays the single source of truth and `ade` stays thin. Inside a project it sets up the ADE method, specialist
 agents and skills from their own repos, at pinned versions, and never overwrites a file you already have.
 
-> **Status:** version `0.2.0`. Built: the hub and project commands (A1), orchestrators (A2), `hub new` (A3),
+> **Status:** version `0.2.8`. Built: the hub and project commands (A1), orchestrators (A2), `hub new` (A3),
 > `ade claude` (A4), `ade setup` (A5), `ade ui` (A6), skills (A7), `clean`, `reset` and `uninstall` (A9), `restore`
 > (A10), `update` and update notices (A11, A12), and the file viewer (A15). Not built yet: keys and the clipboard
 > ([A13](docs/stories/A13-keys-and-clipboard.md)) and the vault ([A14](docs/stories/A14-ade-vault.md)).
@@ -60,7 +60,7 @@ curl -fsSL https://raw.githubusercontent.com/better-ade/ade-cli/main/install.sh 
 
 ```bash
 ade help                         # every command, one line each
-ade version                      # ade 0.2.0
+ade version                      # ade 0.2.8
 
 # In a project (any git repo); no hub needed
 ade init                         # copy ade-method at its pinned tag; lists what it kept
@@ -73,11 +73,19 @@ mkdir -p ~/.config/ade && echo ~/hubs/my-hub > ~/.config/ade/hub   # or export A
 ade doctor                       # the hub's bin/doctor
 ade status                       # the hub's sessions (bin/sessions)
 ade work projects/api --role builder   # start or resume a focus agent (bin/work)
+
+# Load repos you already have into the hub (A21)
+ade project add ~/Project/api ~/Project/web    # each becomes projects/<name>, with its ACCESS.md Code row
+ade project add acme/billing                   # a URL or owner/repo is cloned into your code folder first
+ade project add --scan ~/Project               # pick from the repos in a folder: 1 3 4, 1-3, all, or names
+ade project list                               # name, checkout, branch, focus agent, last update
 ```
 
-`ade hub new my-hub` creates the hub for you ([A3](docs/stories/A3-hub-new-and-first-run.md));
-`ade setup` does sign-in, providers, Telegram and a guided first session in one go
-([A5](docs/stories/A5-ade-setup.md)).
+`ade` with no hub lists the steps to a working hub and offers to start the guide; `ade setup` is the guide, one step
+at a time, and run again it picks up where you are ([A18](docs/stories/A18-guided-first-run.md)). GitHub is
+required: the guide installs `gh` (after a yes) and runs GitHub's own browser sign-in. `ade hub new my-hub` creates
+the hub ([A3](docs/stories/A3-hub-new-and-first-run.md)); providers, Telegram and the guided first session are
+[A5](docs/stories/A5-ade-setup.md).
 
 ## How ade fits
 
@@ -118,7 +126,29 @@ says "this hub has no bin/&lt;cmd&gt;; update it" and exits 2.
 
 ## `ade setup` (A5)
 
-One command from nothing to a working hub and a guided first session. Every step asks first.
+One command from nothing to a working hub and a guided first session. Every step asks first. Since A18 the steps
+are listed with their state and run in this order: Claude Code, sign in to Claude, sign in to GitHub, your hub (with
+the providers below), your first project (the guided session), then Telegram (optional); a step already done is
+skipped. The chart shows the provider and Telegram steps. `ade setup` with no flags refuses inside an agent
+session (a person answers it); `--check`, `--test`, `--top`, `--telegram` and `--tools` keep their own rules.
+
+Before step 1 comes the tools step: the required tools that are missing (git, python3, tmux, gh, gitleaks, bun), then
+the viewer extras, each after a yes. bun, which the Telegram plugin runs on, needs neither Homebrew nor the Xcode
+Command Line Tools: `ade` downloads the pinned release (bun 1.4.4) for your OS and CPU from
+[bun's GitHub releases](https://github.com/oven-sh/bun/releases), checks the zip's sha256 against the release's
+`SHASUMS256.txt`, and puts the one program in it at `~/.bun/bin/bun`; a mismatch installs nothing. If `~/.bun/bin` is
+not on your PATH it says so and adds one marked line to `~/.zshrc` (zsh), `~/.bashrc` (bash) or `~/.profile`, once;
+`ade` and the hub commands it runs find bun there in the same session. A bun you already have (Homebrew's, or one in
+`~/.bun/bin`) is left alone. A failure (download, sha256, unpacking, a CPU bun has no build for) is one plain line,
+then: try again, show the manual steps, stop.
+
+When a step fails (a live test, an install, a sign-in, `gh repo create`, the hub's `bin/init`, the guided session,
+Telegram, a key that was not stored) the guide says what went wrong in one plain line, says where the details are,
+and asks what to do with numbered choices: for a live test, sign in with a different Claude account (or enter the
+key again), try again, use another AI service, or go on without the test. An everything agent chosen without its
+test shows as "not tested" in `ade setup --check` until `ade setup --test` passes; focus agents always need the test.
+Once the hub is set up, `ade hub new` saves its first version with the hub's own `bin/sync --yes` (a commit under
+your git identity, after the hub's secret scan, then a push), so GitHub shows the hub's own README.
 
 ```mermaid
 flowchart TD
@@ -132,7 +162,7 @@ flowchart TD
   result -->|"failed (reason shown) or skipped"| out["Left out of every role"]
   roles --> tgq{"Reach the everything agent<br/>from Telegram?"}
   out --> tgq
-  tgq -->|"yes"| tg["Bot token at a hidden prompt → bin/keys<br/>bin/chat setup telegram: pair, allowlist on, test message"]
+  tgq -->|"yes"| tg["Bot token at a hidden prompt → bin/keys<br/>then one step at a time: the plugin, pair, allowlist,<br/>the hub's test, the background session"]
   tgq -->|"no (later: ade setup --telegram)"| hub
   tg --> hub{"A hub?"}
   hub -->|"no"| new["ade hub new (A3)"]
@@ -156,11 +186,71 @@ line (resolved against that agent's folder), a URL in your browser. Outside `ade
 | `/` | search names under this folder | search the PDF's text |
 | `n` `p` `g` | | next, previous, go to page |
 | `o` `f` `y` | open in the default app, reveal in Finder (or the folder), copy the path | the same |
+| `c` | open the file (or folder) in Visual Studio Code | the same |
 | `q` | quit | quit |
 
 Over SSH, `o`, `f` and `y` print the path and an `scp` line instead, and PDFs are always text. A missing extra
 (`bat`, `glow`, `poppler`, `chafa`) is named once, with `ade setup --tools` to install it. `ADE_FILES=yazi` swaps the
 explorer for yazi, which is not read-only and not held to the hub's folders.
+
+Visual Studio Code: `c` in the explorer, in the viewer's own screens (PDF, image, binary) and in the link picker
+(a number then `c`) opens the file with `code --goto <path>:<line>:<col>`, a folder as a folder;
+`ade view --code <path[:line[:col]]>` does it from the command line, and `ADE_VIEWER=code` makes `ade view` open code
+and text files there by default, at a terminal (images, PDFs and Markdown keep the built-in viewer). A code file
+shown by `ade view` is in the pager (`less`), which owns the keys: there, use `--code` or `ADE_VIEWER=code`. A path
+outside the hub and its projects asks first; without the `code` command one line says so (`ade setup --tools`
+installs Visual Studio Code) and the built-in viewer is used; a `code` that lies inside the hub or project is never
+run; over SSH with no display (and outside Visual Studio Code's own terminal) the path is offered instead.
+
+## The web view ([A19](docs/stories/A19-web-view.md))
+
+`ade web` shows the hub in a browser, read-only: the agents and their state (the hub's `bin/sessions`), the picked
+agent's log (its events and its `STATE.md`), today's and yesterday's journal, and the chat log, refreshed every
+3 seconds. It runs in the foreground and prints the address to open; Ctrl-C stops it.
+
+```
+$ ade web
+ade web: http://127.0.0.1:8765/?k=<a random token>
+```
+
+| Command | What it does |
+|---|---|
+| `ade web [--port N]` | The page on `127.0.0.1` only: port 8765 when it is free, else a free one |
+| `ade web --tailnet` | The page on this machine's Tailscale address only, so your phone can open it |
+| `ade web --print-link` | The running page's address; nothing and exit 1 when none runs |
+
+- **Read-only.** It answers GET and nothing else (405). No request changes, starts or stops anything. It reads the
+  journal, the chat log, the event log and each listed agent's `STATE.md`; a request never names a file.
+- **The link is the key.** The address holds a random token, new at every start; without it the answer is 403. The
+  page keeps it as a cookie the page's own script cannot read. Do not paste the address anywhere public.
+- **Keys are hidden.** Every line passes the same rule as `ade chat logs` (Telegram bot tokens, key-shaped strings,
+  long opaque runs), plus GitHub tokens, `sk_` keys, AWS access key ids, `Authorization:` headers, the user and
+  password of a URL, the value after a name ending in `password`, `secret`, `token` or `key`, and private key
+  blocks. A commit id or another long run of letters and digits is hidden too, and a line over 4096 characters is cut. Logs can still hold your code and your
+  customers' context: that is what the page is for, so treat the link like the logs.
+- **`--tailnet`.** It listens on the address `tailscale ip -4` prints (100.64.0.0/10) and on no other, never on every
+  interface. **Anyone on your tailnet with the link can read these logs.** `ade` never installs Tailscale or signs in
+  to it; when it is missing or signed out, `ade web --tailnet` says how (https://tailscale.com/download, then
+  `tailscale up`) and starts nothing. No public address, no tunnel.
+- It needs only `python3`. Inside an ADE Computer, open the address in the desktop's own browser.
+## Screenshots as proof ([A20](docs/stories/A20-screenshots.md))
+The ADE method wants evidence for work that has no test to show: `ade shot` records it as a picture.
+
+| Command | What it captures |
+|---|---|
+| `ade shot url <address> [--full-page] [--width W]` | A page, through the headless Chromium the hub already has (Playwright's; `ade` downloads nothing and says how to get it when it is missing). `http`, `https` and `file` addresses only; a file only inside the project |
+| `ade shot screen` | Everything on your screen, including other apps (macOS: `screencapture -x`; Linux and the ADE Computer: the X display). It asks first at a terminal. An agent can run it only with `--yes-screen` and only where its session asks you before this command: your Allow at that prompt is the approval |
+| `ade shot agent <name>` | A focus agent's tab in `ade ui`, as a picture of its text, with keys and tokens hidden first |
+
+Every shot is saved as `<project>/.ade/evidence/<date>/<time>-<name>.png` (UTC; `--name N` names it; inside the hub,
+the hub's own `.ade/evidence/`) with a `.txt` beside it: what, when, the command, the address or agent, the size.
+The folders are yours alone (0700, files 0600), a shot never replaces another, and git ignores the folder: `git add
+-f` a shot you mean to commit. `--tg [caption]` then sends the picture to you on Telegram through the hub's
+`bin/chat send`, only while the bot is locked to you.
+
+A page or screen shot cannot be redacted: it shows whatever was there, so look at it before you share it. On a Mac
+that does not let your terminal record the screen, `ade` says where to allow it (System Settings > Privacy &
+Security > Screen Recording) and changes nothing itself.
 
 ## A ticket's path
 
@@ -181,8 +271,9 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 
 | Command | What it does | Status |
 |---|---|---|
-| `ade work <folder> [--role <r>]` | Start or resume a focus agent (hub `bin/work`) | **built** (A1) |
+| `ade work <folder> [--role <r>]` | Start or resume a focus agent (hub `bin/work`), as a tab of the hub's `ade ui` session and never a new window: the session is made when it is not there (`ade ui` shows it). `ADE_UI=off`, no tmux or the ADE app: the hub's own way | **built** (A1, A6) |
 | `ade status` | List sessions (hub `bin/sessions`) | **built** (A1) |
+| `ade web [--port N] [--tailnet]` \| `--print-link` | A read-only page of the agents, their logs, the journal and the chat log, on `127.0.0.1` behind a random link; `--tailnet`: on this machine's Tailscale address only | **built** (A19) |
 | `ade dispatch …` | Hand a task to an agent (hub `bin/dispatch`) | **built** (A1) |
 | `ade notify …` | Send a notification (hub `bin/notify`) | **built** (A1) |
 | `ade chat …` | Chat with the hub (hub `bin/chat`) | **built** (A1) |
@@ -194,6 +285,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade sync` | Sync the hub (hub `bin/sync`) | **built** (A1) |
 | `ade context …` | The hub's context store (hub `bin/context`) | **built** (A1) |
 | `ade agent-run …` | Run an agent (hub `bin/agent`) | **built** (A1) |
+| `ade project add <path-or-git-url>... [--name N] [--no-init] [--yes]` \| `add --scan <folder>` \| `list` | Load repos you already have into the hub ([A21](docs/stories/A21-project-add.md)). For each: the hub's own `bin/new projects/<name>` (the name is the repo's folder name as `a-z 0-9 -`, or `--name`; a folder already in the hub is left as it is), then the Code row of its `ACCESS.md` from the repo: the remote in https form and never with credentials, the checkout, the default branch, `(owner)` under "Who merges", and the CI it can see. A URL (`https://`, `git@`, `ssh://`, or `owner/repo` on GitHub) is cloned into your code folder, never into the hub (`gh repo clone` when `gh` is signed in, else `git clone`). It offers `ade init` in each repo (`--no-init`: no offer; `--yes`: yes to every offer; nothing is ever overwritten), adds the repo's `README.md` and `docs/` to the hub's memory (`HUB_BRAIN_PATHS`, then `bin/brain index`), prints one line per project and offers to start the focus agents (never in an agent session or without a terminal). A failure for one repo does not stop the others (exit 1 at the end). `--scan`: the git repos directly under a folder, those in the hub marked; pick with `1 3 4`, `1-3`, `all` or names. `list`: each project folder's name, checkout, branch, focus agent (from `bin/sessions`) and `STATE.md` "Updated" line |
 | `ade init [--here]` | Copy ade-method at its pinned tag into the project; never overwrites; installs the PR and commit templates and sets `commit.template`; records `.ade/method-version` | **built** (A1) |
 | `ade agent list` | Specialists in ade-agent-registry, name and description | **built** (A1) |
 | `ade agent add <name> [--here]` | Copy a specialist to `.ade/agents/<name>.md` | **built** (A1) |
@@ -202,11 +294,12 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade version` · `ade help` | The version; every command, one line each | **built** (A1) |
 | `ade orchestrator new\|start\|stop\|list\|logs\|remove` | Named orchestrators, one per hub, with their channels (run by the hub's `bin/chat`) | **built** (A2) |
 | `curl … \| bash` | One-line install of the tagged release | **built** (A3) |
-| `ade hub new <name> [--private\|--public] [--dir <d>] [--no-github]` | Create a hub from the ade-brain template, run its `bin/init`, make it the default | **built** (A3) |
+| `ade hub new <name> [--private\|--public] [--dir <d>]` | Create a hub from the ade-brain template, run its `bin/init`, make it the default | **built** (A3) |
 | `ade hub list` · `ade hub use <path>` | The hubs `ade` knows; switch the default | **built** (A3) |
-| `ade` (no arguments) | Say what to do next: the hub, its status and the next commands | **built** (A3) |
-| `ade claude [<folder>] [-- args]` | Claude Code at the hub root as the orchestrator; with a folder, `ade work <folder>` | **built** (A4) |
-| `ade setup [--check\|--test\|--top\|--telegram]` | Sign-in, providers and live tests, Telegram, hub, guided session | **built** (A5; needs the hub pieces in `.ade/context/hub-interface.md`) |
+| `ade` (no arguments) | Your workspace: at a terminal with tmux and a hub that is set up, the tab view (`ade ui`: the main agent as tab 0, a tab per agent). Set-up not finished: the guide's steps and its offer. Without a terminal or tmux, in an agent session, with `ADE_UI=off` or inside the tab view: the summary below | **built** (A3, A6) |
+| `ade home` | The hub, its sessions and what to do next (what `ade` alone printed before; `ade status` is the hub's sessions only) | **built** (A3) |
+| `ade claude [<folder>] [-- args]` | Claude Code at the hub root as the orchestrator: at a terminal with tmux, as tab 0 of the hub's `ade ui` session, so focus work opens as tabs beside it (`ADE_UI=off`, or `ade claude -- <args>`: in this terminal); with a folder, `ade work <folder>` | **built** (A4, A6) |
+| `ade setup [--check\|--test\|--top\|--telegram]` | The guide (A18): Claude Code, Claude and GitHub sign-in, the hub and its providers, the first project, Telegram; resumes where you are | **built** (A5, A18; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade ui [--detach]` · `ade dash [--once]` | One tmux window, a tab per agent with state icons; fleet sidebar; popups for new agent, approve, tickets, plan preview, help | **built** (A6; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade skills list\|enable\|disable\|search` | Skills and plugins on the fly, with a reload hint to running sessions | **built** (A7) |
 | `ade clean [--yes]` | Housekeeping: stale locks, old dispatch markers and event cursors, ade's old temp folders, dead `ade-*` tmux sessions, clean merged worktrees (`git worktree remove`); lists first | **built** (A9) |
@@ -215,8 +308,9 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade restore [--check] [--label <name>]` | Compare `.ade/connections.json` (names only, committed) with this machine and walk each gap with a yes: the Claude account, keys (hidden prompt, live test), plugins, Telegram (token, re-pair), services | **built** (A10) |
 | `ade connect [<service> \| status [<service>] \| disconnect <service>]` | ADE's connectors (recipes at the pinned ade-skills tag, each checked against that release's sha256): the list with tiers; connect one at your own terminal (the guard and its plugin in project scope, the name in `.ade/connectors.json`, the sign-in step you do yourself); status; sign out here. No secret passes through `ade`. "At your own terminal" stops accidents; an agent running as you can get round it | **built** (A16; needs an ade-skills release with recipes) |
 | `ade files [<folder>]` | A directory explorer over the hub and its projects: name search (`/`), live preview, `o` open in the default app, `f` reveal in Finder (or the Linux file manager), `y` copy the path; a built-in browser (bash + python3), read-only and held to the hub's folders; `ADE_FILES=yazi` uses yazi instead, which yazi is neither read-only nor held to the hub and its projects (it deletes, renames, moves, runs commands and walks anywhere without asking) | **built** (A15) |
-| `ade view <path[:line[:col]]>` | Code at the line (`bat`, else `less -N`), Markdown (`glow`, else plain), images (chafa or the terminal's protocol on iTerm2, WezTerm, kitty, Ghostty; else its size), PDFs (page images on a graphics terminal, else `pdftotext` text; `n`/`p` page, `g` go to, `/` search); `o`, `f`, `y` | **built** (A15) |
-| `ade setup --tools [required\|extras]` | Install what is missing (git, python3, tmux, gh; the viewer extras yazi, bat, glow, poppler, chafa) with Homebrew or apt, after one yes at a terminal; `ade doctor` lists each tool | **built** (A15) |
+| `ade view <path[:line[:col]]>` | Code at the line (`bat`, else `less -N`), Markdown (`glow`, else plain), images (chafa or the terminal's protocol on iTerm2, WezTerm, kitty, Ghostty; else its size), PDFs (page images on a graphics terminal, else `pdftotext` text; `n`/`p` page, `g` go to, `/` search); `o`, `f`, `y`, `c`; `--code` and `ADE_VIEWER=code` open Visual Studio Code | **built** (A15) |
+| `ade shot url <address>` · `ade shot screen` · `ade shot agent <name>` | Screenshots as proof ([A20](docs/stories/A20-screenshots.md)): a page through the hub's headless Chromium (`--full-page`, `--width W`; http, https, or a file inside the project), the whole screen (asks first; `--yes-screen`), or an agent's tab in `ade ui` with keys hidden. Saved as `.ade/evidence/<date>/<time>-<name>.png` with a `.txt` beside it; `--name N`; `--tg [caption]` sends it to you on Telegram when the bot is locked to you | **built** (A20) |
+| `ade setup --tools [required\|extras]` | Install what is missing (git, python3, tmux, gh, gitleaks; the viewer extras yazi, bat, glow, poppler, chafa and Visual Studio Code) with Homebrew or apt, after one yes at a terminal; bun from its own pinned release (sha256 checked, into `~/.bun/bin`, no Homebrew), after its own yes; `ade doctor` lists each tool | **built** (A15) |
 | `ade update [--check \| --rollback \| --auto on\|off]` | ade itself (download, sha256 against the release's `release.json`, checked in a temp folder, the old one kept as `.ade.prev`, one rename; `--rollback` swaps them back), the hub (`git pull --ff-only`, `bin/method sync`), ade-skills plugins, Claude Code, `ade ui` reloaded in place; nothing is stopped; one notify line | **built** (A11) |
 
 Exit codes: `0` success, `1` a failure while working (a fetch or a copy), `2` a usage problem or a missing hub, script
@@ -227,6 +321,7 @@ or tool. A hub command exits with whatever the hub's script returns.
 | Variable | Default | Used for |
 |---|---|---|
 | `ADE_HUB` | unset | The hub to use, ahead of walking up and `~/.config/ade/hub` |
+| `ADE_CODE_DIR` | `~/Project` when it is there, else `~/code` | Where `ade project add` clones a URL (never inside the hub) |
 | `ADE_METHOD_REF` | `v2.1.0` | The ade-method tag `ade init` copies |
 | `ADE_REGISTRY_REF` | `v1.1.0` | The ade-agent-registry tag `ade agent` reads |
 | `ADE_METHOD_REPO` | `https://github.com/better-ade/ade-method` | Where ade-method comes from (tests use a local fixture) |
@@ -263,9 +358,19 @@ In plain words:
   unless you ask for public (A3).
 - **Only you can talk to it on Telegram.** The Telegram channel pairs your own Telegram account and switches on
   an allowlist before it sends its first test message (A5, done by the hub's `bin/chat`). The bot token is treated like
-  a key.
+  a key. Once the bot is locked to you (the hub decides: an allowlist with your account, no groups), the chat runs in
+  Claude Code's auto mode: your main agent acts on your Telegram messages without asking at the terminal, and auto
+  mode still refuses risky actions. `HUB_CHAT_MODE=manual` in `hub.conf` turns that off. `ade setup --check` shows
+  `telegram: on (auto)` or `telegram: on (manual: not locked)`.
 - **No skipped permissions.** Agents run with Claude Code's normal permission checks. `ade claude` refuses
   `--dangerously-skip-permissions` anywhere in its arguments (A4).
+- **Screenshots ask first.** `ade shot screen` captures only after your yes at the terminal; from an agent session
+  only with `--yes-screen` where the session's settings ask you before that command (the hub's do), never from a pipe
+  or a job, and never where a settings file lets the session skip permissions. `ade shot url` opens only `http`,
+  `https` and `file` addresses, a file only inside the project, and stops a page from pulling in a file from outside
+  it, a `.env`, key or `.git` file of it, or a link-local or metadata address. Shots are private files (0600) that git ignores; a terminal shot has
+  its keys hidden, a page or screen shot cannot be redacted. `--tg` sends only through the hub, only to you, only
+  while the bot is locked to you.
 - **Viewing only reads.** `ade files`, `ade view` and the link picker never edit, move or delete. A path outside the
   hub and its project checkouts, or a link that leads out of them, opens only after you say yes at the terminal (an
   agent cannot answer that), and a folder opened that way is listed but never previewed. Your home folder, `/` and
@@ -276,7 +381,8 @@ In plain words:
   held to the hub and its projects (it deletes, renames, moves, runs commands and walks anywhere without asking).
 - **Tools are installed only after a yes.** `install.sh`, `ade setup` and `ade setup --tools` show the exact `brew
   install` or `sudo apt-get install -y` line and run it only after you answer yes at the terminal; nothing is piped to
-  a shell.
+  a shell. bun is the one tool `ade` downloads itself: a pinned release from bun's GitHub releases, installed only
+  when its sha256 matches the release's `SHASUMS256.txt`.
 - **Nothing of yours is deleted.** `ade clean` removes only ade's and the hub's own markers, temp folders and dead tmux
   sessions, and worktrees whose branch is merged and that have no changes. `ade reset --hub` never deletes a hub: after
   you type its name, and only when everything in it is committed and pushed, it moves it to the Trash (macOS: Finder or

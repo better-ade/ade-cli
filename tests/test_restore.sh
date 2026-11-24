@@ -100,7 +100,7 @@ d = json.load(open(sys.argv[1]))
 assert d["top"] == {"provider": "anthropic", "sign_in": "account", "model": "opus"}, d
 assert d["account"]["fingerprint"] == sys.argv[2] and d["account"]["label"], d
 PY
-  printf 'y\ntok-secret-123456\n' | bash "$ADE" setup --telegram > "$T/out" 2>&1 || { cat "$T/out"; fail "setup --telegram"; }
+  bash "$ADE" chat setup telegram > "$T/out" 2>&1 || { cat "$T/out"; fail "chat setup telegram"; }   # (ade setup --telegram records it too, once it is working: test_telegram.sh)
   (cd "$H" && bash "$ADE" skills add git > "$T/out" 2>&1) || { cat "$T/out"; fail "skills add"; }
   (cd "$H" && bash "$ADE" agent add frontend > "$T/out" 2>&1) || { cat "$T/out"; fail "agent add"; }
   (cd "$H" && bash "$ADE" init > "$T/out" 2>&1) || { cat "$T/out"; fail "init"; }

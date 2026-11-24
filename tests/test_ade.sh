@@ -213,6 +213,20 @@ F
   assert_contains "$T/out" "ok    $T/test_same.sh" "the content is never read"
 }
 
-ALL="suite_guard tests_clean_up finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors init_installs_templates install_templates_guard symlinked_version"
+
+# conflict_lines <folder>: the tracked text files' lines that are a merge conflict marker (file:line:text)
+conflict_lines() { git -C "$1" grep -nIE '^(<<<<<<<( |$)|=======$|>>>>>>>( |$))' -- . 2> /dev/null; }
+no_conflict_markers() {   # a merge left unresolved never ships: no marker line in any tracked text file
+  fresh
+  if git -C "$REPO" rev-parse --git-dir > /dev/null 2>&1; then
+    hits="$(conflict_lines "$REPO")"; [ -z "$hits" ] || { printf '%s\n' "$hits" | cut -c1-120 | head -10; fail "merge conflict markers are committed"; }
+  fi
+  # the check itself: a planted marker of each kind fails it, and a file without one passes
+  git init -q "$T/m"; printf 'a\n<<<<<<< HEAD\nb\n' > "$T/m/one.md"; printf 'a\n=======\nb\n' > "$T/m/two.md"
+  printf 'a\n>>>>>>> origin/main\n' > "$T/m/three.md"; printf 'a ======= b\n== <<<<<<< ==\n' > "$T/m/fine.md"; git -C "$T/m" add -A
+  assert_eq "$(conflict_lines "$T/m" | cut -d: -f1 | sort | tr '\n' ' ')" "one.md three.md two.md " "each planted marker is found, and only those"
+}
+
+ALL="no_conflict_markers suite_guard tests_clean_up finds_hub passes_args_to_hub status_and_missing_script no_hub init_copies_method init_never_overwrites agent_list_and_add skills_add_calls_claude open_inside_ade_only install_and_version exports_hub not_executable config_file_hub init_rerun_new_tag project_root fetch_errors init_installs_templates install_templates_guard symlinked_version"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

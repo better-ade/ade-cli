@@ -11,7 +11,7 @@ farm() {   # $T/sys: the system's commands without the ones this story fakes; th
   python3 - "$T/sys" "$(command -v python3)" "$(command -v git)" <<'PY'
 import os, sys
 d = sys.argv[1]; os.makedirs(d, exist_ok=True)
-skip = set("bat batcat less glow yazi pdftotext pdftoppm pdfinfo chafa open xdg-open pbcopy wl-copy xclip xsel tmux gh "
+skip = set("code bat batcat less glow yazi pdftotext pdftoppm pdfinfo chafa open xdg-open pbcopy wl-copy xclip xsel tmux gh gitleaks bun "
            "brew apt-get apt sudo uname".split())
 for name, target in (("python3", sys.argv[2]), ("git", sys.argv[3])):
     os.symlink(target, os.path.join(d, name))
@@ -325,16 +325,16 @@ read_only() {   # AC7
 tools_doctor() {   # AC8: ade doctor lists every tool
   fresh; files_fixture; mkfake bat; printf '#!/bin/bash\necho "hub doctor $*"\n' > "$H/bin/doctor"; chmod +x "$H/bin/doctor"
   A doctor x > "$T/out" 2>&1 || { cat "$T/out"; fail "doctor exit"; }
-  for s in "git      installed" "python3  installed" "tmux     missing (required" "gh       missing (required" "yazi     missing (extra" \
-    "bat      installed" "glow     missing (extra" "poppler  missing (extra" "chafa    missing (extra" "ade setup --tools installs what is missing" "hub doctor x"; do
+  for s in "git      installed" "python3  installed" "tmux     missing (required" "gh       missing (required" "gitleaks missing (required" "bun      missing (required" "yazi     missing (extra" \
+    "bat      installed" "glow     missing (extra" "poppler  missing (extra" "chafa    missing (extra" "code     missing (extra: Visual Studio Code" "ade setup --tools installs what is missing" "hub doctor x"; do
     assert_contains "$T/out" "$s" "doctor: $s"; done
 }
 
 tools_setup_installs_missing() {   # AC8: ade setup --tools, after a yes at a terminal, only what is missing
-  fresh; files_fixture; mkfake bat; mkfake brew
+  fresh; files_fixture; mkfake bat; mkfake brew; mkfake bun   # bun: there (its own install is test_bun.sh)
   FAKE_OS=Darwin P "y\r" setup --tools > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
-  assert_eq "$(cat "$CALLS")" "brew install tmux gh yazi glow poppler chafa" "brew, only the missing ones (bat is here)"
-  assert_contains "$T/screen" "This runs: brew install tmux gh yazi glow poppler chafa" "the question shows the command"
+  assert_eq "$(cat "$CALLS")" "brew install tmux gh gitleaks yazi glow poppler chafa visual-studio-code" "brew, only the missing ones (bat is here); Visual Studio Code as its cask"
+  assert_contains "$T/screen" "This runs: brew install tmux gh gitleaks yazi glow poppler chafa visual-studio-code" "the question shows the command"
   assert_contains "$T/screen" "yazi only with ADE_FILES=yazi: yazi is neither read-only nor held to the hub" "and what yazi is"
   : > "$CALLS"; FAKE_OS=Darwin P "n\r" setup --tools > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "" "no: nothing installed"
   A setup --tools < /dev/null > "$T/out" 2>&1; assert_eq "$(cat "$CALLS")" "" "no terminal: nothing installed"; assert_contains "$T/out" "run at a terminal: brew install" "says how"
@@ -343,28 +343,109 @@ tools_setup_installs_missing() {   # AC8: ade setup --tools, after a yes at a te
   FAKE_OS=Linux P "y\r" setup --tools extras > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
   assert_contains "$CALLS" "$pre install -y poppler-utils chafa" "apt with Ubuntu's package names, extras only"
   assert_not_contains "$CALLS" "brew" "apt on Linux"; assert_contains "$T/screen" "yazi: not in apt" "yazi named"; assert_contains "$T/screen" "glow: not in apt" "glow named"
-  mkfake brew 'exit 1'; FAKE_OS=Darwin P "y\r" setup --tools 2>&1 | plain > "$T/screen"; assert_contains "$T/screen" "brew install tmux gh" "a failed install"
+  assert_contains "$T/screen" "code: Visual Studio Code is not in apt; get it from https://code.visualstudio.com/download (ade adds no repository" "Visual Studio Code: Microsoft's page, no repository added"
+  assert_not_contains "$CALLS" "packages.microsoft.com" "no repository"
+  mkfake brew 'exit 1'; FAKE_OS=Darwin P "y\r" setup --tools 2>&1 | plain > "$T/screen"; assert_contains "$T/screen" "brew install tmux gh gitleaks" "a failed install"
   assert_contains "$T/screen" "failed (exit 1)" "is said"
   rm "$F/brew"; : > "$CALLS"; FAKE_OS=Darwin P "y\r" setup --tools 2>&1 | plain > "$T/screen"
   assert_contains "$T/screen" "Homebrew is not installed (https://brew.sh)" "no Homebrew: says so"; assert_eq "$(cat "$CALLS")" "" "and runs nothing"
-  for c in tmux gh yazi glow pdftotext pdftoppm chafa; do mkfake "$c"; done; : > "$CALLS"
+  for c in tmux gh gitleaks yazi glow pdftotext pdftoppm chafa code; do mkfake "$c"; done; : > "$CALLS"
   A setup --tools > "$T/out" 2>&1; assert_contains "$T/out" "everything ade uses is installed" "nothing missing"; assert_eq "$(cat "$CALLS")" "" "nothing run"
   A setup --tools bogus > /dev/null 2>&1; assert_eq "$?" 2 "usage"
 }
 
 tools_in_setup_and_installer() {   # AC8: ade setup's first steps and the one-line installer
-  fresh; files_fixture; mkfake bat; mkfake brew
+  fresh; files_fixture; mkfake bat; mkfake brew; mkfake bun   # bun: there (its own install is test_bun.sh)
   FAKE_OS=Darwin P "y\ry\r" setup > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
-  assert_eq "$(sed -n 1p "$CALLS")" "brew install tmux gh" "setup: the required tools, after a yes"
-  assert_eq "$(sed -n 2p "$CALLS")" "brew install yazi glow poppler chafa" "then the extras, as one step"
+  assert_eq "$(sed -n 1p "$CALLS")" "brew install tmux gh gitleaks" "setup: the required tools, after a yes"
+  assert_eq "$(sed -n 2p "$CALLS")" "brew install yazi glow poppler chafa visual-studio-code" "then the extras, as one step"
   assert_contains "$T/screen" "viewer extras" "the extras step is named"
   assert_contains "$T/screen" "yazi is neither read-only nor held to the hub and its projects" "and it says what yazi is"
   : > "$CALLS"; FAKE_OS=Darwin pty_run "y\r" env PATH="$F:$T/sys" "$BASH" "$REPO/install.sh" "$T/prefix" > "$T/raw" 2>&1
-  assert_contains "$T/raw" "installed ade" "the installer ran"; assert_eq "$(cat "$CALLS")" "brew install tmux gh" "the installer: required tools after a yes"
+  assert_contains "$T/raw" "installed ade" "the installer ran"; assert_eq "$(cat "$CALLS")" "brew install tmux gh gitleaks" "the installer: required tools after a yes"
   : > "$CALLS"; PATH="$F:$T/sys" "$BASH" "$REPO/install.sh" "$T/prefix" > "$T/out" 2>&1 < /dev/null
-  assert_eq "$(cat "$CALLS")" "" "piped, no terminal: nothing installed"; assert_contains "$T/out" "missing tools ade needs: tmux gh" "but named"
+  assert_eq "$(cat "$CALLS")" "" "piped, no terminal: nothing installed"; assert_contains "$T/out" "missing tools ade needs: tmux gh gitleaks" "but named"
 }
 
-ALL="explorer_lists_searches_previews explorer_in_real_tmux view_at_line pagers_are_secure pdf_pages pdf_real_tools open_reveal_copy link_picker outside_asks_first spoofed_names killed_window_cleans_up read_only tools_doctor tools_setup_installs_missing tools_in_setup_and_installer"
+# Visual Studio Code: c in the explorer, the viewer and the link picker, ade view --code, ADE_VIEWER=code. The fake
+# code logs each argument in brackets, so one argument is seen as one.
+code_fake() { printf '#!/bin/bash\n{ printf "code"; printf " [%%s]" "$@"; echo; } >> "$CALLS"\n' > "${1:-$F}/code"; chmod +x "${1:-$F}/code"; }
+code_opens_at_line() {   # --code and the keys: the right --goto argument; a folder opens as a folder
+  fresh; files_fixture; mkfake bat; code_fake; local a="$A_DIR/src/a.ts"
+  A view --code "$a:3:7" < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "--code"; }
+  assert_eq "$(cat "$CALLS")" "code [--goto] [$a:3:7]" "the file at its line and column, one argument after the option; no pager"
+  : > "$CALLS"; A view --code "$a:3" < /dev/null > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$a:3:1]" "a line: column 1"
+  : > "$CALLS"; (cd "$A_DIR" && A view --code src/a.ts < /dev/null) > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$a:1:1]" "no line: 1:1, the path absolute"
+  : > "$CALLS"; A view --code "$A_DIR/weird:5" < /dev/null > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$A_DIR/weird:5:1:1]" "a name that ends in :5 stays the name"
+  : > "$CALLS"; A view --code "$A_DIR/src" < /dev/null > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "code [$A_DIR/src]" "a folder opens as a folder"
+  : > "$CALLS"; P "/a.ts\rcq" files "$A_DIR" > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
+  assert_contains "$CALLS" "code [--goto] [$a:1:1]" "c in the explorer"; assert_contains "$T/screen" "opened in Visual Studio Code: $a" "and says so"
+  assert_contains "$T/screen" "o app · c code · f reveal" "the explorer's key line lists c"
+  : > "$CALLS"; P "cq" files "$A_DIR" > /dev/null 2>&1; assert_contains "$CALLS" "code [$A_DIR/docs]" "c on a folder"
+  : > "$CALLS"; P "cq" view "$A_DIR/img.png" > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
+  assert_contains "$CALLS" "code [--goto] [$A_DIR/img.png:1:1]" "c in the viewer"; assert_contains "$T/screen" "o open · c code · f reveal" "the viewer's key line lists c"
+  A help > "$T/out" 2>&1; assert_contains "$T/out" "ade view [--code] <path[:line[:col]]>" "the help: --code"
+  assert_contains "$T/out" "ADE_VIEWER=code: code and text files open in" "the help: ADE_VIEWER"; assert_contains "$T/out" "images, PDFs and Markdown keep the built-in viewer" "and what stays"
+  A ui --keys 2> /dev/null | grep -q "in files and links, c: open in Visual Studio Code" || fail "the help popup lists c"
+  A files --act code "$a" x > /dev/null 2>&1; assert_eq "$?" 2 "a line is a number"; A files --act open "$a" 3 > /dev/null 2>&1; assert_eq "$?" 2 "only code takes a line"
+  : > "$CALLS"; A files --act code "$a" 9 2 > "$T/out" 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$a:9:2]" "the action the keys run, with a line and column"
+}
+code_names_are_data() {   # spaces, a leading -, shell characters: one argument, as it is; a line break is refused
+  fresh; files_fixture; mkfake bat; code_fake; local n
+  for n in "my file.ts" "-dash.ts" "--goto.ts" 'a;b $(touch pwned) `id` "q'"'"'.ts' "sp ace:2"; do
+    echo x > "$A_DIR/$n"; : > "$CALLS"; A view --cwd "$A_DIR" --code -- "$n" < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "[$n]"; }
+    assert_eq "$(cat "$CALLS")" "code [--goto] [$A_DIR/$n:1:1]" "[$n] is one argument, after the option, never an option itself"
+  done
+  [ ! -e pwned ] && [ ! -e "$A_DIR/pwned" ] || fail "nothing in a name ran"
+  : > "$CALLS"; A view --cwd "$A_DIR" --code -- "my file.ts:4:2" < /dev/null > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$A_DIR/my file.ts:4:2]" "with a line and column"
+  n="$(printf 'two\nlines.ts')"; echo x > "$A_DIR/$n"; : > "$CALLS"; A view --code "$A_DIR/$n" < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "a name with a line break is refused"
+  assert_eq "$(cat "$CALLS")" "" "and nothing opens"
+}
+code_asks_outside() {   # a path outside the roots asks first, as o does
+  fresh; files_fixture; mkfake bat; code_fake; local s="$T/outside/secret.txt"
+  A view --code "$s" < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "outside, no terminal: refused"; assert_contains "$T/out" "outside the hub and its projects" "says why"
+  A files --act code "$s" < /dev/null > /dev/null 2>&1; assert_eq "$?" 2 "the key's action too"; A view --code "$A_DIR/leak.txt" < /dev/null > /dev/null 2>&1; assert_eq "$?" 2 "and an escaping link"
+  P "n\r" view --code "$s" > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "" "no: nothing opens"
+  CLAUDECODE=1 P "y\r" view --code "$s" > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "" "an agent session cannot answer"
+  P "y\r" view --code "$s" > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$s:1:1]" "yes: opened"
+  : > "$CALLS"; A view --code "$T/proj/main.go:2" < /dev/null > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$T/proj/main.go:2:1]" "a checkout is inside: no question"
+}
+code_missing_or_local() {   # no code: one line, the built-in viewer; a code inside the project is never run; over SSH the path
+  fresh; files_fixture; mkfake bat; local a="$A_DIR/src/a.ts"
+  A view --code "$a:3" < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "never an error"; }
+  assert_eq "$(cat "$T/out")" "ade: Visual Studio Code (the code command) is not installed; ade setup --tools installs it; the built-in viewer instead" "one line"
+  assert_contains "$CALLS" "bat --style=numbers --highlight-line 3 --pager less -RF +3g -- $a" "then the built-in viewer, at the line"
+  P "/a.ts\rcq" files "$A_DIR" 2>&1 | plain > "$T/screen"; assert_contains "$T/screen" "is not installed; ade setup --tools installs it; the path: $a" "c says so and offers the path"
+  mkdir -p "$A_DIR/bin"; code_fake "$A_DIR/bin"; : > "$CALLS"
+  PATH="$A_DIR/bin:$F:$T/sys" "$BASH" "$ADE" view --code "$a" < /dev/null > "$T/out" 2>&1 || fail "a local code is not an error either"
+  assert_contains "$T/out" "the code command on PATH is inside the hub or project being viewed, so ade does not run it" "a code in the project is refused"
+  assert_not_contains "$CALLS" "code [" "and never run"; assert_contains "$CALLS" "bat " "the built-in viewer instead"
+  ln -s "$A_DIR/bin/code" "$F/code"; : > "$CALLS"; A view --code "$a" < /dev/null > "$T/out" 2>&1
+  assert_contains "$T/out" "inside the hub or project being viewed" "a link into the project is refused too"; assert_not_contains "$CALLS" "code [" "not run"
+  rm "$F/code"; code_fake; : > "$CALLS"; unset DISPLAY
+  SSH_CONNECTION="1 2 3 4" A files --act code "$a" > "$T/out" 2>&1; assert_eq "$(cat "$CALLS")" "" "over SSH with no display: nothing opens"
+  assert_contains "$T/out" "over SSH with no display, Visual Studio Code cannot open here; the path: $a" "it says so and offers the path"
+  SSH_CONNECTION="1 2 3 4" TERM_PROGRAM=vscode A files --act code "$a" > /dev/null 2>&1; assert_contains "$CALLS" "code [--goto] [$a:1:1]" "in Visual Studio Code's own terminal it opens"
+  : > "$CALLS"; SSH_CONNECTION="1 2 3 4" DISPLAY=:0 A files --act code "$a" > /dev/null 2>&1; assert_contains "$CALLS" "code [--goto]" "and with a display"
+  printf '#!/bin/bash\nexit 1\n' > "$F/code"; A files --act code "$a" > "$T/out" 2>&1; assert_contains "$T/out" "Visual Studio Code did not open it (code failed); the path: $a" "a code that fails is said"
+}
+code_by_default() {   # ADE_VIEWER=code: code and text files, at a terminal; images, PDFs and Markdown keep the built-in viewer
+  fresh; files_fixture; mkfake bat; mkfake glow; code_fake; export ADE_VIEWER=code; local a="$A_DIR/src/a.ts"
+  P "" view "$a:3" > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$a:3:1]" "a code file opens in Visual Studio Code"
+  : > "$CALLS"; P "" view "$A_DIR/docs/x.md" > /dev/null 2>&1; assert_contains "$CALLS" "glow -p -- $A_DIR/docs/x.md" "Markdown keeps the built-in viewer"; assert_not_contains "$CALLS" "code [" "not code"
+  : > "$CALLS"; P "q" view "$A_DIR/img.png" 2>&1 | plain > "$T/screen"; assert_contains "$T/screen" "image: 2x1" "an image too"; assert_not_contains "$CALLS" "code [" "not code"
+  : > "$CALLS"; A view "$a" < /dev/null > /dev/null 2>&1; assert_contains "$CALLS" "bat " "not at a terminal: the built-in viewer"; assert_not_contains "$CALLS" "code [" "never a window from a script"
+  rm "$F/code"; : > "$CALLS"; P "" view "$a" 2>&1 | plain > "$T/screen"; assert_contains "$T/screen" "is not installed; ade setup --tools installs it; the built-in viewer instead" "no code: said in one line"
+  assert_contains "$CALLS" "bat " "and the built-in viewer is used"
+}
+code_in_link_picker() {   # a number then c: the file in Visual Studio Code at its line and column
+  fresh; files_fixture; mkfake bat; code_fake; local d
+  d="${TMPDIR:-/tmp}"; d="$(mktemp -d "${d%/}/ade.XXXXXX")"; printf 'see src/a.ts:3:7 and docs/x.md\n' > "$d/pane"; printf '%s\n' "$A_DIR" > "$d/cwd"
+  P "1c\r" ui --links "$d" > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
+  assert_contains "$T/screen" "a number then c: in Visual Studio Code" "the question says how"
+  assert_eq "$(cat "$CALLS")" "code [--goto] [$A_DIR/src/a.ts:3:7]" "the pick, at its line and column"; rm -rf "$d"
+}
+
+ALL="code_opens_at_line code_names_are_data code_asks_outside code_missing_or_local code_by_default code_in_link_picker explorer_lists_searches_previews explorer_in_real_tmux view_at_line pagers_are_secure pdf_pages pdf_real_tools open_reveal_copy link_picker outside_asks_first spoofed_names killed_window_cleans_up read_only tools_doctor tools_setup_installs_missing tools_in_setup_and_installer"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

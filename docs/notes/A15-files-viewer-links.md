@@ -37,6 +37,13 @@ without a question). Nothing else changes risk: the commands only read.
   the folder.
 - **OSC 8**: the explorer's and viewer's titles are `file://` hyperlinks on terminals that draw them (not in tmux). A
   terminal opens such a link with its default app; it cannot run `ade view`, so the picker is the way into the viewer.
+- **Visual Studio Code** (follow-up, owner 2026-11-22): `c`, `ade view --code` and `ADE_VIEWER=code` go through
+  `view_code` after `files_target` (so the outside question and the unreadable check are the same as for `o`); the
+  allow list of `o` does not apply, any regular file or folder may be opened in an editor. `code_bin` takes
+  `command -v code` only when it is absolute and outside the roots. A code file in `ade view` is shown by `less`,
+  which owns the keys (and runs in secure mode, so no key can be added to it): `c` is on ade's own screens, and
+  `--code` or `ADE_VIEWER=code` cover the pager case. `ADE_VIEWER=code` applies only at a terminal, so a script that
+  prints a file never opens a window.
 - **Tools**: required `git python3 tmux gh`, extras `yazi bat glow poppler chafa`. `ade setup --tools [required|extras]`
   asks once and runs `brew install <pkgs>` or `[sudo] apt-get install -y <pkgs>` (`python` for python3 on brew,
   `poppler-utils` on apt); yazi and glow are not in Ubuntu 24.04's apt, so on apt they are named with their release

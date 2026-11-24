@@ -14,12 +14,13 @@ drop_t() {
 }
 fresh() {
   unset ADE_HUB ADE_HOOK_BIN ADE_METHOD_REPO ADE_REGISTRY_REPO ADE_METHOD_REF ADE_REGISTRY_REF ADE_SKILLS_REPO ADE_SKILLS_REF CLAUDE_CONFIG_DIR
-  unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID   # never an agent session (ade reset refuses one)
-  unset CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_PROJECT_DIR CLAUDE_PLUGIN_ROOT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SSE_PORT
+  unset CLAUDECODE CLAUDE_CODE_ENTRYPOINT CLAUDE_CODE_SESSION_ID CLAUDE_PID CLAUDE_CODE_CHILD_SESSION CLAUDE_CODE_EXECPATH CLAUDE_PROJECT_DIR   # never an agent session (ade reset refuses one)
+  unset CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_PLUGIN_ROOT CLAUDE_CODE_SSE_PORT   # the rest of ade connect's ten
   unset GH_TOKEN GITHUB_TOKEN; export ADE_TEST_SUITE=1   # the tests-only marker: file:// URLs count only with it (ade says so)
   export ADE_NO_UPDATE_CHECK=1 ADE_NO_AUTO_UPDATE=1   # never a real release check (test_releases.sh unsets them)
   drop_t; T="$(mktemp -d "${TMPDIR:-/tmp}/ade-test.XXXXXX")"; T="$(cd "$T" && pwd -P)"; trap drop_t EXIT
   export ADE_NO_CLAUDE_UPDATE=1   # the Claude Code update step is tested on its own (test_update.sh)
+  export ADE_UI=off   # ade work and ade claude never reach a real tmux server from a test (test_ui.sh turns tabs on, with its fake)
   export HOME="$T/home"; mkdir -p "$HOME"
   export GIT_CONFIG_NOSYSTEM=1 GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
 }
@@ -105,7 +106,10 @@ if pid == 0:
 t = time.time()
 while termios.tcgetattr(fd)[3] & termios.ECHO and time.time() - t < 5:
     time.sleep(0.01)
-os.write(fd, inp)
+try:
+    os.write(fd, inp)
+except OSError:   # the program already ended and closed its terminal (macOS: EIO): nothing left to type into
+    pass
 out = b""
 while True:
     try:
@@ -118,4 +122,34 @@ while True:
 sys.stdout.write(out.decode("utf-8", "replace").replace("\r", ""))
 _, st = os.waitpid(pid, 0)
 sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else 1)' "$@"
+}
+# bun_fakes (after the test made $F): a fake bun release in $T/bunrel: the four zips, each holding bun-<os>-<cpu>/bun (a
+# script that names its zip and prints the version ade pins), and their SHASUMS256.txt. In $F: a curl that serves that
+# folder (it logs "curl <url>" to $CALLS and fails once per line of $T/curl.fail), a uname (FAKE_OS, FAKE_CPU) and a
+# sysctl (FAKE_ROSETTA=1: an Intel shell on Apple silicon). Never the network, never a real bun.
+bun_fakes() {
+  BUN_V="$(sed -n 's/^BUN_VERSION="\([0-9.]*\)".*/\1/p' "$ADE")"; BUN_REL="$T/bunrel"; BUN_URL="https://github.com/oven-sh/bun/releases/download/bun-v$BUN_V"
+  export BUN_REL FT="$T"
+  python3 - "$BUN_REL" "$BUN_V" <<'PY'
+import hashlib, os, sys, zipfile
+d, v = sys.argv[1], sys.argv[2]; os.makedirs(d, exist_ok=True); sums = ["0" * 64 + "  bun-windows-x64.zip\n"]
+for a in ("bun-darwin-aarch64", "bun-darwin-x64", "bun-linux-x64", "bun-linux-aarch64"):
+    p = os.path.join(d, a + ".zip")
+    with zipfile.ZipFile(p, "w") as z:
+        z.writestr(a + "/bun", "#!/bin/bash\n# %s\necho %s\n" % (a, v))
+    sums.append("%s  %s.zip\n" % (hashlib.sha256(open(p, "rb").read()).hexdigest(), a))
+open(os.path.join(d, "SHASUMS256.txt"), "w").write("".join(sums))
+PY
+  cat > "$F/curl" <<'STUB'
+#!/bin/bash
+out=""; url=""
+while [ $# -gt 0 ]; do case "$1" in -o) out="$2"; shift ;; --proto|--proto-redir|--max-time|--connect-timeout) shift ;; http*|file*) url="$1" ;; esac; shift; done
+echo "curl $url" >> "$CALLS"
+if [ -s "$FT/curl.fail" ]; then head -1 "$FT/curl.fail" >&2; sed 1d "$FT/curl.fail" > "$FT/curl.fail.n"; mv "$FT/curl.fail.n" "$FT/curl.fail"; exit 6; fi
+f="$BUN_REL/${url##*/}"; [ -f "$f" ] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
+if [ -n "$out" ]; then cp "$f" "$out"; else cat "$f"; fi
+STUB
+  printf '#!/bin/bash\ncase "${1:-}" in ""|-s) echo "${FAKE_OS:-Darwin}" ;; -m) echo "${FAKE_CPU:-arm64}" ;; *) exec "%s" "$@" ;; esac\n' "$(command -v uname)" > "$F/uname"
+  printf '#!/bin/bash\n[ "$*" = "-n sysctl.proc_translated" ] && [ "${FAKE_OS:-Darwin}" = Darwin ] && { echo "${FAKE_ROSETTA:-0}"; exit 0; }\nexit 1\n' > "$F/sysctl"
+  chmod +x "$F/curl" "$F/uname" "$F/sysctl"
 }

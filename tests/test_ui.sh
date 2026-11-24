@@ -28,12 +28,18 @@ case "$1" in
   new-session) touch "$TMUX_LOG.session" ;;
   list-windows) printf '0\torchestrator\t1\n1\tprojects/api:1.2\t0\n2\tops/db\t0\n3\tprojects/web:rev\t0\n' ;;
   list-panes) cat "$TMUX_LOG.panes" 2>/dev/null ;;
+  list-sessions) cat "$TMUX_LOG.sessions" 2>/dev/null ;;
+  display-message) echo "/tmp/fake-tmux/ade" ;;
   split-window) echo "%9"; echo "%9 ade-dash" > "$TMUX_LOG.panes" ;;
   kill-pane) rm -f "$TMUX_LOG.panes" ;;
 esac
 exit 0
 F
-  printf '#!/bin/bash\necho "claude $*"\n' > "$T/fakebin/claude"; chmod +x "$T/fakebin/tmux" "$T/fakebin/claude"; export PATH="$T/fakebin:$PATH"
+  printf '#!/bin/bash\necho "claude $*"\n' > "$T/fakebin/claude"
+  # the things that open a window, and the process list: recorded, never real
+  for c in osascript open; do printf '#!/bin/bash\necho "%s $*" >> "$TMUX_LOG.windows"\n' "$c" > "$T/fakebin/$c"; done
+  printf '#!/bin/bash\n[ -f "$TMUX_LOG.orchestrator" ]\n' > "$T/fakebin/pgrep"
+  chmod +x "$T/fakebin/"*; export PATH="$T/fakebin:$PATH"; unset TMUX ADE_UI AGENT_TERMINAL ADE_UI_SESSION ADE_HOOK_BIN ADE_HOOK_PORT ADE_HOOK_TOKEN ADE_PTY_ID
   S="$(bash "$ADE" ui --session)"
 }
 
@@ -47,14 +53,88 @@ creates_then_attaches() {   # AC1
   assert_eq "$(grep -c '^tmux attach-session' "$TMUX_LOG")" 2 "the second attaches"
 }
 
-work_opens_tab() {   # AC2: with the session up, ade work hands bin/work the tmux mode and the session
-  fresh; ui_fixture; printf '#!/bin/bash\necho "work $* AGENT_TERMINAL=${AGENT_TERMINAL:-} ADE_UI_SESSION=${ADE_UI_SESSION:-}"\n' > "$T/hub/bin/work"; chmod +x "$T/hub/bin/work"
-  out=$(bash "$ADE" work projects/api); assert_eq "$out" "work projects/api AGENT_TERMINAL= ADE_UI_SESSION=" "no session: unchanged"
-  touch "$TMUX_LOG.session"
-  out=$(bash "$ADE" work projects/api); assert_eq "$out" "work projects/api AGENT_TERMINAL=tmux ADE_UI_SESSION=$S" "session: a tab in it"
-  out=$(AGENT_TERMINAL=iterm bash "$ADE" work projects/api); assert_eq "$out" "work projects/api AGENT_TERMINAL=iterm ADE_UI_SESSION=" "an explicit terminal wins"
+# a fake bin/work that says what it was handed and, as the hub's tmux mode does today, opens its own detached tmux
+# session named after the folder's last part (the hub does not know ade's session name or socket)
+fake_work() {
+  cat > "$T/hub/bin/work" <<'W'
+#!/bin/bash
+echo "work $* AGENT_TERMINAL=${AGENT_TERMINAL:-} ADE_UI_SESSION=${ADE_UI_SESSION:-} TMUX=${TMUX:-}"
+[ -z "${WORK_EXIT:-}" ] || exit "$WORK_EXIT"
+if [ "${AGENT_TERMINAL:-}" = tmux ]; then f=""; for a in "$@"; do case "$a" in projects/*|ops/*) f="${a##*/}" ;; esac; done
+  [ -n "${WORK_IN_SESSION:-}" ] || { tmux new-session -d -s "$f" -c "$PWD" "sleep 30"; echo "$f" >> "$TMUX_LOG.sessions"; }
+elif [ "${AGENT_TERMINAL:-}" != ade ]; then osascript -e 'tell application "Terminal" to do script'; fi
+W
+  chmod +x "$T/hub/bin/work"
+}
+work_opens_tab() {   # AC2, and "focus work opens a tab, never a new window"
+  fresh; ui_fixture; fake_work
+  touch "$TMUX_LOG.session"; echo "$S" > "$TMUX_LOG.sessions"
+  out=$(bash "$ADE" work projects/api 2> "$T/err"); assert_eq "$out" "work projects/api AGENT_TERMINAL=tmux ADE_UI_SESSION=$S TMUX=/tmp/fake-tmux/ade" "session: tmux mode, the session, and ade's own tmux server"
+  assert_contains "$TMUX_LOG" "tmux rename-window -t =api: projects/api" "the session the hub opened gets the tab's name"
+  assert_contains "$TMUX_LOG" "tmux move-window -d -s =api: -t =$S:" "and becomes a tab of the ade ui session"
+  [ ! -e "$TMUX_LOG.windows" ] || fail "no Terminal window (osascript, open)"; assert_eq "$(grep -c '^tmux new-session .*-n orchestrator' "$TMUX_LOG")" 0 "the session was there: not made again"
+  assert_eq "$(cat "$T/err")" "" "and nothing more is said"
+  : > "$TMUX_LOG"; out=$(WORK_IN_SESSION=1 bash "$ADE" work projects/api 2>&1); assert_not_contains "$TMUX_LOG" "move-window" "a hub that opens the tab itself: nothing to move"
+  out=$(AGENT_TERMINAL=iterm bash "$ADE" work projects/api); assert_eq "$out" "work projects/api AGENT_TERMINAL=iterm ADE_UI_SESSION= TMUX=" "an explicit terminal wins"
   out=$(bash "$ADE" ui --tab-name projects/api 1.2); assert_eq "$out" "projects/api:1.2" "tab name with ticket"
   out=$(bash "$ADE" ui --tab-name ops/db); assert_eq "$out" "ops/db" "tab name without ticket"
+  : > "$TMUX_LOG"; echo "$S" > "$TMUX_LOG.sessions"   # the orchestrator in tab 0 calls ade work: an agent, no terminal
+  out=$(CLAUDECODE=1 AGENT_TERMINAL=tmux ADE_UI_SESSION="$S" TMUX="/tmp/fake-tmux/ade,1,0" bash "$ADE" work projects/web < /dev/null 2> /dev/null)
+  assert_eq "$out" "work projects/web AGENT_TERMINAL=tmux ADE_UI_SESSION=$S TMUX=/tmp/fake-tmux/ade,1,0" "from tab 0: the same, its own TMUX kept"
+  assert_contains "$TMUX_LOG" "tmux move-window -d -s =web: -t =$S:" "still a tab, with nobody at a terminal"
+  WORK_EXIT=3 bash "$ADE" work projects/api > /dev/null 2>&1; assert_eq "$?" 3 "the hub's exit code comes back"
+}
+work_makes_the_session() {   # no ade ui session yet: ade makes it, detached, and the work is a tab in it
+  fresh; ui_fixture; fake_work
+  out=$(bash "$ADE" work projects/api --role builder 2> "$T/err") || { cat "$T/err"; fail "work"; }
+  grep -E "^tmux new-session -d -s $S -n orchestrator -c $T/hub .*AGENT_TERMINAL=tmux ADE_UI_SESSION=$S .*claude" "$TMUX_LOG" > /dev/null || { cat "$TMUX_LOG"; fail "the session is made as ade ui --detach makes it: tab 0 the orchestrator"; }
+  assert_not_contains "$TMUX_LOG" "attach-session" "detached: nobody is attached"
+  assert_eq "$out" "work projects/api --role builder AGENT_TERMINAL=tmux ADE_UI_SESSION=$S TMUX=/tmp/fake-tmux/ade" "then bin/work in tmux mode"
+  assert_contains "$TMUX_LOG" "tmux move-window -d -s =api: -t =$S:" "a tab in it"
+  assert_eq "$(cat "$T/err")" "ade: projects/api is a tab in $S; ade ui shows it" "one line: where the tab is"
+  [ ! -e "$TMUX_LOG.windows" ] || fail "no Terminal window (osascript, open)"
+  fresh; ui_fixture; fake_work; touch "$TMUX_LOG.orchestrator"   # the owner's case: the main agent runs outside tmux (plain ade claude)
+  bash "$ADE" work projects/api > "$T/out" 2> "$T/err" || { cat "$T/err"; fail "work"; }
+  grep -E "^tmux new-session -d -s $S -n orchestrator -c $T/hub .* ui --place" "$TMUX_LOG" > /dev/null || { cat "$TMUX_LOG"; fail "tab 0 keeps the orchestrator's place"; }
+  ! grep -E "^tmux new-session .* claude" "$TMUX_LOG" > /dev/null || fail "never a second orchestrator"
+  assert_contains "$TMUX_LOG" "tmux move-window -d -s =api: -t =$S:" "the work is a tab all the same"; [ ! -e "$TMUX_LOG.windows" ] || fail "no Terminal window"
+  bash "$ADE" ui --place < /dev/null > "$T/out" 2>&1; assert_contains "$T/out" "Your main agent is running in another terminal." "the place says why it is empty"
+  assert_contains "$T/out" "claude --remote-control acme" "and Enter starts it here"
+}
+work_plain() {   # the ways out: ADE_UI=off, no tmux, the ADE app
+  fresh; ui_fixture; fake_work
+  out=$(ADE_UI=off bash "$ADE" work projects/api 2> "$T/err"); assert_eq "$out" "work projects/api AGENT_TERMINAL= ADE_UI_SESSION= TMUX=" "ADE_UI=off: as before"
+  assert_not_contains "$TMUX_LOG" "new-session" "no session made"; assert_eq "$(cat "$T/err")" "" "and nothing said"
+  printf '#!/bin/bash\nexit 0\n' > "$T/hook"; chmod +x "$T/hook"
+  out=$(ADE_HOOK_BIN="$T/hook" ADE_HOOK_PORT=1 ADE_HOOK_TOKEN=t ADE_PTY_ID=p bash "$ADE" work projects/api 2> "$T/err")
+  assert_eq "$out" "work projects/api AGENT_TERMINAL= ADE_UI_SESSION= TMUX=" "inside the ADE app: nothing changes (the hub opens its sub-terminal)"
+  assert_not_contains "$TMUX_LOG" "new-session" "no tmux session there"; assert_eq "$(cat "$T/err")" "" "nothing said"
+  d="$T/notmux"; mkdir -p "$d"; for c in bash python3 sed awk grep cat dirname basename tr head tail mktemp uname env date cksum; do ln -sf "$(command -v "$c")" "$d/$c"; done
+  cp "$T/fakebin/osascript" "$d/osascript"
+  out=$(PATH="$d" bash "$ADE" work projects/api 2> "$T/err"); assert_eq "$out" "work projects/api AGENT_TERMINAL= ADE_UI_SESSION= TMUX=" "no tmux: as before"
+  assert_eq "$(cat "$T/err")" "ade: tabs for focus work need tmux; ade setup --tools installs it" "with one line on how to get tabs"
+}
+claude_in_the_session() {   # ade claude at a terminal runs the main agent as tab 0 of the ade ui session
+  fresh; ui_fixture; fake_work; local d
+  pty_run "" bash "$ADE" claude > "$T/out" 2>&1 || { cat "$T/out"; fail "ade claude"; }
+  grep -E "^tmux new-session -d -s $S -n orchestrator -c $T/hub .*AGENT_TERMINAL=tmux ADE_UI_SESSION=$S .*claude" "$TMUX_LOG" > /dev/null || { cat "$TMUX_LOG" "$T/out"; fail "tab 0 runs the main agent"; }
+  grep -q "^tmux attach-session -t =$S" "$TMUX_LOG" || fail "and the person is attached to it"
+  assert_not_contains "$T/out" "claude --remote-control" "not also outside tmux"
+  : > "$TMUX_LOG"; AGENT_TERMINAL=tmux ADE_UI_SESSION="$S" pty_run "" bash "$ADE" claude > "$T/out" 2>&1   # what tab 0 itself runs
+  assert_contains "$T/out" "claude --remote-control acme" "inside the session: Claude Code itself"; assert_not_contains "$TMUX_LOG" "attach-session" "never a session in a session"
+  : > "$TMUX_LOG"; rm -f "$TMUX_LOG.session"; ADE_UI=off pty_run "" bash "$ADE" claude > "$T/out" 2>&1
+  assert_contains "$T/out" "claude --remote-control acme" "ADE_UI=off: the plain way"; assert_eq "$(cat "$TMUX_LOG")" "" "no tmux at all"
+  pty_run "" bash "$ADE" claude -- --resume > "$T/out" 2>&1; assert_contains "$T/out" "claude --remote-control acme --resume" "ade claude -- args keeps its meaning"
+  assert_not_contains "$TMUX_LOG" "new-session" "and runs where it was typed"
+  bash "$ADE" claude < /dev/null > "$T/out" 2>&1; assert_contains "$T/out" "claude --remote-control acme" "no terminal: the plain way"; assert_not_contains "$TMUX_LOG" "new-session" "no session"
+  pty_run "" bash "$ADE" claude projects/api > "$T/out" 2>&1; assert_contains "$T/out" "work projects/api AGENT_TERMINAL=tmux" "ade claude <folder> is still ade work <folder>"
+  : > "$TMUX_LOG"; printf '#!/bin/bash\nexit 0\n' > "$T/hook"; chmod +x "$T/hook"
+  ADE_HOOK_BIN="$T/hook" ADE_HOOK_PORT=1 ADE_HOOK_TOKEN=t ADE_PTY_ID=p pty_run "" bash "$ADE" claude > "$T/out" 2>&1
+  assert_contains "$T/out" "claude --remote-control acme" "inside the ADE app: the plain way"; assert_eq "$(cat "$TMUX_LOG")" "" "no tmux"
+  d="$T/notmux"; mkdir -p "$d"; for c in bash python3 git sed awk grep cat dirname basename tr head tail mktemp uname env date cksum stty mkdir chmod mv rm ls cp touch sort wc cut readlink id; do ln -sf "$(command -v "$c")" "$d/$c"; done
+  cp "$T/fakebin/claude" "$d/claude"; PATH="$d" pty_run "" "$(command -v bash)" "$ADE" claude > "$T/out" 2>&1
+  assert_contains "$T/out" "claude --remote-control acme" "no tmux: the plain way"
+  assert_contains "$T/out" "ade: tabs for focus work need tmux; ade setup --tools installs it" "with one line on how to get tabs"
 }
 
 tab_bar() {   # AC3
@@ -130,6 +210,50 @@ real_tmux() {   # AC1 on a real tmux, when installed
   assert_eq "$n" 1 "one session"; assert_eq "$w" "0 orchestrator" "tab 0 is the orchestrator"
 }
 
+bare_ade_opens_the_tabs() {   # "ade ui as the default": ade alone, at a terminal, with a hub that is set up
+  fresh; ui_fixture; fake_work; local d; echo "HUB_ROOT_PROVIDER=anthropic" >> "$T/hub/hub.conf"
+  pty_run "" bash "$ADE" > "$T/out" 2>&1 || { cat "$T/out"; fail "ade"; }
+  grep -E "^tmux new-session -d -s $S -n orchestrator -c $T/hub .*claude" "$TMUX_LOG" > /dev/null || { cat "$TMUX_LOG" "$T/out"; fail "ade alone makes the session, the main agent as tab 0"; }
+  grep -q "^tmux attach-session -t =$S" "$TMUX_LOG" || fail "and attaches"; assert_not_contains "$T/out" "next:" "not the summary"
+  pty_run "" bash "$ADE" > "$T/out" 2>&1; assert_eq "$(grep -c '^tmux new-session' "$TMUX_LOG")" 1 "a session that is there is attached to, not made again"
+  assert_eq "$(grep -c '^tmux attach-session' "$TMUX_LOG")" 2 "attached"
+  : > "$TMUX_LOG"; bash "$ADE" home > "$T/sum" 2>&1 || fail "ade home"   # the summary keeps a name of its own
+  for l in "hub: acme ($T/hub)" "1.2              projects/api" "next:" "  ade                  open your workspace: a tab per agent (ade ui)" "  ade work <folder>    start a focus agent on a folder"; do assert_contains "$T/sum" "$l" "ade home: $l"; done
+  assert_eq "$(cat "$TMUX_LOG")" "" "ade home never opens anything"
+  bash "$ADE" status > "$T/out" 2>&1; assert_contains "$T/out" "NAME             FOLDER" "ade status is still the hub's sessions"; assert_not_contains "$T/out" "next:" "and only that"
+  bash "$ADE" < /dev/null > "$T/out" 2>&1; assert_eq "$(cat "$T/out")" "$(cat "$T/sum")" "no terminal: the summary, as before"; assert_eq "$(cat "$TMUX_LOG")" "" "nothing opened"
+  CLAUDECODE=1 pty_run "" bash "$ADE" > "$T/out" 2>&1; assert_contains "$T/out" "hub: acme" "an agent session: the summary"; assert_eq "$(cat "$TMUX_LOG")" "" "nothing opened"
+  ADE_UI=off pty_run "" bash "$ADE" > "$T/out" 2>&1; assert_contains "$T/out" "hub: acme" "ADE_UI=off: the summary"; assert_eq "$(cat "$TMUX_LOG")" "" "nothing opened"
+  assert_not_contains "$T/out" "needs tmux" "and no word about tmux"
+  ADE_UI_SESSION="$S" AGENT_TERMINAL=tmux pty_run "" bash "$ADE" > "$T/out" 2>&1   # typed in a tab of the session
+  assert_contains "$T/out" "hub: acme" "inside the session: the summary"; assert_contains "$T/out" "You are in the tab view already; its keys: prefix ?" "and the key hint"
+  assert_not_contains "$TMUX_LOG" "attach-session" "never a session in a session"
+  TMUX="/tmp/tmux-1/${ADE_TMUX_SOCKET:-ade},1,0" pty_run "" bash "$ADE" > "$T/out" 2>&1; assert_contains "$T/out" "its keys: prefix ?" "a focus tab too (ade's own tmux server)"
+  assert_not_contains "$TMUX_LOG" "attach-session" "not nested"
+  d="$T/notmux"; mkdir -p "$d"; for c in bash python3 git sed awk grep cat dirname basename tr head tail mktemp uname env date cksum stty mkdir chmod mv rm ls cp touch sort wc cut readlink id; do ln -sf "$(command -v "$c")" "$d/$c"; done
+  cp "$T/fakebin/claude" "$d/claude"; PATH="$d" pty_run "" "$(command -v bash)" "$ADE" > "$T/out" 2>&1
+  assert_contains "$T/out" "hub: acme" "no tmux: the summary"; assert_contains "$T/out" "The tab view needs tmux; ade setup --tools installs it." "and the one line"
+  PATH="$d" "$(command -v bash)" "$ADE" < /dev/null > "$T/out" 2>&1; assert_not_contains "$T/out" "needs tmux" "not without a terminal"
+  fresh; ui_fixture; rm -rf "$T/hub/projects"; : > "$TMUX_LOG"   # a hub whose guide has a required step left
+  pty_run "n\n" bash "$ADE" > "$T/out" 2>&1; assert_contains "$T/out" "ADE set-up guide (ade setup)" "set-up not finished: the step list"
+  assert_contains "$T/out" "Set up now? [Y/n]" "and its offer"; assert_not_contains "$TMUX_LOG" "new-session" "no tab view yet"
+  bash "$ADE" < /dev/null > "$T/out" 2>&1; assert_contains "$T/out" "hub: acme" "without a terminal: the summary, as before"
+}
+
+work_real_tmux() {   # a real tmux on a private socket: a bin/work that opens its own session, as the hub's does, ends as a tab
+  command -v tmux > /dev/null 2>&1 || { echo "skip: no tmux"; return 0; }
+  fresh; make_hub "$T/hub" hub; printf 'HUB_NAME=real\n' > "$T/hub/hub.conf"; mkdir -p "$T/hub/projects/api"
+  export ADE_HUB="$T/hub" TMUX_TMPDIR="$T" ADE_TMUX_SOCKET="ade-test-$$"; unset TMUX ADE_UI AGENT_TERMINAL ADE_UI_SESSION
+  mkdir -p "$T/fakebin"; printf '#!/bin/bash\nsleep 30\n' > "$T/fakebin/claude"; printf '#!/bin/bash\nexit 1\n' > "$T/fakebin/pgrep"; chmod +x "$T/fakebin/"*; export PATH="$T/fakebin:$PATH"
+  printf '#!/bin/bash\n[ "$AGENT_TERMINAL" = tmux ] || exit 9\ntmux new-session -d -s api -c "$HUB" "sleep 30"\n' > "$T/hub/bin/work"; chmod +x "$T/hub/bin/work"
+  bash "$ADE" work projects/api > "$T/out" 2>&1 || { cat "$T/out"; tmux -L "$ADE_TMUX_SOCKET" kill-server 2> /dev/null; fail "work"; }
+  RS="$(bash "$ADE" ui --session)"; w="$(tmux -L "$ADE_TMUX_SOCKET" list-windows -t "=$RS" -F '#{window_index} #{window_name}' | tr '\n' ';')"
+  n="$(tmux -L "$ADE_TMUX_SOCKET" list-sessions -F '#{session_name}' | tr '\n' ';')"; tmux -L "$ADE_TMUX_SOCKET" kill-server 2> /dev/null
+  assert_eq "$w" "0 orchestrator;1 projects/api;" "tab 0 the orchestrator, tab 1 the focus work"; assert_eq "$n" "$RS;" "one session: the hub's own was taken in"
+  assert_contains "$T/out" "ade: projects/api is a tab in $RS; ade ui shows it" "and the line"
+  ! tmux list-sessions 2> /dev/null | grep -q "^api:" || fail "nothing on the default tmux server"
+}
+
 session_names() {   # review: the session name carries a short hash of the hub path (two hubs named acme never share one)
   fresh; ui_fixture; [[ $S =~ ^ade-acme-[0-9a-f]{6}$ ]] || fail "name and hash: $S"
   make_hub "$T/other" other; echo "HUB_NAME=acme" > "$T/other/hub.conf"
@@ -170,6 +294,6 @@ dash_tokens_and_events() {   # UX review: TOKENS only when bin/sessions reports 
   assert_contains "$T/out" "TOKENS" "the column shows when reported"; assert_contains "$T/out" "12.3k" "with the session's usage"
 }
 
-ALL="dash_tokens_and_events session_names menu_skips_bad_folders sq_refuses bar_cached creates_then_attaches work_opens_tab tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
+ALL="dash_tokens_and_events session_names menu_skips_bad_folders sq_refuses bar_cached creates_then_attaches work_opens_tab work_makes_the_session work_plain claude_in_the_session bare_ade_opens_the_tabs work_real_tmux tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
