@@ -200,13 +200,13 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   absolute path outside the roots (by its real path too), found once per run. Over SSH it runs only with `DISPLAY`
   or `WAYLAND_DISPLAY` set or in Visual Studio Code's own terminal (`TERM_PROGRAM=vscode`). `ade view`'s `where`
   line ends with the column (`FT_COL`). The link picker takes `<number>c`.
-- Tools: required `git python3 tmux gh gitleaks bun` (bun: its own section below); extras `yazi bat glow poppler chafa code` (code = Visual Studio Code:
+- Tools: required `git python3 curl tmux gh gitleaks bun` (curl since A22; bun: its own section below); extras `yazi bat glow poppler chafa code` (code = Visual Studio Code:
   Homebrew `visual-studio-code`, not in apt, named with https://code.visualstudio.com/download, no repository added)
   (bat may be `batcat`; poppler =
-  `pdftotext` and `pdftoppm`). Homebrew packages: `git python tmux gh gitleaks yazi bat glow poppler chafa`. apt (Ubuntu 24.04):
-  `git python3 tmux gh gitleaks bat poppler-utils chafa`; yazi and glow are not in apt and are not downloaded (their release
-  pages are named). Installs run only after one yes at a terminal: `brew install <pkgs>`, `[sudo] apt-get install -y
-  <pkgs>`; never in an agent session; never a script piped to a shell. V2's `ade server install` uses the apt list.
+  `pdftotext` and `pdftoppm`). Homebrew packages: `git python curl tmux gh gitleaks yazi bat glow poppler chafa`. apt (Ubuntu 24.04):
+  `git python3 curl tmux gh gitleaks bat poppler-utils chafa`; yazi and glow are not in apt and are not downloaded (their release
+  pages are named). Installs run only after one yes at a terminal: `brew install <pkgs>`, `[sudo] apt-get update && [sudo]
+  apt-get install -y <pkgs>` (A22: the update always first; not root and no sudo: the root command is named, nothing runs); never in an agent session; never a script piped to a shell. V2's `ade server install` uses the apt list.
 
 ## `ade connect` and `.ade/connectors.json` (A16)
 - Contract: ade-skills `.ade/context/connectors.md` (sections 1, 2, 3, 6) and decision 0001. This is what ade-cli built.
@@ -355,7 +355,12 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `/telegram:access pair <code>` and `/telegram:access policy allowlist` inside that Claude Code session.
 - Tools: required `git python3 tmux gh gitleaks` (gitleaks: Homebrew `gitleaks`, apt `gitleaks` on Ubuntu 24.04). A
   failed install is said in one line from the installer's message (`install_why`): Homebrew's outdated Command Line
-  Tools, a tap that is not trusted; `ade` never runs `brew trust`, a system update or an installer from the network.
+  Tools, a tap that is not trusted; `ade` never runs `brew trust`, a system upgrade or an installer from the network.
+- install.sh (A22), piped: before any download it needs curl or wget (wget when there is no curl) and python3; a missing
+  one is named in one line and, on apt at a terminal after a yes, installed with `[sudo] apt-get update && [sudo]
+  apt-get install -y <them>`; otherwise nothing is installed. The guide asks for git's `user.name` and `user.email`
+  before the hub step when git has neither in its config nor in both `GIT_AUTHOR_*` and `GIT_COMMITTER_*`, and sets
+  them with `git config --global`.
 
 ## Writes into a checkout (0.2.1)
 - Every file `ade` writes inside a project or hub folder (`.ade/connections.json`, `.ade/method-version`, the files

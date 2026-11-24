@@ -1,6 +1,11 @@
 # Changelog
 
 ## Unreleased
+- A raw Ubuntu 24.04 server or desktop (A22): the one-line install downloads with `wget` when there is no `curl`, and
+  names a missing `curl`/`wget` or `python3` before any download (a missing `python3` used to read as "the
+  release.json ... is not valid ()"); after a yes at the terminal it installs them with `sudo apt-get update && sudo
+  apt-get install -y`. curl is a required tool. Every apt install runs `apt-get update` first. The guide asks for your
+  git name and email before it makes the hub when git has none. The README lists what Ubuntu needs.
 - `ade connect` (A16): the connectors ADE knows, from recipes read only at the pinned ade-skills tag and only when
   their sha256 matches that release's `release.json`; `ade connect <service>` at a person's terminal installs the
   guard and the service's plugin in project scope, records the name in `.ade/connectors.json` (names only) and prints

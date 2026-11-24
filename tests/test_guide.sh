@@ -476,6 +476,23 @@ guide_tools_then_first_save() {   # gitleaks is a required tool: once the tools 
   assert_not_contains "$T/out" "Not saved yet" "it is not skipped"; assert_eq "$(git -C "$HOME/hubs/acme" status --porcelain)" "" "nothing is left uncommitted"
 }
 
-ALL="guide_tools_then_first_save guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
+guide_asks_git_identity() {   # A22 AC6: no git name or email: asked before the hub step, set, and the first save goes through
+  fresh; fakes; signed_in claude gh; unset GIT_AUTHOR_NAME GIT_AUTHOR_EMAIL GIT_COMMITTER_NAME GIT_COMMITTER_EMAIL
+  G "Sam Lee\nnot-an-email\nsam@example.com\nacme\ntech-lead\nAcme\nSam\n" setup
+  assert_contains "$T/out" "This sets them for git on this computer (git config --global user.name and user.email)." "says what it changes"
+  assert_contains "$T/out" "that is not an email address (like you@example.com); type it again" "an email must look like one"
+  [ "$(grep -n 'Your name, for git commits:' "$T/out" | head -1 | cut -d: -f1)" -lt "$(grep -n 'Name for your hub' "$T/out" | head -1 | cut -d: -f1)" ] || fail "asked before the hub's name"
+  assert_eq "$(git config --global user.name)|$(git config --global user.email)" "Sam Lee|sam@example.com" "set with git config --global"
+  assert_contains "$T/out" "checked: git commits here are by Sam Lee <sam@example.com>" "and checked"
+  assert_eq "$(git -C "$HOME/hubs/acme" log -1 --format='%an <%ae>')" "Sam Lee <sam@example.com>" "the hub's first save goes through, in that name"
+  assert_not_contains "$T/out" "git has no name and email yet" "it never stops on it"; assert_contains "$CALLS" "sync --yes gitleaks=yes" "saved the hub's own way"
+  fresh; fakes; signed_in claude gh; unset GIT_AUTHOR_EMAIL GIT_COMMITTER_EMAIL; git config --global user.name "Kim"
+  G "kim@example.com\nacme\ntech-lead\nAcme\nSam\n" setup
+  assert_not_contains "$T/out" "Your name, for git commits:" "a name git has is not asked"; assert_eq "$(git config --global user.email)" "kim@example.com" "only the email"
+  fresh; fakes; signed_in claude gh; G "acme\ntech-lead\nAcme\nSam\n" setup
+  assert_not_contains "$T/out" "for git commits" "an identity git has: nothing asked"; [ ! -e "$HOME/.gitconfig" ] || fail "and nothing written"
+}
+
+ALL="guide_asks_git_identity guide_tools_then_first_save guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
