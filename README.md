@@ -35,8 +35,10 @@ agents and skills from their own repos, at pinned versions, and never overwrites
 
 > **Status:** version `0.2.8`. Built: the hub and project commands (A1), orchestrators (A2), `hub new` (A3),
 > `ade claude` (A4), `ade setup` (A5), `ade ui` (A6), skills (A7), `clean`, `reset` and `uninstall` (A9), `restore`
-> (A10), `update` and update notices (A11, A12), and the file viewer (A15). Not built yet: keys and the clipboard
-> ([A13](docs/stories/A13-keys-and-clipboard.md)) and the vault ([A14](docs/stories/A14-ade-vault.md)).
+> (A10), `update` and update notices (A11, A12), the file viewer (A15), the guided first run (A18), `ade web` (A19),
+> `ade shot` (A20) and `ade project` (A21). Not built yet: keys and the clipboard
+> ([A13](docs/stories/A13-keys-and-clipboard.md)), the vault ([A14](docs/stories/A14-ade-vault.md)) and `ade connect`
+> ([A16](docs/stories/A16-ade-connect.md), [A17](docs/stories/A17-connect-check-doctor-restore.md)).
 
 ## Install
 
@@ -285,7 +287,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade sync` | Sync the hub (hub `bin/sync`) | **built** (A1) |
 | `ade context …` | The hub's context store (hub `bin/context`) | **built** (A1) |
 | `ade agent-run …` | Run an agent (hub `bin/agent`) | **built** (A1) |
-| `ade project add <path-or-git-url>... [--name N] [--no-init] [--yes]` \| `add --scan <folder>` \| `list` | Load repos you already have into the hub ([A21](docs/stories/A21-project-add.md)). For each: the hub's own `bin/new projects/<name>` (the name is the repo's folder name as `a-z 0-9 -`, or `--name`; a folder already in the hub is left as it is), then the Code row of its `ACCESS.md` from the repo: the remote in https form and never with credentials, the checkout, the default branch, `(owner)` under "Who merges", and the CI it can see. A URL (`https://`, `git@`, `ssh://`, or `owner/repo` on GitHub) is cloned into your code folder, never into the hub (`gh repo clone` when `gh` is signed in, else `git clone`). It offers `ade init` in each repo (`--no-init`: no offer; `--yes`: yes to every offer; nothing is ever overwritten), adds the repo's `README.md` and `docs/` to the hub's memory (`HUB_BRAIN_PATHS`, then `bin/brain index`), prints one line per project and offers to start the focus agents (never in an agent session or without a terminal). A failure for one repo does not stop the others (exit 1 at the end). `--scan`: the git repos directly under a folder, those in the hub marked; pick with `1 3 4`, `1-3`, `all` or names. `list`: each project folder's name, checkout, branch, focus agent (from `bin/sessions`) and `STATE.md` "Updated" line |
+| `ade project add <path-or-git-url>... [--name N] [--no-init] [--yes]` \| `add --scan <folder>` \| `list` | Load repos you already have into the hub ([A21](docs/stories/A21-project-add.md)). For each: the hub's own `bin/new projects/<name>` (the name is the repo's folder name as `a-z 0-9 -`, or `--name`; a folder already in the hub is left as it is), then the Code row of its `ACCESS.md` from the repo: the remote in https form and never with credentials, the checkout, the default branch, `(owner)` under "Who merges", and the CI it can see. A URL (`https://`, `git@`, `ssh://`, or `owner/repo` on GitHub) is cloned into your code folder, never into the hub (`gh repo clone` when `gh` is signed in, else `git clone`). It offers `ade init` in each repo (`--no-init`: no offer; `--yes`: yes to every offer; nothing is ever overwritten), adds the repo's `README.md` and `docs/` to the hub's memory (`HUB_BRAIN_PATHS`, then `bin/brain index`), prints one line per project and offers to start the focus agents (never in an agent session or without a terminal). A failure for one repo does not stop the others (exit 1 at the end). `--scan`: the git repos directly under a folder, those in the hub marked; pick with `1 3 4`, `1-3`, `all` or names. `list`: each project folder's name, checkout, branch, focus agent (from `bin/sessions`) and `STATE.md` "Updated" line | **built** (A21) |
 | `ade init [--here]` | Copy ade-method at its pinned tag into the project; never overwrites; installs the PR and commit templates and sets `commit.template`; records `.ade/method-version` | **built** (A1) |
 | `ade agent list` | Specialists in ade-agent-registry, name and description | **built** (A1) |
 | `ade agent add <name> [--here]` | Copy a specialist to `.ade/agents/<name>.md` | **built** (A1) |
@@ -294,12 +296,12 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade version` · `ade help` | The version; every command, one line each | **built** (A1) |
 | `ade orchestrator new\|start\|stop\|list\|logs\|remove` | Named orchestrators, one per hub, with their channels (run by the hub's `bin/chat`) | **built** (A2) |
 | `curl … \| bash` | One-line install of the tagged release | **built** (A3) |
-| `ade hub new <name> [--private\|--public] [--dir <d>]` | Create a hub from the ade-brain template, run its `bin/init`, make it the default | **built** (A3) |
+| `ade hub new <name> [--private\|--public] [--dir <d>] [--no-github] [--persona P --client C --owner O]` | Create a hub from the ade-brain template, run its `bin/init`, make it the default (`--no-github`: a local hub, no GitHub repo) | **built** (A3) |
 | `ade hub list` · `ade hub use <path>` | The hubs `ade` knows; switch the default | **built** (A3) |
 | `ade` (no arguments) | Your workspace: at a terminal with tmux and a hub that is set up, the tab view (`ade ui`: the main agent as tab 0, a tab per agent). Set-up not finished: the guide's steps and its offer. Without a terminal or tmux, in an agent session, with `ADE_UI=off` or inside the tab view: the summary below | **built** (A3, A6) |
 | `ade home` | The hub, its sessions and what to do next (what `ade` alone printed before; `ade status` is the hub's sessions only) | **built** (A3) |
 | `ade claude [<folder>] [-- args]` | Claude Code at the hub root as the orchestrator: at a terminal with tmux, as tab 0 of the hub's `ade ui` session, so focus work opens as tabs beside it (`ADE_UI=off`, or `ade claude -- <args>`: in this terminal); with a folder, `ade work <folder>` | **built** (A4, A6) |
-| `ade setup [--check\|--test\|--top\|--telegram]` | The guide (A18): Claude Code, Claude and GitHub sign-in, the hub and its providers, the first project, Telegram; resumes where you are | **built** (A5, A18; needs the hub pieces in `.ade/context/hub-interface.md`) |
+| `ade setup [--check\|--test [provider\|telegram]\|--top\|--telegram]` | The guide (A18): Claude Code, Claude and GitHub sign-in, the hub and its providers, the first project, Telegram; resumes where you are | **built** (A5, A18; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade ui [--detach]` · `ade dash [--once]` | One tmux window, a tab per agent with state icons; fleet sidebar; popups for new agent, approve, tickets, plan preview, help | **built** (A6; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade skills list\|enable\|disable\|search` | Skills and plugins on the fly, with a reload hint to running sessions | **built** (A7) |
 | `ade clean [--yes]` | Housekeeping: stale locks, old dispatch markers and event cursors, ade's old temp folders, dead `ade-*` tmux sessions, clean merged worktrees (`git worktree remove`); lists first | **built** (A9) |
@@ -323,6 +325,7 @@ or tool. A hub command exits with whatever the hub's script returns.
 | `ADE_CODE_DIR` | `~/Project` when it is there, else `~/code` | Where `ade project add` clones a URL (never inside the hub) |
 | `ADE_METHOD_REF` | `v2.1.0` | The ade-method tag `ade init` copies |
 | `ADE_REGISTRY_REF` | `v1.1.0` | The ade-agent-registry tag `ade agent` reads |
+| `ADE_SKILLS_REF` | `v0.1.0` | The ade-skills tag `ade skills` pins |
 | `ADE_METHOD_REPO` | `https://github.com/better-ade/ade-method` | Where ade-method comes from (tests use a local fixture) |
 | `ADE_REGISTRY_REPO` | `https://github.com/better-ade/ade-agent-registry` | Where the registry comes from |
 | `ADE_HOOK_BIN` | set by the ADE app | What `ade open` hands off to |
@@ -391,6 +394,9 @@ In plain words:
 
 ## The better-ade repos
 
+Where it fits: `ade` (this repo) is the command; ade-brain is the hub; ade-method is the rules; ade-skills, the skills;
+ade-secrets, the keys; ade-terminal, the desktop app; ade-computer, an isolated desktop to run it all in.
+
 | Repo | What it is |
 |---|---|
 | [ade-terminal](https://github.com/better-ade/ade-terminal) | The ADE desktop app: terminals, agents, previews and the verification gate |
@@ -399,6 +405,9 @@ In plain words:
 | [ade-skills](https://github.com/better-ade/ade-skills) | A Claude Code plugin marketplace of skills and MCP servers |
 | [ade-brain](https://github.com/better-ade/ade-brain) | The hub template: the orchestrator and its `bin/` scripts |
 | [ade-cli](https://github.com/better-ade/ade-cli) | This repo: the `ade` command |
+| [ade-secrets](https://github.com/better-ade/ade-secrets) | A local-only key store and terminal vault (never runs inside an agent session) |
+| [ade-computer](https://github.com/better-ade/ade-computer) | An isolated computer for ADE: a Docker image of an Ubuntu desktop with ADE installed |
+| [ade-drill](https://github.com/better-ade/ade-drill) | Nightly drills across the repos: the suites, cross-repo paths, real network |
 | [ade-website](https://github.com/better-ade/ade-website) | The website, [ade.ardata.tech](https://ade.ardata.tech/) |
 | [.github](https://github.com/better-ade/.github) | Shared CI and release workflows that the repos above use |
 
