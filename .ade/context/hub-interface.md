@@ -217,6 +217,33 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `{"format": 1, "connectors": [...]}` (sorted, unique, at most 64 names `^[a-z][a-z0-9-]{0,31}$`, at most 64 KiB);
   anything else, a duplicate key or a link rejects the whole file (exit 2). One journal line
   `ade connect: <service> connected in <folder name>` through the hub's `bin/journal` when a name is added.
+- Fix round (review of PR #42):
+  - **Terminal only stops accidents; an agent running as you can get round it.** `connect <service>` and
+    `disconnect` refuse when any of ten Claude Code session variables is set (even empty: `CLAUDECODE
+    CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_PROJECT_DIR
+    CLAUDE_PLUGIN_ROOT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT`, the A13 list, kept in
+    `CONNECT_SESSION_VARS` until the shared one lands), and unless stdin is a terminal and `/dev/tty` opens; a
+    pseudo-terminal with those variables unset passes.
+  - The project folder is never `$HOME` or `/` (a dotfiles repository whose top level is `$HOME` included): `connect
+    <service>`, `disconnect` and `ade skills add` exit 2 there.
+  - The trust chain does not move silently: when `ADE_SKILLS_REPO` or `ADE_RELEASES_BASE` is not ade's default,
+    every `ade connect` command prints `ade: connect uses <...>, not ade's defaults` on stderr first, and the connect
+    question names those sources, so nothing is installed without a yes to them. `file://` URLs count only when
+    `ADE_TEST_ALLOW_FILE_URLS=1` and the tests-only marker `ADE_TEST_SUITE=1` are both set (`tests/helpers.sh`
+    sets the marker), and `ade` then says so on stderr. The manifest download is capped at 64 KiB (`curl
+    --max-filesize`, and checked after); redirects are https only (`--proto-redir =https`).
+  - The manifest: a key twice, a file named twice, a malformed `connector-` entry, or a recipe it names that the
+    checkout lacks refuses the pin (exit 2, one line); a checkout without a connectors folder or with an empty one
+    is refused.
+  - `gh`: `gh auth status --hostname github.com --active` (read-only; without `--active` on a gh older than
+    multi-account gh) and `gh auth login --hostname github.com` after a yes; `status` says when the sign-in comes
+    from `GH_TOKEN` or `GITHUB_TOKEN` (never the value). `gh` and `claude` are resolved to absolute paths before ade
+    enters the folder; a copy inside the project is refused (exit 2, one line).
+  - A project-scope plugin entry with no `projectPath` counts as installed nowhere.
+  - **Stated limit** (next to A12's): `claude plugin install <p>@ade-skills` installs from whatever marketplace Claude
+    Code has under the name `ade-skills`; ade checks that name exactly (a whole word of `claude plugin marketplace
+    list`), not where it points.
+
 
 ## Writes into a checkout (0.2.1)
 - Every file `ade` writes inside a project or hub folder (`.ade/connections.json`, `.ade/method-version`, the files

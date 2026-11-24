@@ -43,10 +43,12 @@ GMAIL='{
 }'
 SLACK='{ "format": 1, "service": "slack", "title": "Slack", "job": "chat", "tier": 1, "state": "held",
   "held": "the owner decides on Slack'"'"'s published client id first",
-  "sign_in": { "kind": "plugin", "plugin": "slack" }, "reaches": "The channels you are in." }'
+  "sign_in": { "kind": "plugin", "plugin": "slack" }, "questions": [], "guard": { "prefixes": ["mcp__plugin_slack_slack__"], "read": [] },
+  "hosts": ["mcp.slack.com"], "pages": {}, "reaches": "The channels you are in." }'
 OUTLOOK='{ "format": 1, "service": "outlook", "title": "Outlook", "job": "mail", "tier": 4, "state": "held",
   "held": "a tenant administrator must act, and the server is legacy",
   "sign_in": { "kind": "plugin", "plugin": "outlook", "admin": "register the app in Entra ID and grant Mail.ReadWrite to the tenant" },
+  "questions": [], "guard": { "prefixes": ["mcp__plugin_outlook_outlook__"], "read": [] }, "hosts": ["outlook.office.com"], "pages": {},
   "reaches": "The mailbox of your work account." }'
 
 # recipe <service> <json> [file name]: one recipe in the fixture's plugins/guard/connectors
@@ -56,10 +58,10 @@ release() {
   git -C "$K" add -A && git -C "$K" commit -qm "release ${1:-}" --allow-empty && git -C "$K" tag -f v0.7.0 > /dev/null || fail "tag"
   local d="$T/gh/better-ade/ade-skills/releases/download/v0.7.0"; mkdir -p "$d"
   python3 - "$K/plugins/guard/connectors" "$d/release.json" "${1:-}" <<'PY'
-import hashlib, json, os, sys
+import hashlib, json, os, re, sys
 src, out, skip = sys.argv[1:4]
 files = [{"name": "connector-" + n, "url": "https://example.invalid/" + n, "sha256": hashlib.sha256(open(os.path.join(src, n), "rb").read()).hexdigest()}
-         for n in sorted(os.listdir(src)) if n != skip + ".json"]
+         for n in sorted(os.listdir(src)) if n != skip + ".json" and re.fullmatch(r"[a-z][a-z0-9-]{0,31}\.json", n)]
 json.dump({"component": "ade-skills", "version": "0.7.0", "released": "2026-11-22", "summary": "recipes", "urgency": "normal",
            "min_supported": None, "files": files}, open(out, "w"))
 PY
@@ -70,6 +72,7 @@ connect_fixture() {
 { "name": "ade-skills", "plugins": [ { "name": "guard", "description": "The guard." }, { "name": "jira", "description": "Jira." },
   { "name": "github", "description": "GitHub through gh." }, { "name": "gmail", "description": "Gmail." }, { "name": "git", "description": "Git." } ] }
 JSON
+  mkdir -p "$K/plugins/jira/hooks"; printf '%s\n' "# jira's read tools" atlassianUserInfo getJiraIssue searchJiraIssuesUsingJql > "$K/plugins/jira/hooks/read-tools.txt"
   mkdir -p "$K/plugins/guard/hooks"; echo '{"hooks": {}}' > "$K/plugins/guard/hooks/hooks.json"; echo 'exit 0' > "$K/plugins/guard/hooks/guard.sh"
   recipe jira "$JIRA"; recipe github "$GITHUB"; recipe gmail "$GMAIL"; recipe slack "$SLACK"; recipe outlook "$OUTLOOK"; release
   export ADE_SKILLS_REF=v0.7.0 ADE_TEST_ALLOW_FILE_URLS=1 ADE_RELEASES_BASE="file://$T/gh"
@@ -95,9 +98,9 @@ F
 #!/bin/bash
 echo "gh $*" >> "$GH_LOG"
 case "$*" in
-  "auth status") [ -f "$HOME/.gh-signed" ] || { echo "You are not logged into any GitHub hosts." >&2; exit 1; }
+  "auth status --hostname github.com --active") [ -f "$HOME/.gh-signed" ] || { echo "You are not logged into any GitHub hosts." >&2; exit 1; }
     echo "github.com: Logged in to github.com account someone"; echo "  Token: gho_LEAKEDTOKEN123456"; exit 0 ;;
-  "auth login") touch "$HOME/.gh-signed" ;;
+  "auth login --hostname github.com") touch "$HOME/.gh-signed" ;;
   *token*) echo "gho_LEAKEDTOKEN123456" ;;
 esac
 exit 0
@@ -108,6 +111,7 @@ F
 rec() { cat "$P/.ade/connectors.json" 2> /dev/null; }
 installs() { grep -c '^plugin install' "$CLAUDE_LOG"; }
 tree_sum() { (cd "$1" && find . -path ./.git -prune -o -type f -print | LC_ALL=C sort | while IFS= read -r f; do cksum "$f"; done); }
+body() { grep -v -e '^ade: test mode' -e '^ade: connect uses ' "$T/out"; }   # the output without the test-mode and sources lines
 conn() { pty_run "$1" bash "$ADE" connect "${@:2}" > "$T/out" 2>&1; }   # conn <typed answers> <args>: at a terminal
 
 connect_lists() {   # AC1
@@ -123,12 +127,13 @@ connect_lists() {   # AC1
   mkdir -p "$P/.ade"; echo '{"format": 1, "connectors": ["jira"]}' > "$P/.ade/connectors.json"
   bash "$ADE" connect > "$T/out" 2>&1 || fail "list with a record"; grep -Eq '^jira +tickets +0 +ready +connected$' "$T/out" || { cat "$T/out"; fail "here"; }
   unset ADE_SKILLS_REF; bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "the default pin has no recipes yet"
-  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 1 "says so in one line"; assert_contains "$T/out" "has no connectors yet" "the reason"
+  assert_eq "$(body | wc -l | tr -d ' ')" 1 "says so in one line"; assert_contains "$T/out" "has no connectors yet" "the reason"
   ADE_SKILLS_REF=main bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "a branch is refused"; assert_contains "$T/out" "vX.Y.Z tag" "why"
 }
 
 # clickup <json object>: the jira recipe as clickup, with these fields put in, then released
 clickup() {
+  mkdir -p "$K/plugins/clickup/hooks"; cp "$K/plugins/jira/hooks/read-tools.txt" "$K/plugins/clickup/hooks/read-tools.txt"
   JIRA="$JIRA" python3 - "$1" "$K/plugins/guard/connectors/clickup.json" <<'PY2'
 import json, os, sys
 d = json.loads(os.environ["JIRA"].replace("jira", "clickup")); d.update(json.loads(sys.argv[1])); json.dump(d, open(sys.argv[2], "w"))
@@ -138,7 +143,7 @@ PY2
 connect_pins_and_refuses() {   # AC2
   fresh; connect_fixture; local m="$T/gh/better-ade/ade-skills/releases/download/v0.7.0/release.json" bad
   mv "$m" "$m.off"; bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "no manifest"; assert_contains "$T/out" "no release.json for ade-skills v0.7.0" "why"
-  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 1 "in one line"
+  assert_eq "$(body | wc -l | tr -d ' ')" 1 "in one line"
   sed 's/"ade-skills"/"ade-cli"/' "$m.off" > "$m"; bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "another component"
   sed 's/"0.7.0"/"0.7.1"/' "$m.off" > "$m"; bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "another version"
   assert_not_contains "$T/out" "jira" "nothing listed from an unverified pin"
@@ -152,8 +157,8 @@ connect_pins_and_refuses() {   # AC2
   release again; recipe linear '{"format": 1}'; release linear   # a recipe the manifest does not name
   bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "unnamed"; assert_contains "$T/out" "linear is refused: release.json names no sha256" "why"
   rm "$K/plugins/guard/connectors/linear.json"
-  for bad in "{\"run\": \"touch $T/pwned\"}" '{"sign_in": {"kind": "proxy", "plugin": "clickup"}}' '{"format": 2}' '{"format": true}' \
-    '{"questions": [{"id": "key", "ask": "Your key?", "to": "keychain"}]}' "{\"sign_in\": {\"kind\": \"plugin\", \"plugin\": \"clickup; touch $T/pwned\"}}" \
+  for bad in "{\"run\": \"touch pwned\"}" '{"sign_in": {"kind": "proxy", "plugin": "clickup"}}' '{"format": 2}' '{"format": true}' \
+    '{"questions": [{"id": "key", "ask": "Your key?", "to": "keychain"}]}' "{\"sign_in\": {\"kind\": \"plugin\", \"plugin\": \"clickup; touch pwned\"}}" \
     '{"tier": 5}' '{"tier": "0"}' '{"job": "money"}' '{"guard": {"prefixes": [], "read": []}}' '{"state": "held"}' '{"tier": 4}' \
     '{"sign_in": {"kind": "plugin", "plugin": "clickup", "cli": "gh"}}' '{"pages": {"docs": "http://example.com"}}' '{"service": "jira"}' \
     '{"questions": [{"id": "a", "ask": "A?", "to": "gate"}, {"id": "b", "ask": "B?", "to": "gate"}, {"id": "c", "ask": "C?", "to": "gate"}]}' \
@@ -173,29 +178,73 @@ connect_pins_and_refuses() {   # AC2
     '{"sign_in": {"kind": "cli", "cli": "gh"}, "guard": {"prefixes": [], "read": [], "commands": {"gh": {"free": [], "deny": [["a", "b", "c", "d", "e"]]}}}}' \
     '{"sign_in": {"kind": "cli", "cli": "gh"}, "guard": {"prefixes": [], "read": [], "commands": {"sh": {"free": [], "deny": []}}}}' \
     '{"hosts": ["mcp.example.com\u200b"]}' \
-    '{"reaches": "one\u2028two"}' '{"title": "Click\ue000Up"}' '{"held": "x", "state": "held", "sign_in": {"kind": "plugin", "plugin": "clickup", "admin": "a\u200bb"}}'; do
+    '{"reaches": "one\u2028two"}' '{"reaches": "caf\u00e9"}' "{\"reaches\": \"$(printf 'r%.0s' $(seq 1 201))\"}" \
+    '{"questions": [{"id": "a", "ask": "A?", "to": "gate"}, {"id": "a", "ask": "B?", "to": "gate"}]}' \
+    '{"guard": {"prefixes": ["mcp__plugin_clickup_clickup__", "mcp__plugin_clickup_clickup__"], "read": []}}' \
+    '{"guard": {"prefixes": ["mcp__plugin_clickup_clickup__", ""], "read": []}}' \
+    '{"guard": {"prefixes": ["mcp__plugin_clickup_click_up__"], "read": []}}' \
+    '{"guard": {"prefixes": ["mcp__plugin_clickup_clickup__"], "read": ["1bad"]}}' \
+    '{"guard": {"prefixes": ["mcp__plugin_clickup_clickup__"], "read": ["getJiraIssue", "getJiraIssue"]}}' \
+    '{"hosts": ["mcp.atlassian.com", "mcp.atlassian.com"]}' '{"pages": {"docs": "https://user@example.com/"}}' '{"pages": {"docs": "https://example.com/a b"}}' \
+    '{"sign_in": {"kind": "cli", "cli": "gh"}, "guard": {"prefixes": [], "read": [], "commands": {"gh": {"free": [{"words": ["pr", "pr"], "flags": [], "args": "any"}], "deny": []}}}}' \
+    '{"sign_in": {"kind": "cli", "cli": "gh"}, "guard": {"prefixes": [], "read": [], "commands": {"gh": {"free": [], "deny": [["auth", "auth"]]}}}}' \
+'{"title": "Click\ue000Up"}' '{"held": "x", "state": "held", "sign_in": {"kind": "plugin", "plugin": "clickup", "admin": "a\u200bb"}}'; do
     clickup "$bad"; bash "$ADE" connect > "$T/out" 2>&1
     assert_eq "$?" 2 "[$bad] refused"; assert_eq "$(grep -c 'clickup is refused' "$T/out")" 1 "[$bad] in one line"
     grep -Eq '^jira +tickets' "$T/out" || { cat "$T/out"; fail "[$bad] others still listed"; }
   done
+  JIRA="$JIRA" python3 -c 'import json,os,sys; d=json.loads(os.environ["JIRA"].replace("jira", "clickup")); d.pop("hosts"); json.dump(d, open(sys.argv[1], "w"))' "$K/plugins/guard/connectors/clickup.json"; release nohosts
+  bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "hosts is required"; assert_contains "$T/out" "clickup is refused: the recipe has no \"hosts\"" "why"
   printf '%s' "$JIRA" | sed 's/"jira"/"clickup"/g; s/"format": 1,/"format": 1, "format": 1,/' > "$K/plugins/guard/connectors/clickup.json"; release twice
-  bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "a key twice"; assert_contains "$T/out" "clickup is refused: a key appears twice" "why"
-  clickup "{\"reaches\": \"\$(touch $T/pwned) \`touch $T/pwned\`\"}"   # valid text: shown as it is, never run
+  bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "a key twice"; assert_contains "$T/out" "clickup is refused: the key \"format\" appears twice" "why"
+  clickup "{\"reaches\": \"\$(touch pwned) \`touch pwned\`\"}"   # valid text: shown as it is, never run
   bash "$ADE" connect > "$T/out" 2>&1 || { cat "$T/out"; fail "a recipe with shell text is data"; }
-  conn 'n\n' clickup; assert_contains "$T/out" "reaches: \$(touch $T/pwned)" "printed as text"
-  [ ! -e "$T/pwned" ] || fail "nothing in a recipe is run"
+  conn 'n\n' clickup; assert_contains "$T/out" "reaches: \$(touch pwned)" "printed as text"
+  [ -z "$(find "$T" -name pwned)" ] || fail "nothing in a recipe is run"   # a short fixed marker: the text's length never depends on TMPDIR
   rm "$K/plugins/guard/connectors/clickup.json"; ln -s jira.json "$K/plugins/guard/connectors/clickup.json"; release link
   bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "a link"; assert_contains "$T/out" "clickup is refused: it is not a plain file" "only regular files"
   rm "$K/plugins/guard/connectors/clickup.json"
   # across files: one failure refuses the whole folder (exit 2, nothing listed)
-  for bad in '{"guard": {"prefixes": ["mcp__plugin_clickup_clickup__", "mcp__plugin_jira_jira__x__"], "read": []}}' \
+  for bad in '{"guard": {"prefixes": ["mcp__plugin_clickup_clickup__", "mcp__plugin_jira_jira__"], "read": ["atlassianUserInfo", "getJiraIssue", "searchJiraIssuesUsingJql"]}}' \
     '{"sign_in": {"kind": "claude-ai", "connector": "Gmail"}, "guard": {"prefixes": ["mcp__claude_ai_Gmail__"], "read": []}}' \
     "{\"sign_in\": {\"kind\": \"cli\", \"cli\": \"gh\"}, \"guard\": $(printf '%s' "$GITHUB" | python3 -c 'import json,sys; print(json.dumps(json.load(sys.stdin)["guard"]))')}"; do
     clickup "$bad"; bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "[$bad] refuses the folder"
     assert_contains "$T/out" "the recipes of ade-skills v0.7.0 are refused together" "[$bad] why"; assert_not_contains "$T/out" "tickets" "[$bad] nothing listed"
   done
-  rm "$K/plugins/guard/connectors/clickup.json"; rm "$K/plugins/guard/hooks/guard.sh"; release nohook
-  bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "no guard hook, a ready recipe"; assert_contains "$T/out" "has no guard hook" "why"
+  rm "$K/plugins/guard/connectors/clickup.json"; release clean; local mf="$T/gh/better-ade/ade-skills/releases/download/v0.7.0/release.json"
+  python3 - "$mf" <<'PY2'
+import json, sys
+d = json.load(open(sys.argv[1])); d["files"].append(dict(d["files"][0])); json.dump(d, open(sys.argv[1], "w"))
+PY2
+  bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "a recipe listed twice"; assert_contains "$T/out" "names connector-github.json twice" "why"
+  release clean; python3 - "$mf" <<'PY2'
+import json, sys
+d = json.load(open(sys.argv[1])); e = dict(d["files"][0]); e["name"] = "connector-teams.json"; d["files"].append(e); json.dump(d, open(sys.argv[1], "w"))
+PY2
+  bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "named but missing"; assert_eq "$(body | wc -l | tr -d ' ')" 1 "in one line"
+  assert_contains "$T/out" "names connector-teams.json, which its checkout does not have" "why"
+  local e; for e in '{"name": "connector-Jira.json"}' '{"name": "connector-jira.txt"}' '{"sha256": "abc"}' '{"sha256": null}'; do
+    release clean; python3 - "$mf" "$e" <<'PY2'
+import json, sys
+d = json.load(open(sys.argv[1])); f = dict(d["files"][0]); f.update(json.loads(sys.argv[2])); d["files"][0] = f; json.dump(d, open(sys.argv[1], "w"))
+PY2
+    bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "[$e] a malformed connector entry refuses the pin"; assert_eq "$(body | wc -l | tr -d ' ')" 1 "[$e] in one line"
+    assert_contains "$T/out" "is not connector-<service>.json with a sha256" "[$e] why"; done
+  release clean; sed 's/"component"/"component": "ade-skills", "component"/' "$mf" > "$mf.2" && mv "$mf.2" "$mf"
+  bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "a manifest key twice"; assert_contains "$T/out" "a key appears twice" "why"
+  release clean; python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["notes"]="x"*70000; json.dump(d, open(sys.argv[1], "w"))' "$mf"
+  bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "a manifest over 64 KiB"; assert_contains "$T/out" "over 64 KiB" "why"
+  release clean; ADE_TEST_SUITE= bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "file:// needs the test marker"
+  assert_not_contains "$T/out" "ade: test mode" "no marker, no test mode"
+  bash "$ADE" connect > "$T/out" 2>&1 || fail "with the marker"; assert_contains "$T/out" "ade: test mode (ADE_TEST_SUITE and ADE_TEST_ALLOW_FILE_URLS)" "says so"
+  assert_contains "$T/out" "ade: connect uses recipes from $K (ADE_SKILLS_REPO) and release.json from file://$T/gh (ADE_RELEASES_BASE), not ade's defaults" "names the sources"
+  conn 'n\n' jira; assert_contains "$T/out" "Connect jira in $P, with recipes from $K (ADE_SKILLS_REPO)" "the yes covers the sources"
+  bash "$ADE" connect status > "$T/out" 2>&1; assert_contains "$T/out" "ade: connect uses recipes from" "status names them too"
+  mv "$K/plugins/guard/connectors" "$T/held-aside"; mkdir "$K/plugins/guard/connectors"; touch "$K/plugins/guard/connectors/.keep"; rm "$K/plugins/guard/connectors/.keep"
+  git -C "$K" add -A; git -C "$K" commit -qm empty --allow-empty; git -C "$K" tag -f v0.7.0 > /dev/null; mkdir -p "$K/plugins/guard/connectors"
+  bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "no recipes at the tag"; assert_contains "$T/out" "nothing to connect" "why"; mv "$T/held-aside"/* "$K/plugins/guard/connectors/"
+  rm "$K/plugins/guard/hooks/guard.sh"; release nohook
+  bash "$ADE" connect > "$T/out" 2>&1; assert_eq "$?" 2 "no guard hook, a ready recipe"; assert_contains "$T/out" "(a recipe is never ready without the guard's hook)" "why"
 }
 
 connect_plugin() {   # AC3
@@ -204,7 +253,7 @@ connect_plugin() {   # AC3
   assert_contains "$CLAUDE_LOG" "plugin install guard@ade-skills --scope project" "the guard, project scope"
   assert_contains "$CLAUDE_LOG" "plugin install jira@ade-skills --scope project" "the plugin, project scope"
   assert_eq "$(rec)" '{"format": 1, "connectors": ["jira"]}' "the name, at the git top level"
-  for s in "Connect jira in $P?" "reaches: Every Atlassian app" "Reading needs no question; every change asks." \
+  for s in "Connect jira in $P" "reaches: Every Atlassian app" "Reading needs no question; every change asks." \
     "If you also add Jira as a connector to your Claude account, the guard does not cover that connector's tools: Claude Code's own permission settings decide for them, in every folder." "docs: https://support.atlassian.com/" \
     "run /mcp, pick plugin:jira:jira, choose Authenticate, and sign in in the browser"; do assert_contains "$T/out" "$s" "prints: $s"; done
   python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); n=sorted(p["name"] for p in d["plugins"]); assert n == ["guard", "jira"], n' "$P/.ade/connections.json" || fail "recorded as ade skills add does"
@@ -213,11 +262,21 @@ connect_plugin() {   # AC3
   conn 'y\n' jira || { cat "$T/out"; fail "again"; }
   assert_eq "$(tree_sum "$P")" "$before" "rerunning changes nothing in the folder"; assert_eq "$(installs)" "$n" "nor installs again"
   assert_eq "$(grep -c 'ade connect: jira' "$H/journal.log")" 1 "nor journals again"
+  # review: a claude inside the project is never run (exit 2, one reason); the marketplace is the whole word ade-skills
+  fresh; connect_fixture; mkdir -p "$P/bin"; cp "$T/fakebin/claude" "$P/bin/claude"; : > "$CLAUDE_LOG"
+  (export PATH="$P/bin:$PATH"; conn 'y\n' jira); assert_eq "$?" 2 "a claude inside the project"
+  assert_contains "$T/out" "the claude on PATH ($P/bin/claude) lies inside $P" "why"; assert_not_contains "$T/out" "not on PATH" "one reason"
+  (export PATH="$P/bin:$PATH"; conn 'y\n' disconnect jira); assert_eq "$?" 2 "disconnect with a claude inside the project"
+  assert_contains "$T/out" "lies inside $P" "why"; assert_not_contains "$T/out" "not on PATH" "one reason"
+  assert_eq "$(wc -c < "$CLAUDE_LOG" | tr -d ' ')" 0 "never run"; assert_eq "$(rec)" "" "nothing recorded"; rm -r "$P/bin"
+  mkdir -p "$HOME/.claude/plugins"; echo "ade-skills-fork  (github: someone/ade-skills)" > "$HOME/.claude/plugins/mkt"
+  conn 'y\n' jira || { cat "$T/out"; fail "connect jira"; }
+  assert_contains "$CLAUDE_LOG" "plugin marketplace add $K" "ade-skills-fork is not the ade-skills marketplace"
 }
 
 connect_cli() {   # AC4
   fresh; connect_fixture
-  conn 'y\nn\n' github; assert_eq "$?" 1 "not signed in and no: exit 1"; assert_contains "$T/out" "run gh auth login yourself" "what to run"
+  conn 'y\nn\n' github; assert_eq "$?" 1 "not signed in and no: exit 1"; assert_contains "$T/out" "run gh auth login --hostname github.com yourself" "what to run"
   assert_eq "$(rec)" "" "not recorded"; assert_contains "$GH_LOG" "gh auth status" "the read-only check"
   assert_not_contains "$GH_LOG" "auth login" "never started without a yes"
   touch "$HOME/.gh-signed"; : > "$GH_LOG"
@@ -225,12 +284,35 @@ connect_cli() {   # AC4
   assert_eq "$(rec)" '{"format": 1, "connectors": ["github"]}' "recorded"; assert_contains "$T/out" "gh is signed in" "says so"
   assert_contains "$T/out" "Reading, fetching and ordinary local git work need no question; pushing and every other change on GitHub asks in this folder." "the cli card"
   assert_contains "$CLAUDE_LOG" "plugin install github@ade-skills" "its skill"
-  assert_eq "$(sort -u "$GH_LOG")" "gh auth status" "only the read-only check: no login, logout or token"
+  assert_eq "$(sort -u "$GH_LOG")" "gh auth status --hostname github.com --active" "only the read-only check of github.com: no login, logout or token"
   rm "$HOME/.gh-signed"; Q="$T/other"; mkdir -p "$Q"; git init -q "$Q"; cd "$Q" || fail "cd"; : > "$GH_LOG"
   conn 'y\ny\n' github || { cat "$T/out"; fail "sign in now"; }
   assert_eq "$(grep -c 'gh auth login' "$GH_LOG")" 1 "gh auth login runs on the terminal after a yes (the contract, section 2 step 8)"
   for f in "$T/out" "$Q/.ade/connectors.json" "$Q/.ade/connections.json" "$CLAUDE_LOG"; do assert_not_contains "$f" "gho_" "no token in $f"; done
   assert_not_contains "$GH_LOG" "token" "never gh auth token"
+  touch "$HOME/.gh-signed"; GH_TOKEN=x bash "$ADE" connect status github > "$T/out" 2>&1
+  assert_contains "$T/out" "connector github: ready (the sign-in comes from GH_TOKEN)" "says the variable signs in"; assert_not_contains "$T/out" "x)" "never its value"
+  mkdir -p "$Q/bin"; cp "$T/ghbin/gh" "$Q/bin/gh"; : > "$GH_LOG"
+  PATH="$Q/bin:$PATH" bash "$ADE" connect status github > "$T/out" 2>&1; assert_eq "$?" 1 "a gh inside the project is not used"
+  assert_contains "$T/out" "lies inside $Q" "why"; assert_eq "$(wc -c < "$GH_LOG" | tr -d ' ')" 0 "never run"
+  (export PATH="$Q/bin:$PATH"; conn 'y\ny\n' github); assert_eq "$?" 2 "connect with a gh inside the project"
+  assert_contains "$T/out" "the gh on PATH ($Q/bin/gh) lies inside $Q" "why"; assert_not_contains "$T/out" "not installed" "one reason"
+  assert_eq "$(wc -c < "$GH_LOG" | tr -d ' ')" 0 "never run"; rm -r "$Q/bin"
+  # a gh older than multi-account gh rejects --active: ade asks about github.com alone
+  cat > "$T/ghbin/gh" <<'F'
+#!/bin/bash
+echo "gh $*" >> "$GH_LOG"
+case "$*" in
+  *--active*) echo "unknown flag: --active" >&2; exit 1 ;;
+  "auth status --hostname github.com") [ -f "$HOME/.gh-signed" ] || exit 1 ;;
+esac
+exit 0
+F
+  : > "$GH_LOG"
+  bash "$ADE" connect status github > "$T/out" 2>&1; assert_eq "$?" 0 "an older gh, signed in"; assert_contains "$T/out" "connector github: ready" "ready"
+  assert_contains "$GH_LOG" "gh auth status --hostname github.com" "asked without --active"
+  rm "$HOME/.gh-signed"; bash "$ADE" connect status github > "$T/out" 2>&1; assert_eq "$?" 1 "an older gh, not signed in"
+  assert_contains "$T/out" "connector github: missing (gh is not signed in to github.com" "missing"
   cd "$P" || fail "cd"; : > "$CLAUDE_LOG"; PATH="$T/fakebin:$(no_gh_path)" pty_run 'y\ny\n' "$BASH" "$ADE" connect github > "$T/out" 2>&1
   assert_eq "$?" 1 "gh missing"; assert_contains "$T/out" "ade setup --tools" "what to run"; assert_eq "$(installs)" 0 "nothing installed"
 }
@@ -239,7 +321,7 @@ connect_claude_ai() {   # AC5
   fresh; connect_fixture
   conn 'n\n' gmail; assert_eq "$?" 1 "the gate answered no"; assert_eq "$(installs)" 0 "nothing installed"; assert_eq "$(rec)" "" "nothing recorded"
   conn 'y\ny\n' gmail || { cat "$T/out"; fail "connect gmail"; }
-  assert_contains "$T/out" "Have you added the Gmail connector" "the gate"
+  assert_contains "$T/out" "Gmail asks: Have you added the Gmail connector" "the gate, named as the recipe's own question"
   assert_contains "$T/out" "Reading needs no question; every change asks, in folders where ade installed the guard. In other folders, Claude Code's own permission settings decide." "the claude-ai card"
   assert_contains "$CLAUDE_LOG" "plugin install guard@ade-skills --scope project" "the guard"; assert_eq "$(installs)" 1 "no skill named: the guard only"
   assert_eq "$(rec)" '{"format": 1, "connectors": ["gmail"]}' "recorded"
@@ -277,6 +359,11 @@ connect_terminal_only() {   # AC7
   CLAUDECODE=1 pty_run 'y\n' bash "$ADE" connect jira > "$T/out" 2>&1; assert_eq "$?" 2 "an agent session"; assert_contains "$T/out" "inside a Claude Code session" "why"
   CLAUDE_CODE_ENTRYPOINT=cli pty_run 'y\n' bash "$ADE" connect disconnect jira > "$T/out" 2>&1; assert_eq "$?" 2 "disconnect in an agent session"
   bash "$ADE" connect disconnect jira < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "disconnect without a terminal"
+  pty_run '' bash -c 'printf "y\ny\n" | bash "$0" connect jira' "$ADE" > "$T/out" 2>&1; assert_eq "$?" 2 "a terminal present, stdin piped"
+  assert_contains "$T/out" "refuses piped or missing answers" "why"
+  local v; for v in CLAUDECODE CLAUDE_CODE_CHILD_SESSION CLAUDE_PID CLAUDE_CODE_SESSION_ID CLAUDE_CODE_BRIDGE_SESSION_ID CLAUDE_PROJECT_DIR CLAUDE_PLUGIN_ROOT CLAUDE_CODE_EXECPATH CLAUDE_CODE_SSE_PORT CLAUDE_CODE_ENTRYPOINT; do
+    env "$v=" python3 -c 'import os, sys; os.execvp(sys.argv[1], sys.argv[1:])' true; pty_run 'y\n' env "$v=" bash "$ADE" connect jira > "$T/out" 2>&1
+    assert_eq "$?" 2 "$v set (even empty)"; assert_contains "$T/out" "($v is set)" "names $v"; done
   assert_eq "$(wc -c < "$CLAUDE_LOG" | tr -d ' ')" 0 "nothing ran"; [ ! -e "$P/.ade" ] || fail "nothing written"
   conn 'y\ny\n' gmail || { cat "$T/out"; fail "gmail"; }
   grep -q 'ANSWER=unset' "$CLAUDE_LOG" && ! grep -q 'ANSWER=[^u]' "$CLAUDE_LOG" || fail "no answer reaches a child"
@@ -288,6 +375,13 @@ connect_record() {   # AC8
   local before; before="$(cd "$P" && find . -path ./.git -prune -o -print | LC_ALL=C sort)"
   conn 'y\n' jira || fail "jira"; conn 'y\n' github || fail "github"
   assert_eq "$(rec)" '{"format": 1, "connectors": ["github", "jira"]}' "the contract's shape: names only, sorted, unique"
+  local ino; ino="$(ls -i "$P/.ade/connectors.json" | awk '{ print $1 }')"; echo keep > "$T/outside"
+  ln -s "$T/outside" "$P/.ade/connectors.json.ade-tmp"; ln -s "$T/outside" "$P/.ade/.connectors.json.ade-tmp"
+  conn 'y\ny\n' gmail || { cat "$T/out"; fail "gmail"; }
+  assert_eq "$(cat "$T/outside")" keep "a planted temp link is never written through"
+  [ "$(ls -i "$P/.ade/connectors.json" | awk '{ print $1 }')" != "$ino" ] || fail "the record is replaced by a rename, not written in place"
+  [ -f "$P/.ade/connectors.json" ] && [ ! -L "$P/.ade/connectors.json" ] || fail "a regular file"; rm "$P/.ade/connectors.json.ade-tmp" "$P/.ade/.connectors.json.ade-tmp"
+  python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); d["connectors"].remove("gmail"); json.dump(d, open(sys.argv[1], "w"))' "$P/.ade/connectors.json"
   assert_eq "$(cd "$P" && find . -path ./.git -prune -o -print | LC_ALL=C sort | grep -vxF -e ./.ade -e ./.ade/connectors.json -e ./.ade/connections.json)" "$before" "nothing else in the folder"
   for f in connectors.json connections.json; do assert_not_contains "$P/.ade/$f" "$T" "no path of this machine in $f"; assert_not_contains "$P/.ade/$f" "someone" "no account in $f"; done
   local bad n=0 sum
@@ -315,13 +409,15 @@ connect_status_disconnect() {   # AC9
   assert_contains "$T/out" "connector github: ready" "gh signed in"
   assert_contains "$T/out" "connector jira: unknown (ade cannot see this sign-in; /mcp in Claude Code shows it)" "a plugin server's sign-in"
   assert_contains "$T/out" "connector gmail: unknown (the sign-in is in your Claude account; ade cannot see it)" "a claude.ai connector"
-  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 3 "one line per recorded connector"; assert_not_contains "$T/out" "gho_" "no token"
+  assert_eq "$(body | wc -l | tr -d ' ')" 3 "one line per recorded connector"; assert_not_contains "$T/out" "gho_" "no token"
   rm "$HOME/.gh-signed"; bash "$ADE" connect status > "$T/out" 2>&1; assert_eq "$?" 1 "a gap exits 1"
-  assert_contains "$T/out" "connector github: missing (gh is not signed in: gh auth login)" "missing"
-  bash "$ADE" connect status jira > "$T/out" 2>&1 || fail "one service"; assert_eq "$(cat "$T/out")" "connector jira: unknown (ade cannot see this sign-in; /mcp in Claude Code shows it)" "only it"
+  assert_contains "$T/out" "connector github: missing (gh is not signed in to github.com: gh auth login --hostname github.com)" "missing"
+  bash "$ADE" connect status jira > "$T/out" 2>&1 || fail "one service"; assert_eq "$(body)" "connector jira: unknown (ade cannot see this sign-in; /mcp in Claude Code shows it)" "only it"
   bash "$ADE" connect status slack > "$T/out" 2>&1; assert_eq "$?" 1 "not recorded"
   python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["plugins"].pop("guard@ade-skills"); json.dump(d, open(p, "w"))' "$HOME/.claude/plugins/installed_plugins.json"
   bash "$ADE" connect status jira > "$T/out" 2>&1; assert_eq "$?" 1 "guard gone"; assert_contains "$T/out" "connector jira: missing (plugin guard is not installed here)" "why"
+  python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); [e.pop("projectPath") for e in d["plugins"]["jira@ade-skills"]]; json.dump(d, open(p, "w"))' "$HOME/.claude/plugins/installed_plugins.json"
+  bash "$ADE" connect status jira > "$T/out" 2>&1; assert_eq "$?" 1 "an entry with no projectPath"; assert_contains "$T/out" "connector jira: missing (plugin guard is not installed here)" "counts nowhere"
   echo '{"format": 1, "connectors": ["github", "gmail", "jira", "linear"]}' > "$P/.ade/connectors.json"
   bash "$ADE" connect status linear > "$T/out" 2>&1; assert_eq "$?" 1 "no recipe"; assert_contains "$T/out" "connector linear: missing (no verified recipe" "why"
   local sum; sum="$(cksum < "$P/.ade/connectors.json")"; : > "$CLAUDE_LOG"; : > "$GH_LOG"
@@ -354,6 +450,15 @@ connect_hostile() {   # AC10
   grep -Eq '^slack +chat' "$T/out" || fail "the others are listed"
 }
 
-ALL="connect_lists connect_pins_and_refuses connect_plugin connect_cli connect_claude_ai connect_held connect_terminal_only connect_record connect_status_disconnect connect_hostile"
+connect_not_home() {   # review item 2: in $HOME (a dotfiles repository too) or /, connect and skills add refuse
+  fresh; connect_fixture; git init -q "$HOME"; mkdir -p "$HOME/sub"; cd "$HOME/sub" || fail "cd"
+  conn 'y\n' jira; assert_eq "$?" 2 "connect in a dotfiles repository at the home folder"; assert_contains "$T/out" "runs inside a project, not in your home folder" "why"
+  bash "$ADE" skills add git > "$T/out" 2>&1; assert_eq "$?" 2 "skills add there"; assert_contains "$T/out" "runs inside a project, not in your home folder" "why"
+  conn 'y\n' disconnect jira; assert_eq "$?" 2 "disconnect there"
+  cd / || fail "cd /"; conn 'y\n' jira; assert_eq "$?" 2 "connect in /"; bash "$ADE" skills add git > "$T/out" 2>&1; assert_eq "$?" 2 "skills add in /"
+  assert_eq "$(installs)" 0 "nothing installed"; [ ! -e "$HOME/.ade" ] && [ ! -e "$HOME/.claude/settings.json" ] || fail "nothing written in the home folder"
+}
+
+ALL="connect_not_home connect_lists connect_pins_and_refuses connect_plugin connect_cli connect_claude_ai connect_held connect_terminal_only connect_record connect_status_disconnect connect_hostile"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

@@ -18,3 +18,22 @@
   `status` saying `missing (held: <held>)` for a recorded held service. Fixtures keep a `ready` `cli` (github) and a
   `ready` `claude-ai` (gmail) recipe, as K7 will make them, so those code paths are tested; a test also uses them as
   the first release ships them (held).
+
+## Fix round (review of PR #42)
+- `.ade/connectors.json` is written through the shared `ade_write` (0.2.1, PR #44): a `mkstemp` temp file, fsync,
+  rename, under the folder's lock; `connect_record` checks that a planted temp link is never written through and that
+  the record is replaced by a rename (its inode changes).
+- "Terminal only" stops accidents; an agent running as you can get round it. The ten session variables and the
+  `[ -t 0 ]` half of `tty_ready` are both tested (a pseudo-terminal with stdin piped is refused).
+- The validator follows ade-skills' checker (`plugins/guard/scripts/check-recipe.sh` on K5-recipes, 608cebf): the
+  same rules in the same order, mostly the same messages. Deliberately stricter: every string is printable ASCII
+  (the checker's test holds shipped recipes to that); `sign_in.plugin` must equal the service for every kind (the
+  checker: for `claude-ai` only); the guard's hook files must be regular files, not links. Following the contract's
+  per-recipe wording where the checker refuses the whole folder: a file that is not `<service>.json` or a broken
+  recipe is refused alone; only the "Across files" rules refuse the folder.
+- The manifest download is capped (`--max-filesize 65536`, checked again after); redirects are limited to https.
+- gh 2.88.0 on this Mac (help text only): `gh auth status` has `-a, --active` and `-h, --hostname`; `gh auth login`
+  has `-h, --hostname`. `--active` came with multi-account gh; on an older gh that rejects it ("unknown flag:
+  --active"), ade asks `gh auth status --hostname github.com` alone. Ubuntu 24.04's apt gh (2.45) has `--active`.
+- A `gh` or `claude` inside the project is refused with exit 2 and that one reason (`connect`, `disconnect`; `status` says missing);
+  `tests/run.sh`'s guard compares names, modes, sizes and times only (`suite_guard` in `tests/test_ade.sh`).
