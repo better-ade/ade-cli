@@ -416,10 +416,11 @@ connect_status_disconnect() {   # AC9
   assert_contains "$T/out" "connector github: missing (gh is not signed in to github.com: gh auth login --hostname github.com)" "missing"
   bash "$ADE" connect status jira > "$T/out" 2>&1 || fail "one service"; assert_eq "$(body)" "connector jira: unknown (ade cannot see this sign-in; /mcp in Claude Code shows it)" "only it"
   bash "$ADE" connect status slack > "$T/out" 2>&1; assert_eq "$?" 1 "not recorded"
+  # the guard still installed here, so only the projectPath rule decides: a project-scope entry without one counts nowhere
+  python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); es=d["plugins"]["jira@ade-skills"]; assert es and all(e["scope"] == "project" for e in es), es; [e.pop("projectPath") for e in es]; json.dump(d, open(p, "w"))' "$HOME/.claude/plugins/installed_plugins.json"
+  bash "$ADE" connect status jira > "$T/out" 2>&1; assert_eq "$?" 1 "an entry with no projectPath"; assert_contains "$T/out" "connector jira: missing (plugin jira is not installed here)" "counts nowhere"
   python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); d["plugins"].pop("guard@ade-skills"); json.dump(d, open(p, "w"))' "$HOME/.claude/plugins/installed_plugins.json"
   bash "$ADE" connect status jira > "$T/out" 2>&1; assert_eq "$?" 1 "guard gone"; assert_contains "$T/out" "connector jira: missing (plugin guard is not installed here)" "why"
-  python3 -c 'import json,sys; p=sys.argv[1]; d=json.load(open(p)); [e.pop("projectPath") for e in d["plugins"]["jira@ade-skills"]]; json.dump(d, open(p, "w"))' "$HOME/.claude/plugins/installed_plugins.json"
-  bash "$ADE" connect status jira > "$T/out" 2>&1; assert_eq "$?" 1 "an entry with no projectPath"; assert_contains "$T/out" "connector jira: missing (plugin guard is not installed here)" "counts nowhere"
   echo '{"format": 1, "connectors": ["github", "gmail", "jira", "linear"]}' > "$P/.ade/connectors.json"
   bash "$ADE" connect status linear > "$T/out" 2>&1; assert_eq "$?" 1 "no recipe"; assert_contains "$T/out" "connector linear: missing (no verified recipe" "why"
   local sum; sum="$(cksum < "$P/.ade/connectors.json")"; : > "$CLAUDE_LOG"; : > "$GH_LOG"
