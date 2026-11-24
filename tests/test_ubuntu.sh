@@ -25,6 +25,7 @@ PY
 # subcommand (update or install) that fails. A release, ade 1.2.3, at file:// URLs (ADE_CLI_BASE, ADE_RELEASES_BASE).
 world() {
   fresh; F="$T/fakebin"; CALLS="$T/calls"; mkdir -p "$F" "$T/cwd"; : > "$CALLS"; export F CALLS FT="$T" REAL_PY="$PY" REAL_GIT="$GIT"; farm
+  export ADE_SKILLS_REPO="$T/no-ade-skills"   # A23: the guide's tools step never fetches recipes from the network here
   printf '#!/bin/bash\ncase "${1:-}" in ""|-s) echo "${FAKE_OS:-Linux}" ;; -m) echo x86_64 ;; *) exec "%s" "$@" ;; esac\n' "$(command -v uname)" > "$F/uname"
   cat > "$F/apt-get" <<'STUB'
 #!/bin/bash

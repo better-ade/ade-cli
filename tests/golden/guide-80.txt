@@ -1,13 +1,14 @@
-ADE set-up guide (ade setup): 6 steps from nothing to a working hub
+ADE set-up guide (ade setup): 7 steps from nothing to a working hub
   [x] 1. Claude Code            installed
   [ ] 2. Sign in to Claude      not signed in
   [ ] 3. Sign in to GitHub      not signed in
   [ ] 4. Your hub               none yet
-  [ ] 5. Your first project     none yet
-  [ ] 6. Telegram (optional)    off
+  [ ] 5. Your tools (optional)  none yet
+  [ ] 6. Your first project     none yet
+  [ ] 7. Telegram (optional)    off
 Set up now? [Y/n] 
 
-Step 2 of 6: Sign in to Claude
+Step 2 of 7: Sign in to Claude
 Claude Code works with your Claude account or with an API key. The account
 sign-in is Claude Code's own, in your browser; ade stores nothing.
   1) account  your Claude account (Pro, Max, Team or Enterprise)
@@ -15,7 +16,7 @@ sign-in is Claude Code's own, in your browser; ade stores nothing.
 How do you use Claude? [account]: 
 checked: signed in to Claude (account)
 
-Step 3 of 6: Sign in to GitHub
+Step 3 of 7: Sign in to GitHub
 Your hub needs GitHub: it is a private repository on your GitHub account,
 which keeps the hub's memory and lets you restore the hub on another computer.
 This runs GitHub's own sign-in (gh auth login --web): it shows a one-time code
@@ -26,7 +27,7 @@ Open this URL to continue in your web browser: https://github.com/login/device
 Logged in as tester
 checked: signed in to GitHub as tester
 
-Step 4 of 6: Your hub
+Step 4 of 7: Your hub
 Your hub is where ADE keeps its memory: a folder in ~/hubs, saved in a private
 repository on your GitHub. ADE sets it up, then you pick its agents.
 Name for your hub (lower-case letters, digits and -, e.g. acme-sre): acme
@@ -63,13 +64,19 @@ Pick any (numbers or names, spaces between; Enter for none):
 AI services your agents use: anthropic (change it later; ade roles shows it)
 checked: your hub is acme (~/hubs/acme)
 
-Step 5 of 6: Your first project
+Step 5 of 7: Your tools (optional)
+Optional: the tools you use for this work. ade connects the ones it has a recipe
+for (you sign in yourself, here) and notes the rest by name only; Enter skips.
+skipped: the tool list could not be read; ade connect says why
+checked: no tools connected or noted yet
+
+Step 6 of 7: Your first project
 ADE opens Claude Code at your hub: it asks about your work and sets up your
 first project with you, asking before each change. /exit comes back here.
 (the guided Claude Code session runs here)
 checked: your first project is web
 
-Step 6 of 6: Telegram (optional)
+Step 7 of 7: Telegram (optional)
 Optional: a Telegram bot of your own lets you reach your main agent. A yes asks
 for the bot's token (hidden), then goes one step at a time; no skips it.
 Do you want to reach your main agent from Telegram? [y/N] n

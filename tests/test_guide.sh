@@ -38,6 +38,7 @@ case "${1:-} ${2:-}" in
   "auth status") [ -f "$FT/claude.in" ] ;;
   "auth login") fails claude.fail && exit 1; if [ -t 0 ] && [ -t 1 ]; then echo "claude had the terminal" >> "$CALLS"; fi
     [ ! -f "$FT/login.fixes" ] || rm -f "$FT/agent.fail"; touch "$FT/claude.in" ;;
+  "plugin "*) ;;   # A23: a stand-in for marketplace and plugin installs (logged above)
   *) echo "(the guided Claude Code session runs here)"; [ -z "${SESSION_EXIT:-}" ] || exit "$SESSION_EXIT"; fails session.fail && exit 1
     [ -z "${MAKE_PROJECT:-}" ] || mkdir -p "projects/$MAKE_PROJECT" ;;
 esac
@@ -62,6 +63,7 @@ STUB
   local c; for c in tmux yazi bat glow pdftotext pdftoppm chafa code gitleaks bun; do printf '#!/bin/bash\nexit 0\n' > "$F/$c"; done   # the other tools: there
   chmod +x "$F"/*; cp "$F/gh" "$T/gh.real"; cp "$F/claude" "$T/claude.fake"
   make_template; export ADE_HUB_TEMPLATE_URL="$T/template"; unset DISPLAY ADE_COMPUTER_MARKER
+  export ADE_SKILLS_REPO="$T/no-ade-skills"   # A23: the tools step's recipes are never fetched from the network here
   mkdir -p "$T/cwd"
 }
 # the hub template: bin/init lists four personas and writes hub.conf (or fails while $T/init.fail exists); bin/agent
@@ -134,7 +136,7 @@ guide_offers() {   # AC1
   grep -E '\[ \] 2\. Sign in to Claude +not signed in' "$T/out" > /dev/null || fail "a step to do shows its state"
   grep -E '\[ \] 4\. Your hub +none yet' "$T/out" > /dev/null || fail "no hub yet"
   assert_contains "$T/out" "Set up now? [Y/n]" "asks"
-  assert_contains "$T/out" "Step 2 of 6: Sign in to Claude" "Enter starts the guide"
+  assert_contains "$T/out" "Step 2 of 7: Sign in to Claude" "Enter starts the guide"
   assert_eq "$rc" 1 "then the end of input stops it"
   A < /dev/null; rc=$?; assert_eq "$rc" 0 "no terminal: exit 0"
   assert_contains "$T/out" "Sign in to GitHub" "the same list"; assert_contains "$T/out" "ade setup" "and the command"
@@ -148,12 +150,12 @@ guide_resumes() {   # AC2
   fresh; fakes; signed_in claude
   G "" setup; rc=$?
   assert_not_contains "$T/out" "Step 1 of" "a done step is skipped"; assert_not_contains "$T/out" "Step 2 of" "so is the second"
-  assert_contains "$T/out" "Step 3 of 6: Sign in to GitHub" "starts at the first step not done"
+  assert_contains "$T/out" "Step 3 of 7: Sign in to GitHub" "starts at the first step not done"
   assert_contains "$T/out" "This runs GitHub's own sign-in" "says what the step does before it"
   assert_contains "$T/out" "checked: signed in to GitHub as tester" "and that it checked, after it"
-  assert_contains "$T/out" "Step 4 of 6: Your hub" "then the next step"
+  assert_contains "$T/out" "Step 4 of 7: Your hub" "then the next step"
   assert_eq "$rc" 1 "the end of input stops"; assert_contains "$T/out" "to come back, run ade setup" "and says how to come back"
-  G "" setup; assert_contains "$T/out" "Step 4 of 6: Your hub" "run again, it resumes there"
+  G "" setup; assert_contains "$T/out" "Step 4 of 7: Your hub" "run again, it resumes there"
   assert_not_contains "$T/out" "Step 3 of" "the GitHub step is not run again"
   assert_eq "$(grep -c '^gh auth login' "$CALLS")" 1 "one sign-in"
 }
@@ -302,7 +304,7 @@ guide_session_fails() {   # review 4: a guided session that exits non-zero is sa
   for s in "  1) again  start it again" "  2) go-on  go on (this step stays not done)" "  3) stop   stop here"; do assert_contains "$T/out" "$s" "$s"; done
   assert_contains "$T/out" "Going on; this step is not done: ade setup comes back to it." "go on"
   assert_contains "$T/out" "checked: no project yet" "then checked"
-  assert_contains "$T/out" "Not finished: step 5 (Your first project); run ade setup to pick up there." "and the ending"
+  assert_contains "$T/out" "Not finished: step 6 (Your first project); run ade setup to pick up there." "and the ending"
   assert_eq "$rc" 0 "the guide ran to its end"
   G "n\n" setup; assert_not_contains "$T/out" "stopped early" "a session that exits 0 is not"
   echo "claude: crashed" > "$T/session.fail"; MAKE_PROJECT=web G "again\nn\n" setup; assert_eq "$?" 0 "start it again"
@@ -343,10 +345,10 @@ guide_installs_claude() {   # review 6: step 1 with Claude Code missing, through
   fresh; fakes; local real; rm "$F/claude"; real="$T/claude.real"; mkdir -p "$T/inst"
   printf '#!/bin/bash\necho installer-ran >> "$CALLS"; mkdir -p "$HOME/.local/bin"; cp "%s" "$HOME/.local/bin/claude"\n' "$real" > "$T/inst/install.sh"
   fakes_claude_to "$real"; export ADE_CLAUDE_INSTALLER="file://$T/inst/install.sh" ADE_TEST_ALLOW_FILE_URLS=1
-  G "n\n" setup; assert_eq "$?" 1 "no: stops"; assert_contains "$T/out" "Step 1 of 6: Claude Code" "the first step"
+  G "n\n" setup; assert_eq "$?" 1 "no: stops"; assert_contains "$T/out" "Step 1 of 7: Claude Code" "the first step"
   assert_contains "$T/out" "curl -fsSL https://claude.ai/install.sh | bash" "names the manual command"; assert_not_contains "$CALLS" installer-ran "nothing ran"
   G "y\n" setup; assert_contains "$CALLS" installer-ran "a yes runs the installer"
-  assert_contains "$T/out" "checked: Claude Code is installed" "then checked"; assert_contains "$T/out" "Step 2 of 6" "and on to the next"
+  assert_contains "$T/out" "checked: Claude Code is installed" "then checked"; assert_contains "$T/out" "Step 2 of 7" "and on to the next"
   export ADE_CLAUDE_INSTALLER="http://example.invalid/install.sh"; rm -rf "$HOME/.local/bin"
   G "y\n" setup; assert_eq "$?" 1 "a non-https installer"; assert_contains "$T/out" "must be an https URL" "is refused"
 }
@@ -377,8 +379,8 @@ guide_claude_sign_in_fails() {   # step 2: sign in again; an API key instead; st
   for s in "  1) sign-in  sign in again" "  2) key      use an API key instead" "  3) stop     stop here" "What now? [sign-in]:"; do assert_contains "$T/out" "$s" "$s"; done
   assert_eq "$(grep -c '^claude auth login' "$CALLS")" 3 "Enter signs in again, each time"; assert_contains "$T/out" "checked: signed in to Claude (account)" "until it works"; wide
   fresh; fakes; echo x > "$T/claude.fail"; G "\nkey\n" setup; assert_contains "$T/out" "checked: your key is asked at step 4, once your hub is made" "a key instead"
-  assert_contains "$T/out" "Step 3 of 6" "and on"
-  fresh; fakes; echo x > "$T/claude.fail"; G "\nstop\n" setup; stopped $?; assert_not_contains "$T/out" "Step 3 of 6" "no further"
+  assert_contains "$T/out" "Step 3 of 7" "and on"
+  fresh; fakes; echo x > "$T/claude.fail"; G "\nstop\n" setup; stopped $?; assert_not_contains "$T/out" "Step 3 of 7" "no further"
 }
 guide_gh_fails() {   # step 3: gh does not install (try again; manual; stop); its sign-in does not finish (again; stop)
   fresh; fakes; signed_in claude; rm "$F/gh"; printf 'Error: no bottle\nError: no bottle\n' > "$T/brew.fail"
@@ -493,6 +495,139 @@ guide_asks_git_identity() {   # A22 AC6: no git name or email: asked before the 
   assert_not_contains "$T/out" "for git commits" "an identity git has: nothing asked"; [ ! -e "$HOME/.gitconfig" ] || fail "and nothing written"
 }
 
-ALL="guide_asks_git_identity guide_tools_then_first_save guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
+# A23: the tools step. A local ade-skills tagged v0.7.0 with recipes (jira and clickup ready; slack and outlook held),
+# its release.json in a file:// folder; claude's plugin calls are stand-ins logged to $CALLS. Never the network.
+T_JIRA='{ "format": 1, "service": "jira", "title": "Jira", "job": "tickets", "tier": 0, "state": "ready",
+  "sign_in": { "kind": "plugin", "plugin": "jira" }, "questions": [],
+  "guard": { "prefixes": ["mcp__plugin_jira_jira__"], "read": ["getJiraIssue"] }, "hosts": ["mcp.atlassian.com"],
+  "pages": { "revoke": "https://id.atlassian.com/manage-profile/apps" }, "reaches": "Every Atlassian app you can reach." }'
+T_SLACK='{ "format": 1, "service": "slack", "title": "Slack", "job": "chat", "tier": 1, "state": "held", "held": "the owner decides first",
+  "sign_in": { "kind": "plugin", "plugin": "slack" }, "questions": [], "guard": { "prefixes": ["mcp__plugin_slack_slack__"], "read": [] },
+  "hosts": ["mcp.slack.com"], "pages": {}, "reaches": "The channels you are in." }'
+tools_release() {   # commit, tag v0.7.0 (moved) and write its release.json with every recipe's sha256
+  git -C "$K" add -A && git -C "$K" commit -qm release --allow-empty && git -C "$K" tag -f v0.7.0 > /dev/null || fail "tag"
+  local d="$T/gh/better-ade/ade-skills/releases/download/v0.7.0"; mkdir -p "$d"
+  python3 - "$K/plugins/guard/connectors" "$d/release.json" <<'PY'
+import hashlib, json, os, sys
+src, out = sys.argv[1:3]
+files = [{"name": "connector-" + n, "url": "https://example.invalid/" + n, "sha256": hashlib.sha256(open(os.path.join(src, n), "rb").read()).hexdigest()} for n in sorted(os.listdir(src))]
+json.dump({"component": "ade-skills", "version": "0.7.0", "released": "2026-11-24", "summary": "recipes", "urgency": "normal", "min_supported": None, "files": files}, open(out, "w"))
+PY
+}
+tools_fixture() {   # fakes, both sign-ins, a hub whose required steps are done, and the recipes
+  fresh; fakes; signed_in claude gh
+  A hub new acme --persona tech-lead --client Acme --owner Sam < /dev/null || { cat "$T/out"; fail "hub"; }
+  HB="$HOME/hubs/acme"; echo "HUB_ROOT_PROVIDER=anthropic" >> "$HB/hub.conf"; mkdir -p "$HB/projects/web"
+  printf '#!/bin/bash\necho "$*" >> "$HUB/journal.log"\n' > "$HB/bin/journal"; chmod +x "$HB/bin/journal"
+  make_skills_repo; mkdir -p "$K/plugins/guard/connectors" "$K/plugins/guard/hooks" "$K/plugins/jira/hooks" "$K/plugins/clickup/hooks"
+  echo '{ "name": "ade-skills", "plugins": [ { "name": "guard", "description": "The guard." }, { "name": "jira", "description": "Jira." }, { "name": "clickup", "description": "ClickUp." } ] }' > "$K/.claude-plugin/marketplace.json"
+  echo '{"hooks": {}}' > "$K/plugins/guard/hooks/hooks.json"; echo 'exit 0' > "$K/plugins/guard/hooks/guard.sh"
+  echo getJiraIssue > "$K/plugins/jira/hooks/read-tools.txt"; echo getJiraIssue > "$K/plugins/clickup/hooks/read-tools.txt"
+  local c="$K/plugins/guard/connectors"
+  printf '%s\n' "$T_JIRA" > "$c/jira.json"; printf '%s\n' "$T_JIRA" | sed 's/jira/clickup/g; s/"Jira"/"ClickUp"/' > "$c/clickup.json"
+  printf '%s\n' "$T_SLACK" > "$c/slack.json"
+  printf '%s\n' "$T_SLACK" | sed 's/slack/outlook/g; s/"Slack"/"Outlook"/; s/"chat"/"mail"/' > "$c/outlook.json"
+  tools_release
+  export ADE_SKILLS_REF=v0.7.0 ADE_TEST_ALLOW_FILE_URLS=1 ADE_RELEASES_BASE="file://$T/gh"
+}
+tools_rec() { cat "$HB/.ade/$1.json" 2> /dev/null; }
+installs() { grep -c '^claude plugin install' "$CALLS"; }
+
+tools_step_in_order() {   # A23 AC1
+  assert_eq "$(sed -n 's/^GUIDE_STEPS="\([^"]*\)".*/\1/p' "$ADE")" "claude-code claude-sign-in github hub tools project telegram" "GUIDE_STEPS"
+  tools_fixture; G "\n" setup
+  local h t p; h="$(grep -n '^  \[x\] 4\. Your hub' "$T/out" | cut -d: -f1)"; t="$(grep -n '^  \[ \] 5\. Your tools (optional) *none yet' "$T/out" | cut -d: -f1)"
+  p="$(grep -n '^  \[x\] 6\. Your first project' "$T/out" | cut -d: -f1)"
+  [ -n "$h" ] && [ -n "$t" ] && [ -n "$p" ] && [ "$h" -lt "$t" ] && [ "$t" -lt "$p" ] || { cat "$T/out"; fail "the list: hub, tools, project"; }
+  assert_contains "$T/out" "ADE set-up guide (ade setup): 7 steps" "seven steps"; assert_contains "$T/out" "Step 5 of 7: Your tools (optional)" "the step runs fifth"
+  assert_contains "$T/out" "All set" "an optional step: the guide still ends all set"
+}
+
+tools_list_from_recipes() {   # A23 AC2
+  tools_fixture; printf '%s\n' "$T_SLACK" | sed 's/slack/later/g' > "$K/plugins/guard/connectors/later.json"; commit_tag "$K" "after the tag"
+  G "\n" setup; assert_eq "$?" 0 "Enter skips"
+  local l n=0 want=("1) clickup  ClickUp (tickets)" "2) jira     Jira (tickets)" "3) outlook  Outlook (mail), coming: noted, not connected yet" \
+    "4) slack    Slack (chat), coming: noted, not connected yet" "5) other    another tool: you type its name")
+  for l in "${want[@]}"; do assert_contains "$T/out" "  $l" "listed: $l"; done
+  assert_contains "$T/out" "Which tools do you use for this work? Pick any (numbers or names, spaces between; Enter skips):" "asked"
+  assert_not_contains "$T/out" "later" "read at the pinned tag only"
+  assert_eq "$(grep -Ec '^  [0-9]\) ' "$T/out")" 5 "nothing hard-coded: only the pinned recipes (and other) are offered"
+  echo '{"format": 1, "service": "clickup"}' > "$K/plugins/guard/connectors/clickup.json"; tools_release   # a refused recipe is left out
+  G "\n" setup; assert_not_contains "$T/out" ") clickup" "a refused recipe is not offered"; assert_contains "$T/out" "1) jira" "the rest are"
+}
+
+tools_connect_picked() {   # A23 AC3
+  tools_fixture; G "jira\ny\n" setup; assert_eq "$?" 0 "the guide goes on"
+  assert_contains "$T/out" "Connect jira in $HB" "the same question as ade connect jira"
+  assert_contains "$CALLS" "claude plugin install guard@ade-skills --scope project" "the guard, as ade connect installs it"
+  assert_contains "$CALLS" "claude plugin install jira@ade-skills --scope project" "and the service's plugin"
+  assert_eq "$(tools_rec connectors)" '{"format": 1, "connectors": ["jira"]}' "recorded where ade connect records it"
+  assert_contains "$T/out" "jira: connected in $HB (.ade/connectors.json)" "says so"; assert_contains "$HB/journal.log" "ade connect: jira connected in acme" "journaled"
+  assert_contains "$T/out" "Sign in yourself, in Claude Code" "the person signs in, as with ade connect"
+  [ ! -e "$HB/.ade/tools.json" ] || fail "a ready service is never noted"
+  tools_fixture; G "clickup\nn\n" setup; assert_eq "$?" 0 "a no: the guide goes on"
+  assert_contains "$T/out" "stopped: nothing changed" "ade connect's own no"; assert_contains "$T/out" "clickup: not connected; ade connect clickup (in ~/hubs/acme) tries again" "and the way back"
+  assert_eq "$(installs)" 0 "nothing installed"; [ ! -e "$HB/.ade/connectors.json" ] || fail "nothing recorded"
+}
+
+tools_noted_names_only() {   # A23 AC4
+  tools_fixture; G "slack other\nhttps://notion.so\nNotion, Google Docs\n" setup; assert_eq "$?" 0 "exit"
+  assert_eq "$(tools_rec tools)" '{"format": 1, "tools": ["google-docs", "notion", "slack"]}' "names only, sorted"
+  for n in slack notion google-docs; do assert_contains "$T/out" "$n: not connected yet; noted" "said: $n"; done
+  assert_contains "$T/out" "names only (letters, digits, spaces and -, at most 32 each): no address, key or token; type it again" "a URL is refused"
+  assert_not_contains "$T/out" "notion.so" "and never echoed"; assert_eq "$(installs)" 0 "nothing installed for a noted name"
+  local bad; for bad in 'a@b' 'x:y' 'ghp_abcdefghijklmnopqrstuvwxyz0123' 'abc123def456ghi789jkl' "$(printf 'n%.0s' $(seq 1 33))"; do
+    tools_fixture; G "other\n$bad\n\n" setup
+    assert_contains "$T/out" "no address, key or token; type it again" "[$bad] refused"; [ ! -e "$HB/.ade/tools.json" ] || fail "[$bad] nothing written"
+  done
+  tools_fixture; mkdir -p "$HB/.ade"; echo '{"format": 1, "tools": ["b", "a"]}' > "$HB/.ade/tools.json"
+  G "slack\n" setup; assert_contains "$T/out" "is not a valid tools record (the names are not sorted and unique)" "a record not in the format is refused"
+  assert_eq "$(tools_rec tools)" '{"format": 1, "tools": ["b", "a"]}' "and left as it is"
+  python3 -c 'import json; print(json.dumps({"format": 1, "tools": sorted("t%02d" % i for i in range(64))}))' > "$HB/.ade/tools.json"; cp "$HB/.ade/tools.json" "$T/full"
+  G "slack\n" setup; assert_contains "$T/out" "more than 64 names" "at most 64"; cmp -s "$HB/.ade/tools.json" "$T/full" || fail "a full record is not changed"
+}
+
+tools_skip() {   # A23 AC5
+  tools_fixture; G "\n" setup; assert_eq "$?" 0 "exit"
+  assert_contains "$T/out" "skipped: nothing picked; ade setup offers your tools again" "Enter skips"
+  [ ! -e "$HB/.ade/tools.json" ] && [ ! -e "$HB/.ade/connectors.json" ] || fail "nothing written"; assert_eq "$(installs)" 0 "nothing installed"
+  tools_fixture; G "" setup; assert_eq "$?" 0 "end of input skips too"; [ ! -e "$HB/.ade/tools.json" ] || fail "nothing written at end of input"
+  tools_fixture; A setup < /dev/null; assert_eq "$?" 0 "no terminal: the guide still ends"
+  assert_contains "$T/out" "skipped: no terminal here; run ade setup at a terminal later to pick your tools" "says ade setup later"
+  assert_not_contains "$T/out" "Which tools" "asks nothing"; [ ! -e "$HB/.ade/tools.json" ] || fail "writes nothing"
+  tools_fixture; export ADE_SKILLS_REPO="$T/nowhere"; G "\n" setup; assert_eq "$?" 0 "recipes not readable: the guide goes on"
+  assert_contains "$T/out" "skipped: the tool list could not be read; ade connect says why" "and says why"; assert_contains "$T/out" "All set" "to its end"
+}
+
+tools_second_run() {   # A23 AC6
+  tools_fixture; G "jira slack\ny\n" setup || { cat "$T/out"; fail "first run"; }
+  G "\n" setup; assert_eq "$?" 0 "second run"
+  grep -E '^  \[x\] 5\. Your tools \(optional\) +connected: jira; noted: slack' "$T/out" > /dev/null || { cat "$T/out"; fail "the list shows them"; }
+  assert_contains "$T/out" "done: jira (connected)" "a connected one is done"; assert_contains "$T/out" "noted: slack" "a noted one is shown"
+  assert_contains "$T/out" "  1) clickup" "the rest are offered"; assert_contains "$T/out" "  2) outlook" "the coming one too"
+  ! grep -Eq '^  [0-9]\) (jira|slack) ' "$T/out" || fail "only the rest are offered"
+  G "clickup\ny\n" setup; assert_eq "$(tools_rec connectors)" '{"format": 1, "connectors": ["clickup", "jira"]}' "the rest connects"
+}
+
+tools_nothing_secret() {   # A23 AC7
+  tools_fixture; local f x pk=PLANTEDKEY000; export LINEAR_API_KEY="lin_api_${pk}1" ANTHROPIC_API_KEY="sk-ant-${pk}2"   # fake, planted
+  printf '#!/bin/bash\n[ "${1:-}" = set ] && cat > /dev/null; echo "token xoxb-PLANTEDKEY0003"; exit 0\n' > "$HB/bin/keys"; chmod +x "$HB/bin/keys"
+  G "jira other\ny\nhttps://bob:PLANTEDKEY0004@example.com\nsk-PLANTEDKEY0005abcdefghijk\nghp_PLANTEDKEY0006abcdefghij\nNotion\n" setup; assert_eq "$?" 0 "exit"
+  assert_eq "$(tools_rec tools)" '{"format": 1, "tools": ["notion"]}' "only the name"
+  for f in "$T/out" "$HB/.ade/tools.json" "$HB/.ade/connectors.json" "$HB/journal.log" "$CALLS"; do
+    for x in 1 2 3 4 5 6; do assert_not_contains "$f" "PLANTEDKEY000$x" "planted value $x not in $f"; done; done
+  ! grep -rq PLANTEDKEY "$HB" --exclude-dir=.git --exclude=keys || { grep -rl PLANTEDKEY "$HB"; fail "nothing planted anywhere in the hub"; }
+  ! grep -Eq '^(claude|gh) .*(auth token|--show-token|keys get)' "$CALLS" || fail "no token is ever asked for"
+}
+
+tools_other_no_glob() {   # A23 fix round: an "other" answer is never glob-expanded against the folder ade runs in
+  tools_fixture; touch "$T/cwd/plantedalpha" "$T/cwd/plantedbeta"; mkdir -p "$T/cwd/plantedgamma"
+  G "other\n*\n[a-z]*\nNotion\n" setup; assert_eq "$?" 0 "exit"
+  assert_eq "$(grep -c 'no address, key or token; type it again' "$T/out")" 2 "both patterns are refused as they are"
+  assert_eq "$(tools_rec tools)" '{"format": 1, "tools": ["notion"]}' "only the typed name"
+  assert_not_contains "$T/out" "planted" "nothing from the folder is shown"
+}
+
+ALL="tools_other_no_glob tools_step_in_order tools_list_from_recipes tools_connect_picked tools_noted_names_only tools_skip tools_second_run tools_nothing_secret guide_asks_git_identity guide_tools_then_first_save guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

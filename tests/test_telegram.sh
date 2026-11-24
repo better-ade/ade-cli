@@ -32,6 +32,7 @@ PY
 # $W/<name>.fail (a fake fails once per line of it, that line on stderr; brew prints the whole file)
 world() {
   fresh; F="$T/fakebin"; W="$T/tg"; H="$T/hub"; mkdir -p "$F" "$W" "$T/cwd"; farm
+  export ADE_SKILLS_REPO="$T/no-ade-skills"   # A23: the guide's tools step never fetches recipes from the network here
   export CALLS="$T/calls" ENVS="$T/envs" FT="$T" ADE_HUB="$H" ADE_TG_WAIT=1; : > "$CALLS"; : > "$ENVS"
   printf 'fails() { [ -s "$FT/tg/$1" ] || return 1; head -1 "$FT/tg/$1" >&2; sed 1d "$FT/tg/$1" > "$FT/tg/$1.n"; mv "$FT/tg/$1.n" "$FT/tg/$1"; }\n' > "$T/fails.sh"
   make_hub "$H" acme; printf 'HUB_NAME=acme\nHUB_ROOT_PROVIDER=anthropic\n' > "$H/hub.conf"; mkdir -p "$H/projects/web"
@@ -230,7 +231,7 @@ tg_resumes() {   # 5: run again, it starts at the first thing not done and shows
 tg_states() {   # 4: ade setup --check, ade alone and the guide's list say on, not finished or off
   world; A setup --check < /dev/null; assert_contains "$T/out" "telegram: off" "nothing begun: off"
   A < /dev/null; assert_contains "$T/out" "telegram: off" "ade alone: off"
-  A setup < /dev/null; grep -E '\[ \] 6\. Telegram \(optional\) +off' "$T/out" > /dev/null || { cat "$T/out"; fail "the guide's list: off"; }
+  A setup < /dev/null; grep -E '\[ \] 7\. Telegram \(optional\) +off' "$T/out" > /dev/null || { cat "$T/out"; fail "the guide's list: off"; }
   assert_contains "$T/out" "All set" "an optional step that was never begun is not offered"; assert_not_contains "$T/out" "Step 6" "nor run"
   token_there; plugin_there; A setup --check < /dev/null
   assert_contains "$T/out" "telegram: not finished: start your bot's session (ade setup --telegram)" "begun: not finished, and what is left"
@@ -238,11 +239,11 @@ tg_states() {   # 4: ade setup --check, ade alone and the guide's list say on, n
   snap() { (cd "$T" && find hub home -type f -exec cksum {} + | sort); }; before="$(snap)"; A setup --check < /dev/null; assert_eq "$(snap)" "$before" "the check writes nothing"
   ! grep -qE "^(keys set|chat (stop|test|start|setup)|schedule|claude plugin install)" "$CALLS" || fail "and runs nothing that changes"
   person; talk "$START\n$PAIR\n$LOCK\n" setup; rc=$?   # the guide picks a begun Telegram step up, with nothing else left
-  grep -E "\[ \] 6\. Telegram \(optional\) +not finished: start your bot's session" "$T/out" > /dev/null || { cat "$T/out"; fail "the guide's list: not finished"; }
-  assert_contains "$T/out" "Step 6 of 6: Telegram (optional)" "the guide comes back to it"; assert_not_contains "$T/out" "Do you want to reach" "without asking again"
+  grep -E "\[ \] 7\. Telegram \(optional\) +not finished: start your bot's session" "$T/out" > /dev/null || { cat "$T/out"; fail "the guide's list: not finished"; }
+  assert_contains "$T/out" "Step 7 of 7: Telegram (optional)" "the guide comes back to it"; assert_not_contains "$T/out" "Do you want to reach" "without asking again"
   assert_contains "$T/out" "Telegram is working: your bot passed its test, and its session is running." "to the end"
   assert_contains "$T/out" "checked: Telegram is on" "checked"; assert_eq "$rc" 0 "exit 0"; fits
-  A setup < /dev/null; grep -E '\[x\] 6\. Telegram \(optional\) +on' "$T/out" > /dev/null || fail "the guide's list: on"
+  A setup < /dev/null; grep -E '\[x\] 7\. Telegram \(optional\) +on' "$T/out" > /dev/null || fail "the guide's list: on"
   world; token_there; plugin_there; talk "later\n" setup
   assert_contains "$T/out" "checked: Telegram is not finished; ade setup --telegram comes back to it" "the guide's check line"; assert_contains "$T/out" "All set" "the guide still ends"
 }
