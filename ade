@@ -1673,11 +1673,13 @@ EOF
 # exit 1, printing nothing, when one is not a plain name or looks like a key or token (a part of 24 or more characters,
 # or of 16 or more with a digit in it)
 tool_names() {
-  local IFS=, part w out=""
-  for part in $1; do
+  local part w out="" parts=() words=()
+  IFS=, read -ra parts <<< "$1"   # split without globbing: the answer is data, never a pattern for the folder
+  for part in "${parts[@]}"; do
     part="$(printf '%s' "$part" | sed 's/^ *//; s/ *$//')"; [ -n "$part" ] || continue
     matches "$part" '^[A-Za-z][A-Za-z0-9 -]{0,31}$' || return 1
-    for w in $(printf '%s' "$part" | tr ' -' ',,'); do
+    IFS=' -' read -ra words <<< "$part"
+    for w in "${words[@]}"; do
       [ "${#w}" -lt 24 ] || return 1; { [ "${#w}" -ge 16 ] && matches "$w" '[0-9]'; } && return 1
     done
     w="$(printf '%s' "$part" | tr 'A-Z ' 'a-z-' | tr -s '-')"; matches "$w" '^[a-z][a-z0-9-]{0,31}$' || return 1

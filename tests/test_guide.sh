@@ -620,6 +620,14 @@ tools_nothing_secret() {   # A23 AC7
   ! grep -Eq '^(claude|gh) .*(auth token|--show-token|keys get)' "$CALLS" || fail "no token is ever asked for"
 }
 
-ALL="tools_step_in_order tools_list_from_recipes tools_connect_picked tools_noted_names_only tools_skip tools_second_run tools_nothing_secret guide_asks_git_identity guide_tools_then_first_save guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
+tools_other_no_glob() {   # A23 fix round: an "other" answer is never glob-expanded against the folder ade runs in
+  tools_fixture; touch "$T/cwd/plantedalpha" "$T/cwd/plantedbeta"; mkdir -p "$T/cwd/plantedgamma"
+  G "other\n*\n[a-z]*\nNotion\n" setup; assert_eq "$?" 0 "exit"
+  assert_eq "$(grep -c 'no address, key or token; type it again' "$T/out")" 2 "both patterns are refused as they are"
+  assert_eq "$(tools_rec tools)" '{"format": 1, "tools": ["notion"]}' "only the typed name"
+  assert_not_contains "$T/out" "planted" "nothing from the folder is shown"
+}
+
+ALL="tools_other_no_glob tools_step_in_order tools_list_from_recipes tools_connect_picked tools_noted_names_only tools_skip tools_second_run tools_nothing_secret guide_asks_git_identity guide_tools_then_first_save guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
