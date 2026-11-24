@@ -68,7 +68,8 @@ ade version                      # ade 0.2.8
 ade init                         # copy ade-method at its pinned tag; lists what it kept
 ade agent list                   # specialists in ade-agent-registry
 ade agent add frontend           # copy one into .ade/agents/frontend.md
-ade skills add notes             # install an ade-skills plugin for this project (needs Claude Code)
+ade skills add git               # install an ade-skills plugin for this project (needs Claude Code)
+ADE_SKILLS_REF=v0.9.0 ade skills add notes   # plugins newer than the pinned v0.1.0 (git, browser) need a newer tag
 
 # With a hub
 mkdir -p ~/.config/ade && echo ~/hubs/my-hub > ~/.config/ade/hub   # or export ADE_HUB, or run ade inside the hub
@@ -325,7 +326,7 @@ or tool. A hub command exits with whatever the hub's script returns.
 | `ADE_CODE_DIR` | `~/Project` when it is there, else `~/code` | Where `ade project add` clones a URL (never inside the hub) |
 | `ADE_METHOD_REF` | `v2.1.0` | The ade-method tag `ade init` copies |
 | `ADE_REGISTRY_REF` | `v1.1.0` | The ade-agent-registry tag `ade agent` reads |
-| `ADE_SKILLS_REF` | `v0.1.0` | The ade-skills tag `ade skills` pins |
+| `ADE_SKILLS_REF` | `v0.1.0` | The ade-skills tag `ade skills list`, `search` and `add` read; v0.1.0 lists only `git` and `browser` |
 | `ADE_METHOD_REPO` | `https://github.com/better-ade/ade-method` | Where ade-method comes from (tests use a local fixture) |
 | `ADE_REGISTRY_REPO` | `https://github.com/better-ade/ade-agent-registry` | Where the registry comes from |
 | `ADE_HOOK_BIN` | set by the ADE app | What `ade open` hands off to |
