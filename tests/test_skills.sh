@@ -95,6 +95,29 @@ add_uses_repo() {   # review: add registers the marketplace from $ADE_SKILLS_REP
   assert_contains "$CLAUDE_LOG" "plugin marketplace add $K" "the configured repo"
 }
 
-ALL="disable_keeps_off pinned_and_offline add_uses_repo list_states enable_disable never_list add_notifies search unknown_names"
+# the plugins each released ade-skills tag ships (the names in its .claude-plugin/marketplace.json, recorded by hand
+# when ade-cli moves its pin): the README is checked against what a user really gets, without the network
+released_plugins() {
+  case "$1" in
+    v0.1.0) echo "git browser" ;;
+    v0.9.0) echo "git browser ade notes fde clickup jira linear orgo guard" ;;
+    *) return 1 ;;
+  esac
+}
+
+readme_quick_start() {   # every `ade skills add <name>` in the README's quick start exists at the default pin
+  fresh; local pin names line name n=0
+  pin="$(bash "$ADE" skills --pin)"
+  names="$(released_plugins "$pin")" || fail "no recorded plugin list for the pinned ade-skills $pin (add it to released_plugins)"
+  while IFS= read -r line; do
+    name="$(printf '%s\n' "$line" | sed -n 's/.*ade skills add \([^ ]*\).*/\1/p')"; [ -n "$name" ] || continue; n=$((n + 1))
+    case " $names " in *" $name "*) ;; *) fail "README quick start: ade skills add $name, but ade-skills $pin ships only: $names" ;; esac
+  done <<EOF
+$(awk '/^## Quick start/ { f = 1; next } /^## / { f = 0 } f' "$REPO/README.md")
+EOF
+  [ "$n" -gt 0 ] || fail "README quick start has no ade skills add line"
+}
+
+ALL="readme_quick_start disable_keeps_off pinned_and_offline add_uses_repo list_states enable_disable never_list add_notifies search unknown_names"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

@@ -45,7 +45,7 @@ init_copies_method() {   # AC5
   assert_eq "$(cat "$P/_bmad/custom/bmad-build.toml")" "[build]" "bmad custom copied"
   assert_eq "$(cat "$P/.ade/context/decisions/README.md")" "adrs" "context templates copied"
   assert_eq "$(cat "$P/docs/standards.md")" "standards" "standards copied"
-  assert_eq "$(cat "$P/.ade/method-version")" "v2.1.0" "tag recorded (default pin v2.1.0)"
+  assert_eq "$(cat "$P/.ade/method-version")" "v2.2.0" "tag recorded (default pin v2.2.0)"
   [ ! -e "$P/.ade/ade.json" ] && [ ! -e "$P/.ade/templates" ] || fail "only the listed files are copied"
 }
 
@@ -117,11 +117,11 @@ config_file_hub() {   # review: ~/.config/ade/hub expands a leading ~, trims spa
 }
 
 init_rerun_new_tag() {   # review: a re-run at a new tag that keeps files leaves the old record; copy failures exit 1
-  fresh; make_method_repo; git -C "$M" tag v2.2.0; P="$T/proj"; mkdir -p "$P"; git init -q "$P"
+  fresh; make_method_repo; git -C "$M" tag v2.3.0; P="$T/proj"; mkdir -p "$P"; git init -q "$P"
   (cd "$P" && bash "$ADE" init) > /dev/null 2>&1 || fail "first init"
-  (cd "$P" && ADE_METHOD_REF=v2.2.0 bash "$ADE" init) > "$T/out" 2>&1 || { cat "$T/out"; fail "re-run exit"; }
-  assert_eq "$(cat "$P/.ade/method-version")" "v2.1.0" "old record left"
-  assert_contains "$T/out" ".ade/method-version left at v2.1.0" "says so"
+  (cd "$P" && ADE_METHOD_REF=v2.3.0 bash "$ADE" init) > "$T/out" 2>&1 || { cat "$T/out"; fail "re-run exit"; }
+  assert_eq "$(cat "$P/.ade/method-version")" "v2.2.0" "old record left"
+  assert_contains "$T/out" ".ade/method-version left at v2.2.0" "says so"
   Q="$T/proj2"; mkdir -p "$Q"; git init -q "$Q"; : > "$Q/docs"   # docs/ cannot be made: the copy fails
   (cd "$Q" && bash "$ADE" init) > "$T/out" 2>&1; rc=$?; assert_eq "$rc" 1 "copy failure exit"
   [ ! -e "$Q/.ade/method-version" ] || fail "no record after a failed copy"
@@ -180,7 +180,7 @@ import json, os, sys
 d = json.load(open(sys.argv[1])); d["install_templates"] = {"templates/commit-template.txt": os.environ["BAD"]}
 json.dump(d, open(sys.argv[1], "w"))
 PY
-    commit_tag "$M" bad; git -C "$M" tag -f v2.1.0 > /dev/null 2>&1
+    commit_tag "$M" bad; git -C "$M" tag -f v2.2.0 > /dev/null 2>&1
     P="$T/proj"; mkdir -p "$P/sub"; git init -q "$P"
     (cd "$P/sub" && bash "$ADE" init) > "$T/out" 2>&1; assert_eq "$?" 1 "refused: [$bad]"
     [ ! -e "$T/x" ] && [ ! -e "$P/x" ] || fail "nothing written for [$bad]"

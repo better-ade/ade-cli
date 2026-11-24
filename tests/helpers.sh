@@ -32,7 +32,7 @@ make_hub() {
   done
 }
 commit_tag() { git -C "$1" add -A && git -C "$1" commit -qm "$2" && { [ -z "${3:-}" ] || git -C "$1" tag "$3"; }; }
-# a local ade-method fixture: tagged v2.1.0, then an untagged later commit the pin must not pick up
+# a local ade-method fixture: tagged v2.2.0 (the default pin), then an untagged later commit the pin must not pick up
 make_method_repo() {
   M="$T/method"; mkdir -p "$M/agents" "$M/bmad/custom" "$M/templates/context/decisions"; git init -q "$M"
   cat > "$M/ade.json" <<'JSON'
@@ -46,7 +46,7 @@ JSON
   echo "[build]" > "$M/bmad/custom/bmad-build.toml"
   echo "context" > "$M/templates/context/README.md"; echo "adrs" > "$M/templates/context/decisions/README.md"
   echo "standards" > "$M/templates/standards.md"
-  commit_tag "$M" v2 v2.1.0
+  commit_tag "$M" v2 v2.2.0
   echo "rules after v2" > "$M/rules.md"; commit_tag "$M" later
   export ADE_METHOD_REPO="$M"
 }
