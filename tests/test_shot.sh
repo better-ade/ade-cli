@@ -128,6 +128,13 @@ url_shot() {
   for a in --headless --remote-debugging-pipe about:blank; do grep -qxF -- "$a" "$T/log/chrome.argv" || fail "Chromium runs with $a"; done
   grep -q -- "^--user-data-dir=$T/tmp/ade\." "$T/log/chrome.argv" || fail "a throwaway profile, in ade's temp folder"
   grep -q 'example.test' "$T/log/chrome.argv" && fail "the address is never an argument of the browser"
+  # story A25: on macOS the shot never waits on the login Keychain; elsewhere the arguments are unchanged. ade asks
+  # python's sys.platform (python3 -I, so a test cannot fake it): this check follows the host, and CI runs both
+  if [ "$(python3 -I -c 'import sys; print(sys.platform)')" = darwin ]; then
+    for a in --use-mock-keychain --password-store=basic; do grep -qxF -- "$a" "$T/log/chrome.argv" || fail "macOS: Chromium runs with $a"; done
+  else
+    grep -qE -- '^(--use-mock-keychain|--password-store=basic)$' "$T/log/chrome.argv" && fail "not macOS: no Keychain flags"
+  fi
   assert_eq "$(cdp Page.navigate)" '{"url": "https://example.test/pay?step=2"}' "it opens the address"
   [ -z "$(ls "$T/tmp")" ] || fail "the temp folder is removed"
   # the default name is the host; --width and --full-page

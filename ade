@@ -5638,6 +5638,9 @@ class Chrome:
             try: ns = os.geteuid() != 0 and subprocess.call(["unshare", "-U", "true"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
             except OSError: ns = False
             if not ns: args.append("--no-sandbox")
+        # on macOS the page load would otherwise ask the login Keychain for a storage key and wait where it is locked
+        # (a CI runner, a session over SSH); the throwaway profile holds nothing the Keychain guards (as Playwright does)
+        if sys.platform == "darwin": args += ["--use-mock-keychain", "--password-store=basic"]
         args.append("about:blank")
         r_in, w_in = os.pipe(); r_out, w_out = os.pipe(); import fcntl
         keep = []   # whatever sits on fd 3 and 4 here is moved aside while Chromium is started, then put back
