@@ -132,9 +132,15 @@ while time.time() < deadline:
     if b"[y/N]" in buf and "y" not in sent: os.write(fd, b"y\n"); sent.append("y")
     if b"Paste the glm key" in buf and "c" not in sent: time.sleep(0.3); os.write(fd, b"\x03"); sent.append("c"); pump(0.5)
     if "c" in sent:
-        try: os.write(fd, b"VISIBLE-GLM-KEY\n")
-        except OSError: pass
-        pump(0.5); break
+        # ade stops on Ctrl-C and echo is rightly back on until it has gone, so wait for the stop (or EOF), however
+        # slow ade is (traced); only when it has not stopped (the bug: a handled INT) type a key, which is then echoed or stored
+        end = time.time() + 5; alive = True
+        while alive and b"stopped (Ctrl-C)" not in buf and time.time() < end: alive = pump(0.2)
+        if alive and b"stopped (Ctrl-C)" not in buf:
+            try: os.write(fd, b"VISIBLE-GLM-KEY\n")
+            except OSError: pass
+            pump(0.5)
+        break
 open(outp, "wb").write(buf)
 try: os.write(fd, b"\x04\x04")
 except OSError: pass
@@ -142,6 +148,7 @@ _, st = os.waitpid(pid, 0); sys.exit(os.WEXITSTATUS(st) if os.WIFEXITED(st) else
 PY
   rc=$?; assert_eq "$rc" 130 "Ctrl-C: exit 130"
   ! grep -q VISIBLE "$T/store" || fail "nothing typed after Ctrl-C is stored"
+  assert_contains "$T/pty.out" "stopped (Ctrl-C)" "Ctrl-C: ade says it stopped"
   assert_not_contains "$T/pty.out" "VISIBLE-GLM-KEY" "nor shown"
 }
 
