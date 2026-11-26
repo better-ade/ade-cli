@@ -28,6 +28,10 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   provider only.
 - `bin/keys set <tool>` reads the value on stdin (tools `anthropic`, `deepseek`, `glm`, `muse`, `gemini`, `telegram`);
   `bin/keys` (no arguments) prints `<tool> stored` lines for stored keys and never a value.
+  `ade keys` (A26) reads the same list: a tool of `anthropic deepseek glm muse gemini` with no `<tool> stored` line is
+  missing, and is offered at a terminal through `bin/keys set <tool>` (value on stdin). Tool names come from ade's
+  list, never from the hub's output; `ade keys <args>` passes every other argument through unchanged.
+  The list must be on stdout: a tool listed only on stderr counts as missing and is offered again.
 - `bin/agent --live-test <provider> --dir <throwaway folder>`: the task (one line) on stdin, run from that folder through
   the path a real focus agent uses; exit 0 with a line that is exactly `READY` (spaces and CR ignored) = ready; else the last output line,
   with key-shaped strings and Telegram bot tokens hidden, is the reason. It runs with provider key and backend
