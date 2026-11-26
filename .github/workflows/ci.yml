@@ -14,7 +14,9 @@ jobs:
       runs-on: ${{ matrix.os }}
       setup: |
         mkdir -p "$RUNNER_TEMP/sysbash" && ln -sf /bin/bash "$RUNNER_TEMP/sysbash/bash" && echo "$RUNNER_TEMP/sysbash" >> "$GITHUB_PATH"
-        if [ "$(uname)" = Linux ] && ! command -v tmux > /dev/null; then sudo apt-get install -y tmux; fi
+        # the real tools the suite would otherwise skip (story C1): tmux for the real-tmux tests, poppler for pdf_real_tools
+        if [ "$(uname)" = Linux ]; then sudo apt-get update -qq && sudo apt-get install -y -qq tmux poppler-utils > /dev/null; fi
+        if [ "$(uname)" = Darwin ]; then brew install tmux poppler > /dev/null; fi
       command: "bash tests/run.sh"
   # layer 2: shellcheck, pinned
   lint:
@@ -26,7 +28,7 @@ jobs:
           curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz | tar xJ
           sudo install shellcheck-v0.10.0/shellcheck /usr/local/bin/shellcheck
           bash tests/lint.sh
-  # layers 4-7 on a fresh ubuntu:24.04 container: clean machine, upgrade, interactive, ade ui snapshots
+  # layers 4-7 on a fresh ubuntu:24.04 container: clean machine, hub commands on a real hub, upgrade, interactive, ade ui snapshots
   e2e-linux:
     runs-on: ubuntu-latest
     container: ubuntu:24.04
@@ -37,6 +39,7 @@ jobs:
         with: { fetch-depth: 0 }
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: bash tests/e2e/clean.sh
+      - run: bash tests/e2e/hub_commands.sh
       - run: bash tests/e2e/upgrade.sh
       - run: bash tests/e2e/import.sh
       - run: bash tests/e2e/interactive.sh
@@ -44,7 +47,7 @@ jobs:
       - if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with: { name: ui-captures, path: ui-captures, if-no-files-found: ignore }
-  # layers 4-6 on a fresh macOS runner with /bin/bash 3.2
+  # layers 4-6 on a fresh macOS runner with /bin/bash 3.2 (hub commands on a real hub too)
   e2e-macos:
     runs-on: macos-latest
     steps:
@@ -52,6 +55,7 @@ jobs:
         with: { fetch-depth: 0 }
       - run: brew install tmux > /dev/null
       - run: /bin/bash tests/e2e/clean.sh
+      - run: /bin/bash tests/e2e/hub_commands.sh
       - run: /bin/bash tests/e2e/upgrade.sh
       - run: /bin/bash tests/e2e/import.sh
       - run: /bin/bash tests/e2e/interactive.sh
