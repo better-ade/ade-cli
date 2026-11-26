@@ -5476,7 +5476,7 @@ HELP
 # screen), caption, chromium (where it is), save. Run with -I; python3's standard library only.
 shot_py() {
   local src; IFS= read -r -d '' src <<'PY' || true
-import base64, datetime, fnmatch, glob, html, json, math, os, re, select, shutil, signal, struct, subprocess, sys, time, urllib.parse, zlib
+import base64, datetime, fnmatch, glob, html, json, math, os, re, select, shutil, signal, struct, subprocess, sys, tempfile, time, urllib.parse, zlib
 op, A = sys.argv[1], sys.argv[2:]
 def die(code, msg):
     sys.stderr.write("ade: %s\n" % msg); sys.exit(code)
@@ -5622,25 +5622,45 @@ NO_CHROMIUM = ("Playwright's Chromium is not installed, so there is no browser t
                "npx -y @playwright/mcp install-browser chromium (on a server, the hub's bin/server install does it)")
 
 class Timeout(Exception): pass
+class Closed(Timeout): pass   # Chromium closed its end of the pipe
+OS = os.environ.get("ADE_SHOT_OS") or {"darwin": "Darwin"}.get(sys.platform, "Linux" if sys.platform.startswith("linux") else sys.platform)
+CHROME_LOG = os.path.join(os.path.expanduser("~"), ".local", "share", "ade", "chromium.log")   # what Chromium wrote to stderr during the last shot
+def chrome_err():
+    """the file Chromium's stderr goes to (only you can read it), else /dev/null"""
+    try:
+        os.makedirs(os.path.dirname(CHROME_LOG), 0o700, exist_ok=True)
+        return os.open(CHROME_LOG, os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+    except OSError: return subprocess.DEVNULL
+def chrome_said(n=3):
+    """the last lines Chromium wrote to stderr, keys hidden, or '' """
+    try:
+        with open(CHROME_LOG, "rb") as f: f.seek(0, 2); f.seek(max(0, f.tell() - 65536)); raw = f.read()
+    except OSError: return ""
+    lines = [shown(hide(l)[0], 200) for l in raw.decode("utf-8", "replace").splitlines() if l.strip()][-n:]
+    return " | ".join(lines)
 class Chrome:
     """one headless Chromium on a DevTools pipe (--remote-debugging-pipe: fd 3 in, fd 4 out, JSON messages ending in NUL).
     No port is opened. Every request the page makes is held (Fetch) and let go only when allowed() says so."""
-    def __init__(self, exe, tmp, width, height, allowed, deadline):
+    def __init__(self, exe, tmp, width, height, allowed, deadline, sandbox=True):
         self.allowed = allowed; self.deadline = deadline; self.n = 0; self.buf = bytearray(); self.loaded = False
-        self.status = None; self.blocked = {}; self.session = None
-        profile = os.path.join(tmp, "profile"); os.mkdir(profile, 0o700)
+        self.status = None; self.blocked = {}; self.session = None; self.answered = False
+        profile = tempfile.mkdtemp(prefix="profile.", dir=tmp)   # a fresh one for each start
         args = [exe, "--headless", "--remote-debugging-pipe", "--user-data-dir=" + profile, "--no-first-run", "--no-default-browser-check",
                 "--disable-gpu", "--hide-scrollbars", "--mute-audio", "--disable-extensions", "--disable-background-networking",
                 "--disable-sync", "--disable-component-update", "--window-size=%d,%d" % (width, height)]
         # its own sandbox stays on where this computer can make a user namespace; where it cannot (a container), or for
         # root, Chromium runs only with --no-sandbox (the choice the ADE Computer's chromium wrapper makes)
-        if sys.platform.startswith("linux"):
-            try: ns = os.geteuid() != 0 and subprocess.call(["unshare", "-U", "true"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
+        # (story A24: on Ubuntu 23.10+ AppArmor lets unshare succeed and the sandbox still fail; capture() then starts
+        # Chromium again with sandbox=False)
+        self.sandbox = False
+        if OS == "Linux":
+            try: ns = sandbox and os.geteuid() != 0 and subprocess.call(["unshare", "-U", "true"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) == 0
             except OSError: ns = False
-            if not ns: args.append("--no-sandbox")
+            if ns: self.sandbox = True
+            else: args.append("--no-sandbox")
         # on macOS the page load would otherwise ask the login Keychain for a storage key and wait where it is locked
         # (a CI runner, a session over SSH); the throwaway profile holds nothing the Keychain guards (as Playwright does)
-        if sys.platform == "darwin": args += ["--use-mock-keychain", "--password-store=basic"]
+        if OS == "Darwin": args += ["--use-mock-keychain", "--password-store=basic"]
         args.append("about:blank")
         r_in, w_in = os.pipe(); r_out, w_out = os.pipe(); import fcntl
         keep = []   # whatever sits on fd 3 and 4 here is moved aside while Chromium is started, then put back
@@ -5651,16 +5671,20 @@ class Chrome:
             try: keep.append((fd, fcntl.fcntl(fd, fcntl.F_DUPFD_CLOEXEC, 10)))
             except OSError: pass
         os.dup2(r_in, 3, inheritable=True); os.dup2(w_out, 4, inheritable=True)
+        err = chrome_err()
         try:
-            self.p = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=(3, 4), start_new_session=True)
+            self.p = subprocess.Popen(args, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=err, pass_fds=(3, 4), start_new_session=True)
         finally:
             os.close(3); os.close(4); os.close(r_in); os.close(w_out)
+            if err != subprocess.DEVNULL: os.close(err)
             for fd, saved in keep: os.dup2(saved, fd); os.close(saved)
     def send(self, method, params=None):
         self.n += 1; m = {"id": self.n, "method": method, "params": params or {}}
         if self.session and not method.startswith(("Target.", "Browser.")): m["sessionId"] = self.session
         data = json.dumps(m).encode("utf-8") + b"\0"
-        while data: data = data[os.write(self.w, data):]
+        try:
+            while data: data = data[os.write(self.w, data):]
+        except BrokenPipeError: raise Closed("the browser closed before it answered")   # it exited before it read a word
         return self.n
     def read(self, until):
         """the next message, or None once `until` has passed"""
@@ -5673,8 +5697,8 @@ class Chrome:
             left = until - time.time()
             if left <= 0 or not select.select([self.r], [], [], left)[0]: return None
             b = os.read(self.r, 1 << 20)
-            if not b: raise Timeout("the browser closed before it answered")
-            self.buf += b
+            if not b: raise Closed("the browser closed before it answered")
+            self.buf += b; self.answered = True
             if len(self.buf) > 256 << 20: raise Timeout("the browser sent more than a shot can be")
     def event(self, m):
         me = m.get("method"); p = m.get("params") or {}
@@ -5741,10 +5765,17 @@ def capture(url, tmp, width, full, file_root, element=None):
         return KEY if keyfile(path, root) and not element else None
     def bye(n, _): raise KeyboardInterrupt
     for s in (signal.SIGTERM, signal.SIGHUP): signal.signal(s, bye)
-    c = None; notes = []
+    c = None; notes = []; deadline = time.time() + total
     try:
-        c = Chrome(exe, tmp, width, 800, allowed, time.time() + total)
-        c.session = None; t = c.call("Target.createTarget", {"url": "about:blank"}).get("targetId")
+        try: os.unlink(CHROME_LOG)   # it holds what this shot's starts wrote, nothing older
+        except OSError: pass
+        c = Chrome(exe, tmp, width, 800, allowed, deadline)
+        try: t = c.call("Target.createTarget", {"url": "about:blank"}).get("targetId")
+        except Closed:
+            # it exited before it said a word, with its sandbox on: once more without it (story A24)
+            if c.answered or not c.sandbox: raise
+            c.close(); c = None; c = Chrome(exe, tmp, width, 800, allowed, deadline, sandbox=False)
+            t = c.call("Target.createTarget", {"url": "about:blank"}).get("targetId")
         c.session = c.call("Target.attachToTarget", {"targetId": t, "flatten": True}).get("sessionId")
         if not c.session: raise Timeout("the browser opened no page")
         try: c.call("Browser.setDownloadBehavior", {"behavior": "deny"})   # a page never leaves a file behind
@@ -5775,6 +5806,9 @@ def capture(url, tmp, width, full, file_root, element=None):
         if c.status is not None and url.startswith("http"): notes.insert(0, "http status: %d" % c.status)
         if c.blocked: notes.append("blocked requests: %d (%s)" % (sum(c.blocked.values()), "; ".join("%s: %d" % (k, c.blocked[k]) for k in (OUT, KEY, META, OTHER) if k in c.blocked)))
         return data, notes
+    except Closed as e:
+        said = chrome_said()
+        die(1, "%s%s; nothing saved" % (e, "; it said: %s (all of it: %s)" % (said, CHROME_LOG) if said else ""))
     except Timeout as e: die(1, "%s; nothing saved" % e)
     except OSError as e: die(1, "the browser stopped before the shot was taken (%s); nothing saved" % (e.strerror or e.__class__.__name__))
     except KeyboardInterrupt: die(130, "stopped; nothing saved")
@@ -5961,7 +5995,7 @@ if op == "save":
     print(os.path.join(folder, stem + ".png")); sys.exit(0)
 die(2, "unknown shot step")
 PY
-  python3 -I -c "$src" "$@"
+  ADE_SHOT_OS="$(uname -s 2> /dev/null)" python3 -I -c "$src" "$@"   # the system as uname names it (Linux, Darwin), always set here
 }
 # shot_screen_gate <yes-screen 0|1> <project root>: who may capture the whole screen. A person at a terminal, after a
 # yes typed there (the flag answers nothing). An agent session: only with --yes-screen and only where its settings put
