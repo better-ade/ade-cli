@@ -1,6 +1,16 @@
 # Changelog
 
 ## Unreleased
+- `ade web` is a live dashboard of the agents (M1): a terminal UI in the browser, in `ade ui`'s colours (dark first,
+  light from the same tokens), with tmux-like panes (status bar, agents, detail, events, keys), keyboard first
+  (`j`/`k`, Enter, Tab, `/`, `e`, `?`, `q`/Esc), stacked on a phone, no animation under reduced motion, and one inline
+  font (JetBrains Mono, SIL OFL 1.1): no request leaves the page. Each agent's state (busy, idle, ready, quiet,
+  blocked), `STATE.md` line, last check-in and time in that state; alerts for a quiet agent, one likely waiting at a
+  prompt or not started, an alerting monitor, and unread notes to main; the last sync and the inbox count. New:
+  `/api/events?since=<cursor>` (only what is new), `ade web --stop`, `--no-open`; by default it opens your browser
+  without putting the token on a command line (never over SSH). Requests naming another site (Origin) are refused; the API wants the link's token in a header
+  as well as the cookie (a cookie is not kept to one port). GitLab tokens, Cookie headers and URL-encoded secrets are
+  hidden too.
 - `ade keys` sets the missing keys for you (A26): the hub's list as before, then, at a terminal and when an AI tool
   key is missing (deepseek, glm, muse, gemini; the optional Anthropic key is never asked for: `ade keys set anthropic`), one question "Set the missing keys now? [y/N]"; yes asks
   for each at ade's hidden prompt (empty skips; a failed store says so, without the value, and moves on, exit 1)

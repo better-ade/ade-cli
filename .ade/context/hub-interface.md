@@ -412,24 +412,46 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `export PATH="$HOME/.bun/bin:$PATH"   # added by ade: bun` is appended to `~/.zshrc` (zsh), `~/.bashrc` (bash) or
   `~/.profile` (any other `$SHELL`), said first; never when that file already names `.bun/bin` or `BUN_INSTALL`.
 
-## `ade web` (A19)
+## `ade web` (A19, M1)
 - **From the hub (read only):** `bin/sessions` with no argument (its nine columns `NAME FOLDER PID PARENT STARTED
   ROLE STATUS LAST ENGINE`, one row per line, split on blanks; a row that is not nine fields is left out);
   `<hub>/journal/<UTC date>.md`; `<hub>/<folder>/STATE.md` for a row's FOLDER when it is `projects/<name>` or
   `ops/<name>`; `<state>/logs/chat.log`; `<state>/events.jsonl` (fields `time from to kind text`, `.ade/context/events.md`
-  in the hub). `<state>` is `${AGENT_STATE:-~/.agent-hub/<HUB_NAME>}`. Nothing else is opened and no other command runs.
+  in the hub). `<state>` is `${AGENT_STATE:-~/.agent-hub/<HUB_NAME>}`. M1 adds, all read only: `bin/inbox --count main` (a count
+  on stdout, exit 0; missing or failing: no count) at most every 2 s; `<state>/monitor-state/<key>.status` (last line
+  shown) and `<key>.alert` (present while alerting); `<state>/logs/sync.log` (`<ISO time> <text>`, a line naming
+  fail/refused/error/conflict is a failed sync); an event's `checkin: true` (a check-in); `## HH:MM UTC · <folder>`
+  journal headings (the detail's journal entries). Each is optional. Nothing else is opened and no other command runs.
 - **Redaction:** `ade` carries a copy of the hub's `bin/agent.py` `ESCAPES` and `HIDE` (what `bin/lib.sh redact` and
   `bin/chat logs` apply) and runs it first, then its own additions. **Needed from the hub:** a change to those two
   must reach `ade`'s copy (`web_py`). `ade` cuts a line to 4096 characters before the rule runs: its
   `[A-Za-z0-9]{16,}\.[A-Za-z0-9_-]{8,}` is quadratic on one long run (250,000 characters: over a minute), and
   `bin/chat logs` and `redact` run it on the whole text.
-- **HTTP (GET only, else 405):** `/?k=<token>` or `/` with the cookie: the page; `/api/agents`; `/api/log?agent=<name
-  from the list>`; `/api/journal`; `/api/chat`. JSON, every string hidden. 403 without the cookie `ade_web_<port>` or
-  with a Host header other than the served address; 404 for anything else.
+- **HTTP (GET only, else 405):** `/?k=<token>` or `/` with the cookie: the page; `/api/agents`; `/api/events?since=
+  <cursor>`; `/api/log?agent=<name from the list>`; `/api/journal`; `/api/chat`. JSON, every string hidden, `<` sent
+  as `\u003c`. 403 without the cookie `ade_web_<port>` (HttpOnly, SameSite=Strict), with a Host header other than the
+  served address (DNS rebinding), with an `Origin` other than the page's, or (an API) with `Sec-Fetch-Site` other than
+  same-origin, or (an API) without the header `X-Ade-Key: <token>` (the page keeps the link's token in
+  sessionStorage: a cookie is not kept to one port); 404 for anything else. CSP `default-src 'none'`, scripts and styles by nonce, `font-src data:`,
+  `connect-src 'self'`.
+- **`/api/agents` (M1):** `hub`, `time`, `now`, `note`, `agents` (main first: `name folder started role status last
+  engine`, plus `state` busy|idle|ready|starting|quiet|blocked|unknown, `since` epoch, `line` the first `STATE.md`
+  line, `checkin` the last check-in event or null, `orchestrator`), `counts` per state, `alerts` (`kind`
+  quiet|prompt|monitor|unread, `agent`, `text`), `sync` (the last sync.log line: `time text ok`), `monitor` (`checks
+  alerting time`), `unread` (a number or null). A blocked event newer than a row's LAST makes it blocked; a quiet event
+  newer than that and every other event from the folder makes it quiet; busy with nothing new for 15 min, or listed
+  with no status for 3 min, is a prompt alert.
+- **`/api/events?since=<inode>-<offset>`:** `events` (`time from to kind text checkin`, at most 200 and 256 KB),
+  `cursor`, `reset` (true: no cursor, a bad one, or the log rotated or cut: the last 200), `syncs` (the last 5).
 - **`~/.config/ade/web`** (0600): line 1 the server's pid, line 2 the address with its token; there only while a
   server runs. `ade web --print-link` prints line 2 and exits 0, else prints nothing and exits 1: what the hub's
   Telegram `/status` may call. One `ade web` per user at a time.
-- **Environment:** `ADE_WEB_PORT` (the default port, 8765). Tests only: `ADE_WEB_TEST_TAILNET_LOOPBACK=1` (a loopback
+- **`ade web --stop`:** sends TERM to line 1's pid only when that process is `ade web`'s own server for this link
+  file; nothing running exits 0. **Opening (local, not `--no-open`):** `open` (macOS) or `xdg-open` (Linux with
+  `DISPLAY` or `WAYLAND_DISPLAY`), never under SSH, given a 0600 file in a new 0700 temp folder that redirects to the
+  link; the file goes on the link's first use, after 60 s, or at stop.
+- **Environment:** `ADE_WEB_PORT` (the default port, 8765); `ADE_THEME_<key>` (set by `ade` from
+  `~/.config/ade/theme`: `#rrggbb` colours, anything else ignored). Tests only: `ADE_WEB_TEST_TAILNET_LOOPBACK=1` (a loopback
   address may stand in for the Tailscale one).
 - **Tailscale (`--tailnet`):** `tailscale status --json` (`BackendState` must be `Running`; `Self.DNSName`) and
   `tailscale ip -4` (one address in 100.64.0.0/10). Only asked, never installed, started or signed in.

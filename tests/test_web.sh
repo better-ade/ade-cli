@@ -4,6 +4,7 @@
 # fakes and the system's own commands ($T/sys, without tailscale), so a host's Tailscale never answers. Every
 # secret-shaped string is built here at run time from parts; none is written in this file.
 . "$(dirname "$0")/helpers.sh"
+REAL_HOME="$HOME"   # before fresh: the real ~/.config/ade must not change (web_no_hub_writes)
 
 farm() {   # $T/sys: the system's commands without tailscale; this test's own python3
   python3 - "$T/sys" "$(command -v python3)" <<'PY'
@@ -111,11 +112,15 @@ with open(sys.argv[1], "w") as f:
 PY
   export ADE_HUB="$H" AGENT_STATE="$S"
   WPATH="$F:$T/sys"; SRV=""
+  # the browser openers: each logs its arguments and keeps a copy of the file it was given (never a real browser)
+  local o; for o in open xdg-open; do
+    printf '#!/bin/bash\necho "%s $*" >> "$CALLS"; cp "$1" "%s/opened.html" 2> /dev/null; exit 0\n' "$o" "$T" > "$F/$o"; chmod +x "$F/$o"; done
+  export DISPLAY=:99; unset SSH_CONNECTION SSH_TTY WAYLAND_DISPLAY; mkdir -p "$T/tmp"
 }
 # start [args]: ade web in the background; URL, PORT and K from its first line
 start() {
   : > "$T/web.out"; : > "$T/web.err"
-  PATH="$WPATH" "$ADE" web "$@" > "$T/web.out" 2> "$T/web.err" &
+  PATH="$WPATH" TMPDIR="$T/tmp" "$ADE" web --no-open "$@" > "$T/web.out" 2> "$T/web.err" &
   SRV=$!; local i=0
   until grep -q '^ade web: http://' "$T/web.out"; do
     kill -0 "$SRV" 2> /dev/null || { cat "$T/web.err" >&2; fail "ade web $* ended before it printed its address"; }
@@ -138,7 +143,7 @@ get() {
 # login: the first visit; CK is the cookie it set. api: a request with that cookie (sent as a header: curl's own cookie
 # jar would keep it from a request whose Host header names another host, which is the server's decision to make here)
 login() { get "/?k=$K"; assert_eq "$CODE" 200 "the link"; CK="$(tr -d '\r' < "$T/head" | sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\);.*/\1/p' | head -1)"; [ -n "$CK" ] || fail "the first visit set no cookie"; }
-api() { local p="$1"; shift; get "$p" -H "Cookie: $CK" "$@"; }
+api() { local p="$1"; shift; get "$p" -H "Cookie: $CK" -H "X-Ade-Key: $K" "$@"; }
 # flat: every string of the JSON body, one per line, in $T/text (the body itself spells < as \u003c)
 flat() { python3 -c 'import json, sys
 def walk(v):
@@ -175,7 +180,7 @@ t_local() {
     # shellcheck disable=SC2086  # the arguments of one case, split on purpose
     PATH="$WPATH" "$ADE" web $a > "$T/out" 2> "$T/err"; assert_eq "$?" 2 "ade web $a is a usage error"
     assert_contains "$T/err" "usage: ade web" "ade web $a prints the usage"; done
-  PATH="$WPATH" "$ADE" help > "$T/out"; assert_contains "$T/out" "ade web [--port N] [--tailnet] | --print-link" "help lists ade web"
+  PATH="$WPATH" "$ADE" help > "$T/out"; assert_contains "$T/out" "ade web [--port N] [--tailnet] [--no-open] | --print-link | --stop" "help lists ade web"
 }
 
 t_token() {
@@ -186,8 +191,8 @@ t_token() {
   get "/?k="; assert_eq "$CODE" 403 "an empty token"
   get "/api/agents"; assert_eq "$CODE" 403 "the API without a cookie"; assert_not_contains "$T/body" "api" "403 carries no agent"
   get "/api/agents?k=$K"; assert_eq "$CODE" 403 "the link's token opens the page only, never the API"
-  get "/api/chat" -H "Cookie: ade_web_$PORT=wrong"; assert_eq "$CODE" 403 "a wrong cookie"
-  get "/api/chat" -H "Cookie: ade_web_$PORT=$K"; assert_eq "$CODE" 403 "the link's token is not the cookie"
+  get "/api/chat" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=wrong"; assert_eq "$CODE" 403 "a wrong cookie"
+  get "/api/chat" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=$K"; assert_eq "$CODE" 403 "the link's token is not the cookie"
   assert_not_contains "$T/body" "chat line one" "403 carries no log"
   login
   grep -i '^set-cookie:' "$T/head" > "$T/cookie" || fail "the first visit sets no cookie"
@@ -197,9 +202,9 @@ t_token() {
   assert_not_contains "$T/cookie" "$K" "the cookie is not the link's token"
   api "/"; assert_eq "$CODE" 200 "the page with the cookie alone"
   # several cookies of that name (another page on this host can plant one with a longer path): one right one is enough
-  get "/api/agents" -H "Cookie: ade_web_$PORT=planted; x=1; $CK"; assert_eq "$CODE" 200 "a planted cookie before the real one"
-  get "/api/agents" -H "Cookie: $CK; ade_web_$PORT=planted"; assert_eq "$CODE" 200 "a planted cookie after the real one"
-  get "/api/agents" -H "Cookie: ade_web_$PORT=planted; ade_web_$PORT=; ade_web_1=${CK#*=}"; assert_eq "$CODE" 403 "only wrong cookies"
+  get "/api/agents" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=planted; x=1; $CK"; assert_eq "$CODE" 200 "a planted cookie before the real one"
+  get "/api/agents" -H "X-Ade-Key: $K" -H "Cookie: $CK; ade_web_$PORT=planted"; assert_eq "$CODE" 200 "a planted cookie after the real one"
+  get "/api/agents" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=planted; ade_web_$PORT=; ade_web_1=${CK#*=}"; assert_eq "$CODE" 403 "only wrong cookies"
   api "/api/agents"; assert_eq "$CODE" 200 "the API with the cookie"
   assert_not_contains "$T/web.out" "GET " "no access log on stdout"; assert_not_contains "$T/web.err" "$K" "the token is never logged"
   stop
@@ -243,12 +248,12 @@ t_page() {
   grep -qi '^content-type: text/html; charset=utf-8' "$T/head" || fail "the page is not HTML"
   assert_contains "$T/body" '<meta name="viewport"' "the page fits a phone"
   # one document: no address but its own API, no script or style from elsewhere
-  if grep -Eqi 'https?://|//[a-z0-9.-]+\.[a-z]{2,}|<link|@import|src=|url\(' "$T/body"; then fail "the page names an outside address or file"; fi
-  local s; for s in Agents Journal Chat; do assert_contains "$T/body" "$s" "the page has a $s section"; done
+  if grep -Eqi 'https?://|//[a-z0-9.-]+\.[a-z]{2,}|<link|@import|src=' "$T/body"; then fail "the page names an outside address or file"; fi
+  local s; for s in agents detail events; do assert_contains "$T/body" "aria-label=\"$s\"" "the page has a $s pane"; done
   api "/api/agents"; grep -qi '^content-type: application/json' "$T/head" || fail "the API is not JSON"
-  assert_eq "$(json '[a["name"] for a in d["agents"]]')" "['api', 'infra', 'evil', 'link']" "the agents of bin/sessions"
-  assert_eq "$(json 'd["agents"][0]["status"] + " " + d["agents"][0]["folder"] + " " + d["agents"][0]["role"] + " " + d["agents"][0]["engine"]')" "busy projects/api builder claude" "an agent's state"
-  assert_eq "$(json 'd["agents"][1]["status"] + " " + d["agents"][1]["last"]')" "idle 2026-11-23T08:30:00Z" "the second agent"
+  assert_eq "$(json '[a["name"] for a in d["agents"]]')" "['main', 'api', 'infra', 'evil', 'link']" "the orchestrator, then the agents of bin/sessions"
+  assert_eq "$(json 'd["agents"][1]["status"] + " " + d["agents"][1]["folder"] + " " + d["agents"][1]["role"] + " " + d["agents"][1]["engine"]')" "busy projects/api builder claude" "an agent's state"
+  assert_eq "$(json 'd["agents"][2]["status"] + " " + d["agents"][2]["last"]')" "idle 2026-11-23T08:30:00Z" "the second agent"
   assert_eq "$(json 'd["hub"]')" acme "the hub's name"
   assert_not_contains "$T/body" 4242 "no process id is served"
   api "/api/log?agent=api"; assert_eq "$CODE" 200 "an agent's log"
@@ -266,7 +271,7 @@ t_page() {
   local n; n="$(grep -c . "$CALLS")"; sleep 2.2; api "/api/agents"; [ "$(grep -c . "$CALLS")" -gt "$n" ] || fail "bin/sessions was not run again"
   # a hub whose bin/sessions fails or prints rubbish: an empty list and a note, never a 500
   printf '#!/bin/bash\necho "sessions: broken"; echo "one two three"; exit 3\n' > "$H/bin/sessions"; sleep 2.2
-  api "/api/agents"; assert_eq "$CODE" 200 "a failing bin/sessions"; assert_eq "$(json 'd["agents"]')" "[]" "no agent"
+  api "/api/agents"; assert_eq "$CODE" 200 "a failing bin/sessions"; assert_eq "$(json '[a["name"] for a in d["agents"]]')" "['main']" "no agent but the orchestrator"
   assert_eq "$(json 'd["note"]')" "bin/sessions failed (exit 3)" "the note"
   stop
 }
@@ -295,8 +300,15 @@ t_redact() {
   api "/api/log?agent=infra"; flat
   assert_eq "$(json 'd["state"]')" "['tail before', '<hidden private key>', 'tail after', '<hidden private key>']" "a block cut at either end"
   for s in $SECRETS; do assert_not_contains "$T/text" "$s" "a block cut at either end shows a secret"; done
+  # GitLab tokens, Cookie headers, a URL-encoded secret (each built from parts)
+  local gl="glpat""-Ab3dEf6hIj9kLm2nOp5q" ck="sess""ion=Zq81mXv0Lw" ue="Ux7""Kp2Qz9"
+  { echo "gl before $gl after"; echo "ck before Cookie: $ck; theme=dark"; echo "ue before client_secret%3D$ue&x=1 after"; } > "$H/ops/infra/STATE.md"
+  api "/api/log?agent=infra"; flat
+  for s in "$gl" "$ck" "$ue"; do assert_not_contains "$T/text" "$s" "a GitLab token, cookie or URL-encoded secret"; done
+  assert_contains "$T/text" "gl before <hidden token> after" "a GitLab token"; assert_contains "$T/text" "ck before Cookie: <hidden>" "a Cookie header"
+  assert_contains "$T/text" "client_secret%3D<hidden>&x=1 after" "a URL-encoded secret"
   api "/api/log?agent=api"; flat; assert_contains "$T/text" "event before <hidden" "an event's secret is hidden, its words kept"
-  api "/api/agents"; assert_eq "$(json 'd["agents"][3]["role"]')" "<hidden key>" "a key in a bin/sessions column"
+  api "/api/agents"; assert_eq "$(json 'd["agents"][4]["role"]')" "<hidden key>" "a key in a bin/sessions column"
   # a key an escape sequence splits is one key once the sequence is gone (the hub's order)
   api "/api/chat"; flat; assert_contains "$T/text" "split <hidden key> end" "a split key"
   stop
@@ -425,7 +437,7 @@ t_tailnet() {
 
 # timed <limit s> <label> <path>: the request answers 200 within the limit
 timed() {
-  local s; s="$(curl -q -s --max-time 30 -o "$T/body" -w '%{http_code} %{time_total}' -H "Cookie: $CK" "$BASE$3")" || fail "$2: no answer"
+  local s; s="$(curl -q -s --max-time 30 -o "$T/body" -w '%{http_code} %{time_total}' -H "Cookie: $CK" -H "X-Ade-Key: $K" "$BASE$3")" || fail "$2: no answer"
   python3 -c 'import sys; code, took, limit = sys.argv[1], float(sys.argv[2]), float(sys.argv[3]); sys.exit(0 if code == "200" and took < limit else "%s s, HTTP %s (limit %s s)" % (took, code, limit))' "${s% *}" "${s#* }" "$1" || fail "$2"
 }
 t_long() {   # one very long line (the hub's <id>.<secret> rule is quadratic on it) must not hold the server
@@ -459,11 +471,11 @@ PY
   timed 1 "the same lines asked again (worked out once)" "/api/chat"
   # three of those at once, lines not seen before: another request is not kept waiting, and SIGTERM stops the server at once
   local asks=""
-  worst 2000; for p in 1 2 3; do curl -q -s --max-time 30 -o /dev/null -H "Cookie: $CK" "$BASE/api/chat" & asks="$asks $!"; done
+  worst 2000; for p in 1 2 3; do curl -q -s --max-time 30 -o /dev/null -H "Cookie: $CK" -H "X-Ade-Key: $K" "$BASE/api/chat" & asks="$asks $!"; done
   timed 3 "/api/agents while three long requests run" "/api/agents"
   # shellcheck disable=SC2086  # the pids of the three requests
   wait $asks; asks=""
-  worst 3000; for p in 1 2 3; do curl -q -s --max-time 30 -o /dev/null -H "Cookie: $CK" "$BASE/api/chat" & asks="$asks $!"; done
+  worst 3000; for p in 1 2 3; do curl -q -s --max-time 30 -o /dev/null -H "Cookie: $CK" -H "X-Ade-Key: $K" "$BASE/api/chat" & asks="$asks $!"; done
   local t0; t0="$(python3 -c 'import time; print(time.time())')"; kill "$SRV"; wait "$SRV"; SRV=""
   python3 -c 'import sys, time; took = time.time() - float(sys.argv[1]); sys.exit(0 if took < 2 else "SIGTERM took %.1f s" % took)' "$t0" || fail "the server did not stop promptly under load"
   # shellcheck disable=SC2086
@@ -492,33 +504,6 @@ t_link() {
   assert_contains "$T/web.out" "ade web: stopped" "says it stopped"
   # SIGHUP (the terminal closed): the same
   start; kill -HUP "$SRV"; wait "$SRV"; SRV=""; [ ! -e "$L" ] || fail "the link file is left after SIGHUP"
-  # Ctrl-C at a terminal: the same, exit 0
-  python3 - "$ADE" "$WPATH" "$L" <<'PY' || fail "Ctrl-C did not stop ade web cleanly"
-import os, pty, select, signal, sys, time
-pid, fd = pty.fork()
-if pid == 0:
-    signal.signal(signal.SIGINT, signal.SIG_DFL)   # a suite started in the background hands down an ignored SIGINT; a terminal does not
-    os.environ["PATH"] = sys.argv[2]; os.execv(sys.argv[1], [sys.argv[1], "web"])
-buf = b""; end = time.time() + 15
-while b"Ctrl-C" not in buf and time.time() < end:
-    if select.select([fd], [], [], 0.2)[0]:
-        try: buf += os.read(fd, 4096)
-        except OSError: break
-assert b"http://127.0.0.1:" in buf, buf
-assert os.path.exists(sys.argv[3]), "no link file while running"
-os.write(fd, b"\x03"); end = time.time() + 10; st = None
-while time.time() < end:
-    got, st = os.waitpid(pid, os.WNOHANG)
-    if got: break
-    if select.select([fd], [], [], 0.1)[0]:
-        try: buf += os.read(fd, 4096)
-        except OSError: pass
-else:
-    os.kill(pid, 9); raise SystemExit("still running 10 s after Ctrl-C")
-assert os.WIFEXITED(st) and os.WEXITSTATUS(st) == 0, st
-assert not os.path.exists(sys.argv[3]), "the link file is left after Ctrl-C"
-assert b"Traceback" not in buf, buf
-PY
   # a link file left by a server that was killed: not a link, removed; a new server starts over it
   ( : ) & wait $!; mkdir -p "$HOME/.config/ade"; printf '%s\nhttp://127.0.0.1:1/?k=stale\n' "$!" > "$L"   # the pid of a process that has ended
   PATH="$WPATH" "$ADE" web --print-link > "$T/out"; assert_eq "$?" 1 "a stale link file"; [ ! -s "$T/out" ] || fail "a stale link was printed"
@@ -531,6 +516,463 @@ PY
   ( cd / && unset ADE_HUB && PATH="$WPATH" "$ADE" web > "$T/out" 2> "$T/err"; assert_eq "$?" 2 "ade web with no hub" ) || exit 1
 }
 
+# ---- story M1: the live dashboard ----
+# acme: a realistic hub. Times are relative to now: api busy (checked in 4 min ago), web idle, docs ready, mobile busy
+# with nothing new for 40 min (waiting at a prompt), new listed 10 min ago and not started, infra blocked (a blocked
+# event newer than its LAST), billing quiet (a quiet event newer than everything else it sent); a monitor alerting on
+# api, another fine; two unread notes to main (a fake bin/inbox); a sync log; journal entries per folder
+acme() {
+  fixture; rm -rf "$H/journal" "$H/projects/link" "$S/events.jsonl" "$S/logs/chat.log"
+  mkdir -p "$H/journal" "$H/projects/web" "$H/projects/mobile" "$H/projects/docs" "$H/projects/new" "$H/projects/billing" "$S/monitor-state"
+  python3 - "$H" "$S" "$S_SKD" <<'PY'
+import json, os, sys, time
+H, S, key = sys.argv[1:4]; now = time.time()
+def at(m): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - m * 60))
+rows = [("api", "projects/api", at(95), "builder", "busy", at(2), "claude"),
+        ("web", "projects/web", at(300), "reviewer", "idle", at(12), "claude"),
+        ("docs", "projects/docs", at(50), "writer", "ready", at(6), "gemini"),
+        ("mobile", "projects/mobile", at(130), "builder", "busy", at(40), "codex"),
+        ("new", "projects/new", at(10), "-", "-", "-", "claude"),
+        ("infra", "ops/infra", at(200), "sysadmin", "idle", at(36), "claude"),
+        ("billing", "projects/billing", at(240), "builder", "idle", at(70), "claude")]
+with open(os.path.join(H, "bin", "sessions"), "w") as f:
+    f.write('#!/bin/bash\necho "sessions $*" >> "$CALLS"\n')
+    f.write("printf '%-10s %-18s %-6s %-6s %-21s %-9s %-6s %-21s %s\\n' NAME FOLDER PID PARENT STARTED ROLE STATUS LAST ENGINE\n")
+    for i, r in enumerate(rows):
+        f.write("printf '%%-10s %%-18s %%-6s %%-6s %%-21s %%-9s %%-6s %%-21s %%s\\n' %s %s %d - %s %s %s %s %s\n" % (r[0], r[1], 5100 + i, r[2], r[3], r[4], r[5], r[6]))
+with open(os.path.join(H, "bin", "inbox"), "w") as f:
+    f.write('#!/bin/bash\necho "inbox $*" >> "$CALLS"\necho 2\n')
+os.chmod(os.path.join(H, "bin", "inbox"), 0o755)
+states = {"": "# STATE\n- orchestrating M1 review; K3 gate running\n",
+          "projects/api": "# STATE\n## Now\n- rate limiter: tests green, wiring the middleware\n",
+          "projects/web": "# STATE\n- waiting for the API change before the checkout page\n",
+          "projects/docs": "# STATE\n- install guide rewritten; ready for review\n",
+          "projects/mobile": "# STATE\n- push notifications on Android, key %s in the env\n" % key,
+          "projects/billing": "# STATE\n- invoice export: retry on timeout\n",
+          "ops/infra": "# STATE\n- blocked: the DNS change needs the owner's account\n"}
+for d, t in states.items(): open(os.path.join(H, d, "STATE.md"), "w").write(t)
+ev = [(55, "projects/api", "main", "pushed", "rate-limiter pushed to origin", False),
+      (34, "ops/infra", "main", "blocked", "needs the owner's DNS account to continue", False),
+      (31, "main", "projects/web", "note", "API change lands today; checkout after", False),
+      (25, "projects/billing", "main", "idle", "invoice export: retry on timeout", False),
+      (20, "projects/docs", "main", "contract", "docs/context/api.md updated", False),
+      (14, "projects/api", "main", "note", "check-in: middleware half done, 3 tests left", True),
+      (9, "projects/billing", "main", "quiet", "no check-in for 2 rounds", False),
+      (7, "projects/web", "main", "ended", "2 commits; hub commit ok", False),
+      (4, "projects/api", "main", "note", "check-in: middleware wired, running the suite", True),
+      (3, "projects/docs", "main", "note", "a key %s pasted by mistake" % key, False),
+      (2, "projects/mobile", "main", "note", "<b>bold</b> & <script>x()</script>", False)]
+with open(os.path.join(S, "events.jsonl"), "w") as f:
+    for m, a, b, k, x, c in ev:
+        e = {"time": at(m), "from": a, "to": b, "kind": k, "text": x}
+        if c: e["checkin"] = True
+        f.write(json.dumps(e) + "\n")
+ms = os.path.join(S, "monitor-state")
+open(os.path.join(ms, "projects-api-monitors-d-uptime-sh.status"), "w").write("ALERT api returns 502 on /health\n")
+open(os.path.join(ms, "projects-api-monitors-d-uptime-sh.alert"), "w").write("")
+open(os.path.join(ms, "ops-infra-monitors-d-disk-sh.status"), "w").write("disk 41% used\n")
+with open(os.path.join(S, "logs", "sync.log"), "w") as f:
+    f.write("%s synced: 3 commits\n%s synced: nothing to do\n" % (at(45), at(15)))
+day = time.strftime("%Y-%m-%d", time.gmtime(now)); hm = lambda m: time.strftime("%H:%M", time.gmtime(now - m * 60))
+with open(os.path.join(H, "journal", day + ".md"), "w") as f:
+    f.write("# Journal %s\n\n## %s UTC · hub\n- M1 approved; builder started\n\n## %s UTC · projects/api\n- rate limiter: token bucket per key\n- tests: 14 of 17 green\n\n## %s UTC · projects/web\n- checkout waits on the API\n" % (day, hm(90), hm(30), hm(20)))
+PY
+  chmod +x "$H/bin/sessions"; : > "$CALLS"
+}
+# watch_open: the opener's call and the file it was given (the fake copies it to $T/opened.html)
+token_in_ps() { ps -ww -eo command 2> /dev/null | grep -F -- "$1" | grep -v -F -e "grep -F" > /dev/null; }
+
+web_loopback_only() {
+  acme; local p; p="$(free_port)"; ADE_WEB_PORT="$p" start
+  assert_eq "$ADDR:$PORT" "127.0.0.1:$p" "the free default port, on 127.0.0.1"
+  assert_eq "$(listeners "$PORT")" "127.0.0.1:$PORT" "listens on 127.0.0.1 only"
+  local ip; for ip in $(ifconfig 2> /dev/null | awk '$1 == "inet" && $2 !~ /^127\./ { print $2 }'); do refused "$ip" "$PORT" || fail "answers on $ip"; done
+  login
+  # DNS rebinding: a page on another name that resolves here names that name in Host; another page's Origin is refused too
+  local h; for h in "evil.example:$PORT" "127.0.0.1.nip.io:$PORT" "localhost.:$PORT"; do api "/api/agents" -H "Host: $h"; assert_eq "$CODE" 403 "Host $h"; done
+  for h in "http://evil.example" "null" "http://127.0.0.1:1" "https://127.0.0.1:$PORT" "http://localhost:$PORT.evil.example"; do
+    api "/api/agents" -H "Origin: $h"; assert_eq "$CODE" 403 "Origin $h"; assert_not_contains "$T/body" "projects/api" "Origin $h gets no data"; done
+  api "/api/events" -H "Origin: http://evil.example" -H "Origin: http://127.0.0.1:$PORT"; assert_eq "$CODE" 403 "two Origin headers"
+  for h in "http://127.0.0.1:$PORT" "http://localhost:$PORT"; do api "/api/agents" -H "Origin: $h"; assert_eq "$CODE" 200 "Origin $h, the page's own"; done
+  stop
+  for a in "--bind 0.0.0.0" "--host ::" "--listen 0.0.0.0"; do
+    # shellcheck disable=SC2086  # the arguments of one case, split on purpose
+    PATH="$WPATH" "$ADE" web $a > "$T/out" 2> "$T/err"; assert_eq "$?" 2 "a non-loopback bind ($a) is refused"; done
+}
+
+web_token_required() {
+  acme; snapshot > "$T/before"
+  # ade opens the page itself: the token is in a 0600 file the opener is given, never on a command line or the terminal
+  : > "$T/web.out"; PATH="$WPATH" TMPDIR="$T/tmp" "$ADE" web > "$T/web.out" 2> "$T/web.err" & SRV=$!
+  local i=0; until [ -s "$T/opened.html" ] && grep -q 'open in your browser\|is open in your browser' "$T/web.out"; do
+    kill -0 "$SRV" 2> /dev/null || { cat "$T/web.err" >&2; fail "ade web ended before it opened the page"; }
+    i=$((i + 1)); [ "$i" -lt 100 ] || { cat "$T/web.out" "$T/web.err" "$CALLS" >&2; ls -la "$T/tmp" >&2; fail "ade web opened nothing in 10 s"; }; sleep 0.1; done
+  assert_contains "$T/web.out" "read-only" "says it is read-only"; assert_contains "$T/web.out" "ade web --stop" "says how to stop"
+  if grep -q '?k=' "$T/web.out" "$T/web.err"; then fail "the link was printed though the page was opened"; fi
+  URL="$(PATH="$WPATH" "$ADE" web --print-link)"; K="${URL##*\?k=}"; BASE="${URL%%/\?k=*}"; PORT="${BASE##*:}"
+  [ "${#K}" -ge 32 ] || fail "a short token"
+  assert_contains "$T/opened.html" "$URL" "the opened file carries the link"; assert_contains "$T/opened.html" 'name="referrer" content="no-referrer"' "the link is not sent on as a referrer"
+  local line; line="$(grep -E '^(open|xdg-open) ' "$CALLS")"; assert_not_contains <(echo "$line") "$K" "the opener's argv has no token"
+  local f="${line#* }"; case "$f" in "$T/tmp/"*) ;; *) fail "the link file is not in TMPDIR: $f" ;; esac
+  assert_eq "$(python3 -c 'import os, sys; print(oct(os.stat(sys.argv[1]).st_mode & 0o777), oct(os.stat(os.path.dirname(sys.argv[1])).st_mode & 0o777))' "$f")" "0o600 0o700" "the link file is 0600 in a 0700 folder"
+  if token_in_ps "$K"; then fail "the token is in a process's command line"; fi
+  # nothing is read before the token: no hub command has run
+  if grep -q '^sessions\|^inbox' "$CALLS"; then fail "a hub command ran before any request"; fi
+  local p; for p in "/" "/api/agents" "/api/events" "/api/events?since=" "/api/log?agent=api" "/api/journal" "/api/chat" "/?k=" "/?k=${K%?}" "/api/agents?k=$K"; do
+    get "$p"; assert_eq "$CODE" 403 "$p without the cookie"; assert_not_contains "$T/body" "api" "$p: 403 carries no data"; done
+  get "/api/agents" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=$K"; assert_eq "$CODE" 403 "the token is not the cookie"
+  if grep -q '^sessions\|^inbox' "$CALLS"; then fail "a refused request ran a hub command"; fi
+  login; [ ! -e "$f" ] || fail "the link file is kept after the link was used"
+  api "/api/agents"; assert_eq "$CODE" 200 "the cookie and the token open the API"; api "/api/events"; assert_eq "$CODE" 200 "and the events"
+  # a cookie is not kept to one port (another 127.0.0.1 server the browser visits gets it): alone it opens nothing
+  get "/api/agents" -H "Cookie: $CK"; assert_eq "$CODE" 403 "the cookie without the token header"
+  get "/api/agents" -H "Cookie: $CK" -H "X-Ade-Key: ${K%?}x"; assert_eq "$CODE" 403 "a wrong token header"
+  get "/api/agents" -H "X-Ade-Key: $K"; assert_eq "$CODE" 403 "the token header without the cookie"
+  get "/" -H "Cookie: $CK"; assert_eq "$CODE" 200 "the page itself (static) with the cookie"; assert_not_contains "$T/body" "$K" "the page does not carry the token"
+  if grep -rqF -- "$K" "$T/web.out" "$T/web.err" "$HOME/.local/share/ade" 2> /dev/null; then fail "the token is in a log"; fi
+  stop; [ ! -e "$HOME/.config/ade/web" ] || fail "the link file is left"
+  # over SSH (or on Linux without a display) nothing is opened: the link is printed as before
+  : > "$CALLS"; SSH_CONNECTION="10.0.0.1 22 10.0.0.2 22" PATH="$WPATH" TMPDIR="$T/tmp" "$ADE" web > "$T/web.out" 2> "$T/web.err" & SRV=$!
+  i=0; until grep -q '^ade web: http://' "$T/web.out"; do i=$((i + 1)); [ "$i" -lt 100 ] || fail "over SSH no link was printed"; sleep 0.1; done
+  if grep -qE '^(open|xdg-open) ' "$CALLS"; then fail "a browser was opened over SSH"; fi
+  stop
+  # a link file never used goes when the server stops
+  rm -f "$T/opened.html"; PATH="$WPATH" TMPDIR="$T/tmp" "$ADE" web > "$T/web.out" 2> "$T/web.err" & SRV=$!
+  i=0; until [ -s "$T/opened.html" ] && grep -q '^open ' "$CALLS"; do i=$((i + 1)); [ "$i" -lt 100 ] || fail "nothing opened"; sleep 0.1; done
+  stop; [ -z "$(ls -A "$T/tmp")" ] || fail "a link file is left in TMPDIR after the stop: $(ls -A "$T/tmp")"
+  snapshot > "$T/after"; cmp -s "$T/before" "$T/after" || fail "the hub changed"
+}
+
+web_read_only() {
+  acme; snapshot > "$T/before"; start; login
+  local m p
+  for m in POST PUT DELETE PATCH OPTIONS CONNECT PROPFIND; do for p in "/api/agents" "/api/events?since=" "/api/log?agent=main"; do
+    api "$p" -X "$m" -d 'x=1'; assert_eq "$CODE" 405 "$m $p"; assert_not_contains "$T/body" "projects/api" "$m $p carries no data"; done; done
+  for p in "/" "/api/agents" "/api/events" "/api/events?since=0-0" "/api/log?agent=main" "/api/log?agent=api" "/api/log?agent=new"; do api "$p"; assert_eq "$CODE" 200 "GET $p"; done
+  # the page asks with GET only and never posts a form
+  api "/"; if grep -Eqi "method *: *['\"](post|put|delete|patch)|<form|sendBeacon|WebSocket|EventSource" "$T/body"; then fail "the page can send something other than a GET"; fi
+  stop; snapshot > "$T/after"
+  cmp -s "$T/before" "$T/after" || { diff "$T/before" "$T/after" >&2; fail "the hub or its state folder changed"; }
+  assert_eq "$(sort -u "$CALLS" | tr '\n' ';')" "inbox --count main;sessions ;" "the only hub commands are bin/sessions and bin/inbox --count main"
+}
+
+web_agents_json() {
+  acme; start; login; api "/api/agents"; assert_eq "$CODE" 200 "/api/agents"
+  assert_eq "$(json '[a["name"] for a in d["agents"]]')" "['main', 'api', 'web', 'docs', 'mobile', 'new', 'infra', 'billing']" "the orchestrator, then bin/sessions"
+  assert_eq "$(json '[a["state"] for a in d["agents"]]')" "['unknown', 'busy', 'idle', 'ready', 'busy', 'starting', 'blocked', 'quiet']" "each agent's state"
+  assert_eq "$(json '[a["orchestrator"] for a in d["agents"]][:2]')" "[True, False]" "main is the orchestrator"
+  assert_eq "$(json 'd["agents"][0]["line"]')" "orchestrating M1 review; K3 gate running" "main's STATE line"
+  assert_eq "$(json 'd["agents"][1]["line"]')" "rate limiter: tests green, wiring the middleware" "api's last STATE line"
+  assert_eq "$(json '" ".join([d["agents"][1][k] for k in ("folder", "role", "engine")])')" "projects/api builder claude" "api's folder, role, engine"
+  assert_eq "$(json 'd["now"] - d["agents"][1]["checkin"] in range(235, 300)')" True "api's check-in time (4 min ago)"
+  assert_eq "$(json '[a["name"] for a in d["agents"] if a["checkin"]]')" "['api']" "only api checked in"
+  assert_eq "$(json 'd["now"] - d["agents"][6]["since"] in range(2030, 2100)')" True "infra blocked since its blocked event"
+  assert_eq "$(json 'd["counts"]["busy"], d["counts"]["quiet"], d["counts"]["blocked"]')" "(2, 1, 1)" "a count per state"
+  assert_eq "$(json 'd["monitor"]["checks"], d["monitor"]["alerting"]')" "(2, 1)" "the monitor health"
+  assert_eq "$(json 'd["sync"]["text"]')" "synced: nothing to do" "the last sync"; assert_eq "$(json 'd["unread"]')" 2 "unread to main"
+  flat; assert_not_contains "$T/text" "$S_SKD" "a key in a STATE line"; assert_contains "$T/text" "key <hidden" "the line is kept, the key hidden"
+  assert_not_contains "$T/body" 5101 "no process id is served"
+  # the detail of an agent: its STATE.md, its journal entries, the command to act on it
+  api "/api/log?agent=api"; assert_eq "$(json 'd["commands"]')" "['ade work projects/api', 'ade ui']" "the commands for api"
+  assert_eq "$(json '[l.split("  ", 1)[1].strip() for l in d["journal"]]')" "['- rate limiter: token bucket per key', '- tests: 14 of 17 green']" "api's journal lines"
+  api "/api/log?agent=main"; assert_eq "$(json 'd["commands"]')" "['ade claude', 'ade ui']" "the commands for main"
+  assert_eq "$(json '[l.split("  ", 1)[1].strip() for l in d["journal"]]')" "['- M1 approved; builder started']" "the hub's journal for main"
+  stop
+}
+
+web_events_json() {
+  acme; start; login
+  api "/api/events"; assert_eq "$(json 'd["reset"], len(d["events"])')" "(True, 11)" "the first ask: the whole log"
+  assert_eq "$(json '[e["kind"] for e in d["events"]][:3]')" "['pushed', 'blocked', 'note']" "in order"
+  assert_eq "$(json '[e["text"] for e in d["events"] if e["checkin"]]')" "['check-in: middleware half done, 3 tests left', 'check-in: middleware wired, running the suite']" "check-ins are marked"
+  assert_eq "$(json '[s["text"] for s in d["syncs"]]')" "['synced: 3 commits', 'synced: nothing to do']" "the last syncs"
+  flat; assert_not_contains "$T/text" "$S_SKD" "a key in an event"; assert_contains "$T/text" "a key <hidden" "the event's words kept"
+  assert_contains "$T/text" "<b>bold</b> & <script>x()</script>" "the text is served as it is, as data"
+  if grep -q '<script\|<b>' "$T/body"; then fail "a tag is spelled out in the JSON"; fi
+  local c; c="$(json 'd["cursor"]')"
+  api "/api/events?since=$c"; assert_eq "$(json 'd["reset"], d["events"]')" "(False, [])" "nothing new"
+  printf '{"time":"%s","from":"projects/web","to":"main","kind":"note","text":"new one"}\nnot json\n{"time":"x","from":"main","to":"all","kind":"note","text":"two"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$S/events.jsonl"
+  api "/api/events?since=$c"; assert_eq "$(json '[e["text"] for e in d["events"]], d["reset"]')" "(['new one', 'two'], False)" "only what came after the cursor"
+  local c2; c2="$(json 'd["cursor"]')"; [ "$c2" != "$c" ] || fail "the cursor did not move"
+  # a half-written last line waits for its end
+  printf '{"time":"t","from":"main","to":"all","kind":"note","text":"half' >> "$S/events.jsonl"
+  api "/api/events?since=$c2"; assert_eq "$(json 'd["events"], d["cursor"]')" "([], '$c2')" "a line not yet ended"
+  printf ' done"}\n' >> "$S/events.jsonl"; api "/api/events?since=$c2"; assert_eq "$(json '[e["text"] for e in d["events"]]')" "['half done']" "then the whole line"
+  # a bad cursor, one past the end, or a rotated log: the last entries again, reset
+  for c in "x" "1-2-3" "${c2%-*}-99999999" "0-0" "-1" "$(rep 9 30)-0"; do api "/api/events?since=$c"; assert_eq "$CODE" 200 "since=$c"; assert_eq "$(json 'd["reset"]')" True "since=$c resets"; done
+  api "/api/events?since=a&since=b"; assert_eq "$CODE" 404 "two cursors"
+  mv "$S/events.jsonl" "$S/events.jsonl.1"; echo '{"time":"t","from":"main","to":"all","kind":"note","text":"after rotation"}' > "$S/events.jsonl"
+  api "/api/events?since=$c2"; assert_eq "$(json '[e["text"] for e in d["events"]], d["reset"]')" "(['after rotation'], True)" "a rotated log starts over"
+  # a big log: at most 200 entries, the newest
+  python3 -c 'import json, sys
+with open(sys.argv[1], "a") as f:
+    for i in range(3000): f.write(json.dumps({"time": "t", "from": "main", "to": "all", "kind": "note", "text": "n%d" % i}) + "\n")' "$S/events.jsonl"
+  api "/api/events"; assert_eq "$(json 'len(d["events"]), d["events"][-1]["text"]')" "(200, 'n2999')" "the newest 200"
+  # the page shows hub text as text only
+  api "/"; if grep -Eq 'innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function' "$T/body"; then fail "the page can insert HTML"; fi
+  stop
+}
+
+web_alerts() {
+  acme; start; login; api "/api/agents"
+  assert_eq "$(json 'sorted(set(a["kind"] for a in d["alerts"]))')" "['monitor', 'prompt', 'quiet', 'unread']" "the four kinds"
+  assert_eq "$(json '[a["agent"] for a in d["alerts"] if a["kind"] == "prompt"]')" "['mobile', 'new']" "busy with an old time, and not started"
+  assert_eq "$(json '[a["text"] for a in d["alerts"] if a["kind"] == "quiet"]')" "['billing is quiet (for 9m)']" "the quiet agent"
+  assert_eq "$(json '[a["text"] for a in d["alerts"] if a["kind"] == "monitor"]')" "['monitor projects-api / uptime-sh: ALERT api returns 502 on /health']" "the monitor ALERT"
+  assert_eq "$(json '[a["text"] for a in d["alerts"] if a["kind"] == "unread"]')" "['2 unread notes to main']" "unread notes to main"
+  stop
+  # a hub without check-ins, monitors, a sync log or bin/inbox: no alert, no error
+  rm -rf "$S/monitor-state" "$S/logs/sync.log" "$H/bin/inbox"; grep -v '"quiet"\|"blocked"\|checkin' "$S/events.jsonl" > "$T/e" && mv "$T/e" "$S/events.jsonl"
+  printf '#!/bin/bash\nprintf "NAME FOLDER PID PARENT STARTED ROLE STATUS LAST ENGINE\\napi projects/api 1 - %s builder idle %s claude\\n"\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$H/bin/sessions"
+  start; login; api "/api/agents"; assert_eq "$CODE" 200 "a plain hub"
+  assert_eq "$(json 'd["alerts"], d["unread"], d["sync"], d["monitor"]["checks"]')" "([], None, None, 0)" "no alert and no error"
+  assert_eq "$(json '[a["checkin"] for a in d["agents"]]')" "[None, None]" "no check-in is shown"
+  stop
+}
+
+# the browser checks: Playwright's Chromium (the real HOME's, as `ade shot` finds it); skipped when there is none,
+# unless ADE_WEB_REQUIRE_BROWSER=1
+browser_ok() {
+  local found; found="$(python3 - "$REAL_HOME" <<'PY'
+import glob, os, sys
+env = os.environ.get("PLAYWRIGHT_BROWSERS_PATH")
+bases = [env] if env else [os.path.join(sys.argv[1], ".cache/ms-playwright"), os.path.join(sys.argv[1], "Library/Caches/ms-playwright"), "/opt/ms-playwright"]
+for b in bases:
+    for pat in ("chromium-*/chrome-linux*/chrome", "chromium-*/chrome-mac*/Chromium.app/Contents/MacOS/Chromium",
+                "chromium-*/chrome-mac*/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"):
+        for c in sorted(glob.glob(os.path.join(glob.escape(b), pat)), reverse=True):
+            if os.access(c, os.X_OK): print(b); print(c); sys.exit(0)
+PY
+)"
+  if [ -n "$found" ]; then BROWSERS="$(echo "$found" | head -1)"; CHROME="$(echo "$found" | tail -1)"; return 0; fi
+  [ "${ADE_WEB_REQUIRE_BROWSER:-}" != 1 ] || fail "no Chromium for the browser checks (ADE_WEB_REQUIRE_BROWSER=1)"
+  echo "skip: $1 (no Playwright Chromium)"; return 1
+}
+
+web_page_renders() {
+  acme; start --port "$(free_port)"; login
+  # one document: every asset inline; no address but its own API
+  api "/"; if grep -Eqi 'https?://|//[a-z0-9.-]+\.[a-z]{2,}|<link|@import|src=' "$T/body"; then fail "the page names an outside address or file"; fi
+  if grep -Eo 'url\([^)]{0,30}' "$T/body" | grep -v '^url(data:font/woff2;base64,'; then fail "a url() that is not the inline font"; fi
+  grep -qi "^content-security-policy: default-src 'none'; .*font-src data:; connect-src 'self'" "$T/head" || fail "the page's policy allows more than its own API and the inline font"
+  local s; for s in "prefers-color-scheme: light" "prefers-reduced-motion: reduce" "max-width: 720px" "●" "○" "◐" "▲" "✖" '"agents"' '"events"' "j k"; do assert_contains "$T/body" "$s" "the page has $s"; done
+  browser_ok web_page_renders || { stop; return 0; }
+  mkdir -p "$T/shotrepo"; git -C "$T/shotrepo" init -q
+  # ade shot captures 0.3 s after load; a cold bin/sessions (bash) can take longer, so keep the server's 2 s list fresh
+  ( while curl -q -s -f -o /dev/null --max-time 5 -H "Cookie: $CK" -H "X-Ade-Key: $K" "$BASE/api/agents"; do sleep 1; done ) & local warm=$!   # ends with the server
+  local mode w; for mode in wide phone; do
+    w=1280; [ "$mode" = phone ] && w=375
+    ( cd "$T/shotrepo" && PATH="$WPATH" PLAYWRIGHT_BROWSERS_PATH="$BROWSERS" "$ADE" shot url "$URL" --name "web-$mode" --width "$w" > "$T/shot.out" 2>&1 ) || { cat "$T/shot.out" >&2; fail "ade shot of the page ($mode)"; }
+  done
+  kill "$warm" 2> /dev/null; wait "$warm" 2> /dev/null
+  local png; png="$(find "$T/shotrepo/.ade/evidence" -name '*-web-wide.png' | head -1)"; [ -f "$png" ] && [ -n "$(find "$T/shotrepo/.ade/evidence" -name '*-web-phone.png')" ] || fail "no shot saved"
+  # the cards are on it: pixels of the busy, idle and orchestrator colours (ade ui's tokens), and the theme's ground
+  python3 - "$png" <<'PY' || fail "the shot does not show the agent list"
+import struct, sys, zlib
+raw = open(sys.argv[1], "rb").read(); assert raw[:8] == b"\x89PNG\r\n\x1a\n"
+i = 8; idat = b""; w = h = 0
+while i < len(raw):
+    n, t = struct.unpack(">I4s", raw[i:i + 8]); body = raw[i + 8:i + 8 + n]; i += 12 + n
+    if t == b"IHDR": w, h, depth, ctype = struct.unpack(">IIBB", body[:10]); assert depth == 8 and ctype in (2, 6)
+    elif t == b"IDAT": idat += body
+bpp = 3 if ctype == 2 else 4; data = zlib.decompress(idat); stride = w * bpp; prev = bytearray(stride); px = []; o = 0
+for y in range(h):
+    f = data[o]; line = bytearray(data[o + 1:o + 1 + stride]); o += 1 + stride
+    for x in range(stride):
+        a = line[x - bpp] if x >= bpp else 0; b = prev[x]; c = prev[x - bpp] if x >= bpp else 0
+        if f == 1: line[x] = (line[x] + a) & 255
+        elif f == 2: line[x] = (line[x] + b) & 255
+        elif f == 3: line[x] = (line[x] + (a + b) // 2) & 255
+        elif f == 4:
+            p = a + b - c; pa, pb, pc = abs(p - a), abs(p - b), abs(p - c)
+            line[x] = (line[x] + (a if pa <= pb and pa <= pc else b if pb <= pc else c)) & 255
+    px.append(line); prev = line
+def near(rgb, d=40):
+    n = 0
+    for line in px:
+        for x in range(0, len(line), bpp):
+            if abs(line[x] - rgb[0]) + abs(line[x + 1] - rgb[1]) + abs(line[x + 2] - rgb[2]) < d: n += 1
+    return n
+counts = {k: near(v) for k, v in {"bg": (0x1e, 0x1e, 0x2e), "busy": (0xf9, 0xe2, 0xaf), "idle": (0xa6, 0xe3, 0xa1), "orch": (0xcb, 0xa6, 0xf7)}.items()}
+assert counts["bg"] > w * h // 4, counts
+assert all(counts[k] > 5 for k in ("busy", "idle", "orch")), counts
+PY
+  stop
+}
+
+web_stops_cleanly() {
+  acme; local L="$HOME/.config/ade/web"
+  PATH="$WPATH" "$ADE" web --stop > "$T/out" 2> "$T/err"; assert_eq "$?" 0 "--stop with nothing running"; assert_contains "$T/out" "not running" "says so"
+  for a in "--stop --port 1" "--stop extra" "--stop --print-link"; do
+    # shellcheck disable=SC2086  # the arguments of one case, split on purpose
+    PATH="$WPATH" "$ADE" web $a > "$T/out" 2> "$T/err"; assert_eq "$?" 2 "ade web $a is a usage error"; done
+  # --stop: the server ends, its link file and its port are gone
+  start; login; local old="$CK" port="$PORT" pid="$SRV"
+  PATH="$WPATH" "$ADE" web --stop > "$T/out" 2> "$T/err"; assert_eq "$?" 0 "--stop"; assert_contains "$T/out" "stopped" "says it stopped"
+  kill -0 "$pid" 2> /dev/null && fail "the server still runs after --stop"; wait "$SRV" 2> /dev/null; SRV=""
+  [ ! -e "$L" ] || fail "the link file is left after --stop"; refused 127.0.0.1 "$port" || fail "the port still answers"
+  # started again on the same port: nothing stale is reused; the old cookie and link are refused
+  start; CK="$old"; api "/api/agents"; assert_eq "$CODE" 403 "the old cookie after a restart"
+  [ "$(PATH="$WPATH" "$ADE" web --print-link)" = "$URL" ] || fail "--print-link after the restart"
+  # --stop never signals a process that is not this user's ade web (a link file naming another pid)
+  stop; sleep 30 & local other=$!
+  mkdir -p "$(dirname "$L")"; printf '%s\nhttp://127.0.0.1:%s/?k=x\n' "$other" "$(free_port)" > "$L"
+  PATH="$WPATH" "$ADE" web --stop > "$T/out" 2> "$T/err"; kill -0 "$other" 2> /dev/null || fail "--stop killed a process that is not ade web"
+  kill "$other"; wait "$other" 2> /dev/null; rm -f "$L"
+  # Ctrl-C at a terminal (ade opens the page: the fake opener): stops, exit 0, no link file or opener file left
+  rm -f "$T/opened.html"
+  PATH="$WPATH" TMPDIR="$T/tmp" python3 - "$ADE" "$L" "$T/opened.html" <<'PY' || fail "Ctrl-C did not stop ade web cleanly"
+import os, pty, select, signal, sys, time
+pid, fd = pty.fork()
+if pid == 0:
+    signal.signal(signal.SIGINT, signal.SIG_DFL)   # a suite started in the background hands down an ignored SIGINT; a terminal does not
+    os.execv(sys.argv[1], [sys.argv[1], "web"])
+buf = b""; end = time.time() + 15
+while b"Ctrl-C" not in buf and time.time() < end:
+    if select.select([fd], [], [], 0.2)[0]:
+        try: buf += os.read(fd, 4096)
+        except OSError: break
+assert b"open in your browser" in buf, buf
+assert os.path.exists(sys.argv[2]), "no link file while running"
+while not os.path.exists(sys.argv[3]) and time.time() < end: time.sleep(0.1)   # the (fake) browser has had the page
+os.write(fd, b"\x03"); end = time.time() + 10; st = None
+while time.time() < end:
+    got, st = os.waitpid(pid, os.WNOHANG)
+    if got: break
+    if select.select([fd], [], [], 0.1)[0]:
+        try: buf += os.read(fd, 4096)
+        except OSError: pass
+else:
+    os.kill(pid, 9); raise SystemExit("still running 10 s after Ctrl-C")
+assert os.WIFEXITED(st) and os.WEXITSTATUS(st) == 0, st
+assert not os.path.exists(sys.argv[2]), "the link file is left after Ctrl-C"
+assert b"Traceback" not in buf, buf
+PY
+  [ -z "$(ls -A "$T/tmp")" ] || fail "the opener's file is left after Ctrl-C"
+  start; stop
+}
+
+web_no_hub_writes() {
+  acme; snapshot > "$T/before"
+  start; login
+  local p i; for i in 1 2; do for p in "/" "/api/agents" "/api/events" "/api/events?since=1-1" "/api/log?agent=main" "/api/log?agent=api" "/api/log?agent=infra" "/api/journal" "/api/chat"; do api "$p"; done; sleep 2.1; done
+  stop; snapshot > "$T/after"
+  cmp -s "$T/before" "$T/after" || { diff "$T/before" "$T/after" >&2; fail "the hub or its state folder changed"; }
+  # this HOME: the link file came and went, the theme was only read
+  [ -z "$(ls -A "$HOME/.config/ade" 2> /dev/null)" ] || fail "something is left in ~/.config/ade: $(ls -A "$HOME/.config/ade")"
+  # the real ~/.config/ade: no entry added, its web link untouched (ade ui may rewrite its own cache meanwhile)
+  assert_eq "$(real_conf)" "$REAL_CONF" "the real ~/.config/ade"
+}
+real_conf() { ls -A "$REAL_HOME/.config/ade" 2> /dev/null | grep -v '^ui-'; cksum "$REAL_HOME/.config/ade/web" 2> /dev/null; }
+
+web_premium_checks() {
+  acme; start --port "$(free_port)"
+  browser_ok web_premium_checks || { stop; return 0; }
+  python3 - "$CHROME" "$URL" "$T" "${ADE_WEB_SHOTS:-$T/shots}" <<'PY' || fail "the design checks"
+import base64, json, os, select, subprocess, sys, tempfile, time
+exe, url, tmp, shots = sys.argv[1:5]; origin = url.split("/?", 1)[0]; os.makedirs(shots, exist_ok=True)
+r_in, w_in = os.pipe(); r_out, w_out = os.pipe()
+args = [exe, "--headless", "--remote-debugging-pipe", "--user-data-dir=" + tempfile.mkdtemp(dir=tmp), "--no-first-run", "--disable-gpu",
+        "--hide-scrollbars", "--disable-extensions", "--disable-background-networking", "--disable-sync", "--disable-component-update"]
+if sys.platform == "darwin": args += ["--use-mock-keychain", "--password-store=basic"]
+elif os.geteuid() == 0 or subprocess.call(["unshare", "-U", "true"], stderr=subprocess.DEVNULL) != 0: args.append("--no-sandbox")
+def child(): os.dup2(r_in, 3); os.dup2(w_out, 4)
+p = subprocess.Popen(args + ["about:blank"], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, pass_fds=(3, 4), preexec_fn=child, start_new_session=True)
+os.close(r_in); os.close(w_out); n = [0]; buf = bytearray(); sess = [None]; reqs = []; deadline = time.time() + 90
+def send(m, prm=None):
+    n[0] += 1; msg = {"id": n[0], "method": m, "params": prm or {}}
+    if sess[0] and not m.startswith("Target."): msg["sessionId"] = sess[0]
+    os.write(w_in, json.dumps(msg).encode() + b"\0"); return n[0]
+def read(until):
+    while True:
+        i = buf.find(b"\0")
+        if i >= 0:
+            raw = bytes(buf[:i]); del buf[:i + 1]; return json.loads(raw)
+        if not select.select([r_out], [], [], max(0, until - time.time()))[0]: raise SystemExit("the browser did not answer")
+        b = os.read(r_out, 1 << 20)
+        if not b: raise SystemExit("the browser closed")
+        buf.extend(b)
+def event(m):
+    if m.get("method") == "Network.requestWillBeSent": reqs.append(m["params"]["request"]["url"])
+def call(m, prm=None):
+    i = send(m, prm)
+    while True:
+        r = read(deadline)
+        if r.get("id") == i:
+            if "error" in r: raise SystemExit("%s: %s" % (m, r["error"]))
+            return r.get("result", {})
+        event(r)
+def settle(s):
+    end = time.time() + s
+    while time.time() < end:
+        try:
+            i = buf.find(b"\0")
+            if i < 0 and not select.select([r_out], [], [], max(0, end - time.time()))[0]: break
+            event(read(end + 5))
+        except SystemExit: break
+def js(expr): return call("Runtime.evaluate", {"expression": expr, "returnByValue": True, "awaitPromise": True}).get("result", {}).get("value")
+CONTRAST = r"""(function(){
+ function rgb(s){var m=s.match(/[\d.]+/g);return m?m.map(Number):[0,0,0,0]}
+ function lum(c){var v=c.slice(0,3).map(function(x){x/=255;return x<=0.03928?x/12.92:Math.pow((x+0.055)/1.055,2.4)});return 0.2126*v[0]+0.7152*v[1]+0.0722*v[2]}
+ function bg(e){for(;e;e=e.parentElement){var c=rgb(getComputedStyle(e).backgroundColor);if(c.length<4||c[3]>0.5)return c}return rgb(getComputedStyle(document.body).backgroundColor)}
+ var bad=[],n=0,w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT),t;
+ while((t=w.nextNode())){var e=t.parentElement;if(!t.nodeValue.trim()||!e||/^[\s\u2500-\u259f]*$/.test(t.nodeValue))continue;var s=getComputedStyle(e);
+  if(s.visibility!=="visible"||s.display==="none"||e.getClientRects().length===0||parseFloat(s.opacity)<0.5)continue;
+  var r=e.getBoundingClientRect();if(r.width===0||r.height===0)continue;
+  var f=rgb(s.color),b=bg(e),a=lum(f),c=lum(b),k=(Math.max(a,c)+0.05)/(Math.min(a,c)+0.05);n++;
+  if(k<4.5)bad.push(k.toFixed(2)+" "+s.color+" on "+getComputedStyle(e).backgroundColor+": "+t.nodeValue.trim().slice(0,30))}
+ return JSON.stringify({n:n,bad:bad.slice(0,12)})})()"""
+try:
+    t = call("Target.createTarget", {"url": "about:blank"})["targetId"]
+    sess[0] = call("Target.attachToTarget", {"targetId": t, "flatten": True})["sessionId"]
+    call("Page.enable"); call("Network.enable"); call("Runtime.enable")
+    errs = []
+    for name, w, h, scheme in (("dark", 1440, 900, "dark"), ("light", 1440, 900, "light"), ("phone", 375, 812, "dark")):
+        call("Emulation.setDeviceMetricsOverride", {"width": w, "height": h, "deviceScaleFactor": 2, "mobile": name == "phone"})
+        call("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": scheme}, {"name": "prefers-reduced-motion", "value": "no-preference"}]})
+        call("Page.navigate", {"url": url}); settle(4)
+        rows = js("document.querySelectorAll('#rows > *').length")
+        if not rows or rows < 8: errs.append("%s: %s agent rows" % (name, rows))
+        c = json.loads(js(CONTRAST))
+        if c["n"] < 40 or c["bad"]: errs.append("%s: contrast below 4.5:1 (%d texts): %s" % (name, c["n"], c["bad"]))
+        sw = js("Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)")
+        if sw > w: errs.append("%s: scrolls sideways (%s > %s)" % (name, sw, w))
+        if not js("document.getAnimations().length"): errs.append("%s: no animation without reduced motion" % name)
+        fam = js("document.fonts.check('12px \"JetBrains Mono\"') && [...document.fonts].some(f => f.status === 'loaded')")
+        if not fam: errs.append("%s: the inline font did not load" % name)
+        shot = call("Page.captureScreenshot", {"format": "png"})["data"]
+        open(os.path.join(shots, "ade-web-%s.png" % name), "wb").write(base64.b64decode(shot))
+    # reduced motion: every animation off
+    call("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-reduced-motion", "value": "reduce"}]}); settle(1)
+    left = js("document.getAnimations().length")
+    if left: errs.append("reduced motion: %d animations still run" % left)
+    # the keyboard: j moves the selection, / opens the filter, ? the help, Esc closes it
+    def key(k, code):
+        for ty in ("keyDown", "keyUp"): call("Input.dispatchKeyEvent", {"type": ty, "key": k, "code": code, "text": k if ty == "keyDown" and len(k) == 1 else "", "windowsVirtualKeyCode": ord(k.upper()) if len(k) == 1 else 27})
+    call("Emulation.setDeviceMetricsOverride", {"width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False})
+    sel0 = js("(document.querySelector('#rows [aria-selected=true]')||{}).textContent||''")
+    key("j", "KeyJ"); settle(0.3); sel1 = js("(document.querySelector('#rows [aria-selected=true]')||{}).textContent||''")
+    if not sel1 or sel1 == sel0: errs.append("j did not move the selection")
+    key("?", "Slash"); settle(0.3)
+    if js("getComputedStyle(document.getElementById('help')).display") == "none": errs.append("? shows no help")
+    key("Escape", "Escape"); settle(0.3)
+    if js("getComputedStyle(document.getElementById('help')).display") != "none": errs.append("Esc does not close the help")
+    out = [u for u in reqs if not (u.startswith(origin + "/") or u.startswith("data:"))]
+    if out: errs.append("requests that leave the page's origin: %s" % out[:5])
+    if errs: raise SystemExit("; ".join(errs))
+finally:
+    try: send("Browser.close")
+    except OSError: pass
+    try: p.wait(5)
+    except subprocess.TimeoutExpired: p.kill()
+PY
+  local s; for s in dark light phone; do [ -s "${ADE_WEB_SHOTS:-$T/shots}/ade-web-$s.png" ] || fail "no $s screenshot"; done
+  stop
+}
+
+REAL_CONF="$(real_conf)"
+# bash tests/test_web.sh [test ...]: those tests only (each name a function above)
+if [ "$#" -gt 0 ]; then for t in "$@"; do "$t"; done; echo ok; exit 0; fi
 t_local
 t_token
 t_host
@@ -542,4 +984,14 @@ t_paths
 t_long
 t_tailnet
 t_link
+web_loopback_only
+web_token_required
+web_read_only
+web_agents_json
+web_events_json
+web_alerts
+web_page_renders
+web_stops_cleanly
+web_no_hub_writes
+web_premium_checks
 echo ok
