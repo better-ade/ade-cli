@@ -2,7 +2,7 @@
 
 ## Unreleased
 - `ade keys` sets the missing keys for you (A26): the hub's list as before, then, at a terminal and when an AI tool
-  key is missing (anthropic, deepseek, glm, muse, gemini), one question "Set the missing keys now? [y/N]"; yes asks
+  key is missing (deepseek, glm, muse, gemini; the optional Anthropic key is never asked for: `ade keys set anthropic`), one question "Set the missing keys now? [y/N]"; yes asks
   for each at ade's hidden prompt (empty skips; a failed store says so, without the value, and moves on, exit 1)
   and shows the list again. `ade keys --missing` asks without the question; not at a terminal it exits 2. Piped,
   redirected or in an agent session: the list alone, byte for byte. `set`, `share`, `receive` and every other

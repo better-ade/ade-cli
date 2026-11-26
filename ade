@@ -1034,15 +1034,17 @@ store_key() {   # store_key <hub> <tool> [once]: hidden prompt, then the hub's b
 # ade keys (A26): the hub's list; at a terminal, when an AI tool key is missing, one question, then each missing one at
 # ade's hidden prompt (store_key once), then the list again. --missing: no question (a terminal only, else exit 2).
 # Not a terminal, or an agent session: the hub's bin/keys as before (exec). Any other arguments: passed through unchanged.
-# The missing ones are KEY_PROVIDERS (never telegram, a chat token) the list does not show as "<tool> stored", as
-# key_stored reads it; a tool name never comes from the hub's output.
+# The missing ones are KEYS_ASKED the list does not show as "<tool> stored", as key_stored reads it; a tool name never
+# comes from the hub's output. Not anthropic (optional: the Claude login serves; ade keys set anthropic stores one) and
+# not telegram (a chat token). ade setup keeps its own KEY_PROVIDERS.
+KEYS_ASKED="deepseek glm muse gemini"
 keys_terminal() { [ -t 0 ] && [ -t 1 ] && ! agent_context; }
 keys_list() {   # <hub>: the hub's list as it printed it; KEYS_MISSING: the missing tools; the list's exit code
   local out rc p; KEYS_MISSING=""
   out="$(hub_run "$1" keys < /dev/null; rc=$?; echo "x$rc")"; rc="${out##*x}"; out="${out%x*}"
   printf '%s' "$out"; case "$out" in ""|*$'\n') ;; *) echo ;; esac   # a list without its last newline still ends a line
   [ "$rc" = 0 ] || return "$rc"
-  for p in $KEY_PROVIDERS; do
+  for p in $KEYS_ASKED; do
     printf '%s\n' "$out" | awk -v n="$p" '$1 == n && $2 == "stored" { f = 1 } END { exit !f }' || KEYS_MISSING="${KEYS_MISSING:+$KEYS_MISSING }$p"
   done
 }

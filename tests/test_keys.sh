@@ -53,9 +53,10 @@ keys_guided_no_or_pipe() {   # AC2
   assert_not_contains "$T/out" "Set the missing" "stdin not a terminal: asks nothing"; assert_eq "$(lists)" 1 "the list alone"
   ! grep -q "keys set" "$T/log" || fail "nothing stored without a terminal"
   ! grep -q VALUE "$T/store" || fail "and nothing reached the store"
-  fresh; keys_hub anthropic deepseek glm muse gemini; : > "$T/log"
-  pty_run '' bash "$ADE" keys > "$T/out" 2>&1 || fail "nothing missing: exit 0"
-  assert_not_contains "$T/out" "Set the missing" "nothing missing: no question"; assert_eq "$(lists)" 1 "the list alone"
+  fresh; keys_hub deepseek glm muse gemini; : > "$T/log"
+  pty_run 'y\nVALUE-ant\n' bash "$ADE" keys > "$T/out" 2>&1 || fail "only anthropic missing: exit 0"
+  assert_not_contains "$T/out" "Set the missing" "anthropic alone (optional) is not missing: no question"; assert_eq "$(lists)" 1 "the list alone"
+  ! grep -q "keys set" "$T/log" || fail "nothing asked or stored"
 }
 
 keys_missing_flag() {   # AC3
@@ -69,7 +70,7 @@ keys_missing_flag() {   # AC3
   ! grep -q "keys set" "$T/log" || fail "nothing stored"
   pty_run '' bash -c "bash '$ADE' keys --missing > /dev/null" > "$T/out" 2>&1; assert_eq "$?" 2 "stdout not a terminal: exit 2"
   (export CLAUDECODE=1; pty_run '' bash "$ADE" keys --missing > "$T/out" 2>&1); assert_eq "$?" 2 "an agent session is never asked"
-  fresh; keys_hub anthropic deepseek glm muse gemini
+  fresh; keys_hub deepseek glm muse gemini
   pty_run '' bash "$ADE" keys --missing > "$T/out" 2>&1 || fail "nothing missing: exit 0"
   assert_contains "$T/out" "no AI tool key is missing" "says so"
 }
