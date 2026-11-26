@@ -638,7 +638,7 @@ web_token_required() {
   stop
   # a link file never used goes when the server stops
   rm -f "$T/opened.html"; PATH="$WPATH" TMPDIR="$T/tmp" "$ADE" web > "$T/web.out" 2> "$T/web.err" & SRV=$!
-  i=0; until [ -s "$T/opened.html" ] && grep -q '^open ' "$CALLS"; do i=$((i + 1)); [ "$i" -lt 100 ] || fail "nothing opened"; sleep 0.1; done
+  i=0; until [ -s "$T/opened.html" ] && grep -qE '^(open|xdg-open) ' "$CALLS"; do i=$((i + 1)); [ "$i" -lt 100 ] || fail "nothing opened"; sleep 0.1; done
   stop; [ -z "$(ls -A "$T/tmp")" ] || fail "a link file is left in TMPDIR after the stop: $(ls -A "$T/tmp")"
   snapshot > "$T/after"; cmp -s "$T/before" "$T/after" || fail "the hub changed"
 }
