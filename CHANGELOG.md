@@ -7,12 +7,21 @@
   and shows the list again. `ade keys --missing` asks without the question; not at a terminal it exits 2. Piped,
   redirected or in an agent session: the list alone, byte for byte. `set`, `share`, `receive` and every other
   argument pass through unchanged. The value goes only to the hub's `bin/keys set <tool>` on stdin.
+
+## 0.2.11
 - `ade hub import <url|path> [--share|--handover|--clone] [--owner <name>] [--name <new>] [--dir <folder>]
   [--no-github]` (I3): bring in someone's hub. It is cloned into `~/hubs/<name>` (or `--dir`), checked to be a hub,
   then the hub's own `bin/setup` and `bin/adopt` run: `--share` joins it, `--handover` makes you its owner (`--from`: the previous owner's memory folder), `--clone`
   makes a new hub of your own with its own private GitHub repo (`--no-github`: none). No mode: asked at a terminal,
   refused otherwise (exit 2). A hub without `bin/adopt` (older than ade-brain I2) is refused, "update that hub first",
   and its clone removed. The hub becomes the default; `bin/adopt` lists what is left by hand. No secret is copied.
+- `ade shot` on macOS no longer stalls on the login Keychain (A25): Chromium gets `--use-mock-keychain` and
+  `--password-store=basic`, as Playwright does; the throwaway profile holds nothing the Keychain guards (CI runners and
+  SSH sessions used to hang at Page.navigate).
+- `ade shot` on Ubuntu 23.10+ (A24): AppArmor lets the user namespace be made but gives it no rights, so Chromium's
+  sandbox failed and the shot said only "the browser closed before it answered". On Linux a Chromium that closes before
+  it answers, with its sandbox on, is started once more with `--no-sandbox`. Its stderr goes to
+  `~/.local/share/ade/chromium.log` (0600); when it still closes, the error names its last lines (keys hidden).
 
 ## 0.2.10
 - The guide asks which tools you use (A23): a new optional step after your hub lists the services ade has a recipe

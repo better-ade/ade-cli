@@ -6,7 +6,7 @@
 DAY=2026-11-23; HMS=104507
 shot_fixture() {
   fresh; F="$T/fakebin"; mkdir -p "$F" "$T/log"; export FAKE_LOG="$T/log" ADE_NOW="${DAY}T10:45:07Z"
-  unset FAKE_CHROME FAKE_OS FAKE_SCREEN_FAIL FAKE_SEND_RC DISPLAY TMUX ADE_UI_SESSION
+  unset FAKE_CHROME FAKE_OS FAKE_UNSHARE_RC FAKE_LINGER FAKE_SCREEN_FAIL FAKE_SEND_RC DISPLAY TMUX ADE_UI_SESSION
   P="$T/proj"; mkdir -p "$P/docs"; git init -q "$P"; echo "<h1>report</h1>" > "$P/docs/report.html"
   make_hub "$T/hub" hub; printf 'HUB_NAME=acme\n' > "$T/hub/hub.conf"; export ADE_HUB="$T/hub"
   # Playwright's Chromium, where the hub looks for it: a stand-in that answers the DevTools pipe (fd 3 in, fd 4 out)
@@ -16,6 +16,13 @@ shot_fixture() {
 import base64, json, os, shutil, struct, sys, zlib
 log = os.environ["FAKE_LOG"]; mode = os.environ.get("FAKE_CHROME", "")
 open(log + "/chrome.argv", "a").write("\n".join(sys.argv[1:]) + "\n--\n")
+# sandboxfail: Ubuntu 23.10+ (AppArmor): its sandbox cannot start, so it exits at once unless --no-sandbox; dies: always
+if mode == "dies" or (mode == "sandboxfail" and "--no-sandbox" not in sys.argv):
+    sys.stderr.write("".join("[1:1:ERROR:gpu_init.cc(1)] early line %d\n" % i for i in range(30)) + "[2:2:FATAL:zygote_host_impl_linux.cc(127)] No usable sandbox!\n"
+                     "[2:2:FATAL:x.cc(9)] last line, token=s3cr3tvalue99\n")
+    # lingers: its pipe is closed while it is still shutting down (not yet reaped), the window ade's retry must survive
+    if os.environ.get("FAKE_LINGER"): import time; os.close(3); os.close(4); time.sleep(1)
+    sys.exit(1)
 def png(w, h):
     def ch(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
     return (b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
@@ -76,6 +83,7 @@ S
   printf '#!/bin/bash\necho "import $*" >> "$FAKE_LOG/screen"\nfor a in "$@"; do f="$a"; done; cp "$FAKE_LOG/tiny.png" "$f"\n' > "$F/import"
   printf '#!/bin/bash\necho "xwd $*" >> "$FAKE_LOG/screen"\ncat "$FAKE_LOG/screen.xwd"\n' > "$F/xwd"
   printf '#!/bin/bash\ncase "${1:-}" in ""|-s) echo "${FAKE_OS:-Darwin}" ;; *) exec "%s" "$@" ;; esac\n' "$(command -v uname)" > "$F/uname"
+  printf '#!/bin/bash\necho "unshare $*" >> "$FAKE_LOG/unshare"\nexit "${FAKE_UNSHARE_RC:-0}"\n' > "$F/unshare"   # a user namespace can be made
   cat > "$F/tmux" <<'S'
 #!/bin/bash
 [ "$1" = -L ] && shift 2
@@ -128,15 +136,22 @@ url_shot() {
   for a in --headless --remote-debugging-pipe about:blank; do grep -qxF -- "$a" "$T/log/chrome.argv" || fail "Chromium runs with $a"; done
   grep -q -- "^--user-data-dir=$T/tmp/ade\." "$T/log/chrome.argv" || fail "a throwaway profile, in ade's temp folder"
   grep -q 'example.test' "$T/log/chrome.argv" && fail "the address is never an argument of the browser"
-  # story A25: on macOS the shot never waits on the login Keychain; elsewhere the arguments are unchanged. ade asks
-  # python's sys.platform (python3 -I, so a test cannot fake it): this check follows the host, and CI runs both
-  if [ "$(python3 -I -c 'import sys; print(sys.platform)')" = darwin ]; then
-    for a in --use-mock-keychain --password-store=basic; do grep -qxF -- "$a" "$T/log/chrome.argv" || fail "macOS: Chromium runs with $a"; done
-  else
-    grep -qE -- '^(--use-mock-keychain|--password-store=basic)$' "$T/log/chrome.argv" && fail "not macOS: no Keychain flags"
-  fi
   assert_eq "$(cdp Page.navigate)" '{"url": "https://example.test/pay?step=2"}' "it opens the address"
   [ -z "$(ls "$T/tmp")" ] || fail "the temp folder is removed"
+  # story A25: on macOS the shot never waits on the login Keychain (the fake uname says Darwin unless FAKE_OS says else)
+  for a in --use-mock-keychain --password-store=basic; do grep -qxF -- "$a" "$T/log/chrome.argv" || fail "macOS: Chromium runs with $a"; done
+  # story A24 AC3: on macOS one start, its sandbox untouched
+  assert_eq "$(grep -c '^--$' "$T/log/chrome.argv")" 1 "macOS: Chromium is started once"
+  grep -qxF -- --no-sandbox "$T/log/chrome.argv" && fail "macOS: no --no-sandbox"
+  [ ! -e "$T/log/unshare" ] || fail "macOS: no user namespace check"
+  shot_fixture; FAKE_CHROME=sandboxfail shot url https://example.test/; assert_eq "$RC" 1 "macOS: a Chromium that exits is not started again"
+  assert_eq "$(grep -c '^--$' "$T/log/chrome.argv")" 1 "macOS: no retry"; grep -qxF -- --no-sandbox "$T/log/chrome.argv" && fail "macOS: no --no-sandbox on failure"
+  shot_fixture; export FAKE_OS=Linux; shot url https://example.test/; assert_eq "$RC" 0 "Linux shot"
+  grep -qE -- '^(--use-mock-keychain|--password-store=basic)$' "$T/log/chrome.argv" && fail "not macOS: no Keychain flags"
+  assert_eq "$(grep -c '^--$' "$T/log/chrome.argv")" 1 "Linux: a Chromium that works is started once"
+  grep -qxF -- --no-sandbox "$T/log/chrome.argv" && fail "Linux with a user namespace: its sandbox stays on"
+  shot_fixture; export FAKE_OS=Linux FAKE_UNSHARE_RC=1; shot url https://example.test/; assert_eq "$RC" 0 "Linux, no user namespace"
+  grep -qxF -- --no-sandbox "$T/log/chrome.argv" || fail "Linux without a user namespace: --no-sandbox"; unset FAKE_OS FAKE_UNSHARE_RC
   # the default name is the host; --width and --full-page
   shot_fixture; shot url https://example.test/a --width 800; assert_eq "$RC" 0 "--width"
   assert_eq "$(pngsize "$(ev)/$HMS-example.test.png")" "800x800" "800 wide"
@@ -424,6 +439,36 @@ tg_sends() {
   shot_fixture; unset ADE_HUB; shot url https://example.test/ --tg hello; assert_eq "$RC" 2 "no hub"; [ -f "$(ev)/$HMS-example.test.png" ] || fail "saved without a hub"
 }
 
+# story A24: on Ubuntu 23.10+ AppArmor lets `unshare -U` succeed but the namespace has no rights, so Chromium's sandbox
+# fails and it exits at once: it is started once more with --no-sandbox; a Chromium that still exits says why
+url_sandbox_retry() {
+  # AC1: Linux, unshare succeeds, a Chromium that works only with --no-sandbox: saved, started twice
+  shot_fixture; export FAKE_OS=Linux; FAKE_CHROME=sandboxfail shot url https://example.test/ --name retried
+  assert_eq "$RC" 0 "the shot is saved on the second start [$(cat "$T/err")]"; pngsize "$(ev)/$HMS-retried.png" > /dev/null || fail "a PNG saved"
+  [ -s "$T/log/unshare" ] || fail "ade checked for a user namespace"
+  assert_eq "$(grep -c '^--$' "$T/log/chrome.argv")" 2 "started twice"
+  assert_eq "$(awk '/^--$/{n++; next} $0=="--no-sandbox"{print n}' "$T/log/chrome.argv")" 1 "--no-sandbox only the second time"
+  [ ! -s "$T/err" ] || fail "nothing on stderr when the retry works [$(cat "$T/err")]"
+  # the same, but its pipe closes before it has exited: the retry still happens (once flaky, now pinned)
+  shot_fixture; export FAKE_OS=Linux FAKE_LINGER=1; FAKE_CHROME=sandboxfail shot url https://example.test/ --name lingered
+  assert_eq "$RC" 0 "saved when its pipe closes before it exits [$(cat "$T/err")]"; pngsize "$(ev)/$HMS-lingered.png" > /dev/null || fail "a PNG saved"
+  assert_eq "$(grep -c '^--$' "$T/log/chrome.argv")" 2 "started twice"; unset FAKE_LINGER
+  # AC2: a Chromium that always exits at once: the error names the last lines it wrote; nothing saved; the rest is kept
+  shot_fixture; export FAKE_OS=Linux; FAKE_CHROME=dies shot url https://example.test/; assert_eq "$RC" 1 "a Chromium that always exits"
+  assert_eq "$(grep -c '^--$' "$T/log/chrome.argv")" 2 "tried with and without its sandbox"
+  assert_contains "$T/err" "the browser closed before it answered" "it says what happened"
+  assert_contains "$T/err" "No usable sandbox!" "the next-to-last line it wrote"; assert_contains "$T/err" "last line" "its last line"
+  grep -q "early line 0$\|early line 0 " "$T/err" && fail "only the last lines"
+  grep -q "s3cr3tvalue99" "$T/err" && fail "a key in its output is hidden"
+  [ ! -e "$(ev)" ] || fail "nothing saved"
+  local log="$HOME/.local/share/ade/chromium.log"; assert_contains "$T/err" "$log" "it names the file with all it wrote"
+  assert_contains "$log" "early line 0" "the file keeps the whole output"; assert_eq "$(fmode "$log")" 600 "only you can read it"
+  # with no user namespace it already ran with --no-sandbox: one start, the same error
+  shot_fixture; export FAKE_OS=Linux FAKE_UNSHARE_RC=1; FAKE_CHROME=dies shot url https://example.test/; assert_eq "$RC" 1 "no namespace, dies"
+  assert_eq "$(grep -c '^--$' "$T/log/chrome.argv")" 1 "already without its sandbox: no retry"; assert_contains "$T/err" "No usable sandbox!" "it says why"
+  unset FAKE_OS FAKE_UNSHARE_RC
+}
+
 # AC10: the help, the README and the changelog say what each mode captures and what cannot be redacted
 help_and_docs() {
   shot_fixture; bash "$ADE" help > "$T/out"; grep -qE "^  shot( |$)" "$T/out" || fail "ade help lists shot"
@@ -435,7 +480,7 @@ help_and_docs() {
   assert_contains "$REPO/docs/stories/A20-screenshots.md" "tests/test_shot.sh" "the story names its tests"
 }
 
-ALL="url_shot url_addresses screen_asks screen_agent_session screen_capture_tools agent_shot agent_redacted evidence_layout tg_sends help_and_docs"
+ALL="url_shot url_sandbox_retry url_addresses screen_asks screen_agent_session screen_capture_tools agent_shot agent_redacted evidence_layout tg_sends help_and_docs"
 if [ $# -gt 0 ]; then "$1"; echo ok; exit 0; fi
 for c in $ALL; do "$c"; done
 echo ok
