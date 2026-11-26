@@ -5528,6 +5528,18 @@ pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; 
 #help .box { position: relative; background: var(--bg); border: 1px solid var(--accent); padding: 20px 2ch 10px; max-width: 100%; }
 #help .box .pt { color: var(--accent); }
 #help pre { color: var(--fg); }
+/* story M2: until the code is typed, the page is one terminal line asking for it */
+#gate { display: none; padding: 20px 2ch; }
+body[data-gate=code] #gate { display: block; }
+body[data-gate=code] #app, body[data-gate=code] #help { display: none; }
+#gl { position: relative; display: block; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); }
+#gl .pr { color: var(--accent); }
+#gm { color: var(--fg); }
+#gl .cur { display: inline-block; vertical-align: top; animation: blink 1.06s steps(1, end) infinite; }
+#gi { position: absolute; inset: 0; width: 100%; opacity: 0; border: 0; padding: 0; font: inherit; font-size: 16px; color: transparent; background: transparent; }
+#gs { min-height: 20px; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+#gs.bad { color: var(--blocked); }
+#gate .gh { color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 720px) {
   body { overflow: auto; }
   #app { display: block; height: auto; }
@@ -5547,11 +5559,14 @@ pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
   .s-busy .spin { display: none; } .s-busy .dot { display: inline-block; }
-  #flt:focus-within .cur { opacity: 1; }
+  #flt:focus-within .cur, #gl .cur { opacity: 1; }
 }
 </style>
 </head>
-<body>
+<body data-gate="__GATE__">
+<div id="gate" role="dialog" aria-label="the code"><label id="gl"><span class="pr">ade web · enter the code shown in your terminal:</span> <span id="gm"></span><span class="cur"></span><input id="gi" type="text" maxlength="16" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="the code shown in ade web's terminal"></label>
+<div id="gs" role="status" aria-live="polite"></div>
+<div class="gh">· ade web prints a new code each time it starts; Enter in its terminal makes a new one. After q, a reload needs the link again: ade web --print-link prints it.</div></div>
 <div id="app">
 <header id="bar"><span class="tag">ade</span><b id="hub">connecting</b><span id="counts"></span><span id="health"><span id="sync"></span><span id="mon"></span><span id="unread"></span></span><span id="clock"></span></header>
 <div id="alert" role="status" hidden></div>
@@ -5567,7 +5582,7 @@ pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; 
 <div class="body" id="feed" role="log"><div class="say">· waiting for the first events</div></div>
 </section>
 </main>
-<footer id="keys"><span><b>j k</b> move</span><span><b>⏎</b> detail</span><span><b>⇥</b> pane</span><span><b>/</b> filter</span><span><b>e</b> events</span><span><b>t</b> theme</span><span><b>?</b> help</span><span>read-only · keys hidden</span></footer>
+<footer id="keys"><span><b>j k</b> move</span><span><b>⏎</b> detail</span><span><b>⇥</b> pane</span><span><b>/</b> filter</span><span><b>e</b> events</span><span><b>t</b> theme</span><span><b>?</b> help</span><span><b>q</b> lock</span><span>read-only · keys hidden</span></footer>
 </div>
 <div id="help" hidden role="dialog" aria-label="keys"><div class="box"><h2 class="pt">keys</h2><pre>j k  ↑ ↓   move in a pane
 ⏎          show the agent's detail
@@ -5578,6 +5593,7 @@ g G        top or bottom of a pane
 t          light or dark
 ?          this help
 q  Esc     close it
+q          lock the page (asks for the code again)
 
 Read-only: to act, run the command the
 detail pane shows. Keys and tokens are
@@ -5754,11 +5770,13 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
   function ask(path, then) {
     if (S.over) { return; }
     if (!KEY) { expired(); return; }
+    var gen = G.gen;
     fetch(path, { credentials: "same-origin", cache: "no-store", headers: { "X-Ade-Key": KEY } }).then(function (r) {
       if (r.status === 403) { expired(); return null; }
+      if (r.status === 401) { shut("· the session ended: type the code shown in ade web's terminal"); return null; }
       if (r.status === 404) { return { gone: true }; }
       return r.ok ? r.json() : null;
-    }).then(function (d) { if (d && !S.over) { S.down = 0; then(d); clock(); } }, function () {
+    }).then(function (d) { if (d && !S.over && gen === G.gen && document.body.dataset.gate === "open") { S.down = 0; then(d); clock(); } }, function () {
       if (!S.over) { S.down = Date.now() + 3000; clock(); }
     });
   }
@@ -5788,7 +5806,56 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
       S.feed = S.feed.concat(d.events).slice(-400); S.cursor = d.cursor; S.syncs = d.syncs; feed();
     });
   }
-  function tick() { if (document.hidden || S.over) { return; } agents(); events(); }
+  function tick() { if (document.hidden || S.over || document.body.dataset.gate !== "open") { return; } agents(); events(); }
+  // story M2: the code. The page holds no data until the code ade web shows in its terminal is typed here; the server
+  // then gives a session cookie. q (and a 401 from the API) drops what the page shows and asks for the code again.
+  var G = { busy: false, started: false, gen: 0 };   // gen: a reply asked for before a lock is dropped
+  function said(text, bad) { put($("gs"), text); $("gs").className = bad ? "bad" : ""; }
+  function prompt() { document.body.dataset.gate = "code"; $("gi").value = ""; put($("gm"), ""); $("gi").focus(); }
+  function login(body, then) {
+    fetch("/login", {method: "POST", credentials: "same-origin", cache: "no-store", headers: { "X-Ade-Key": KEY, "Content-Type": "application/json" },
+      body: JSON.stringify(body)}).then(function (r) {
+      return r.json().then(function (d) { return { status: r.status, d: d }; }, function () { return { status: r.status, d: {} }; });
+    }).then(then, function () { then({ status: 0, d: {} }); });
+  }
+  function unlock(code) {
+    if (G.busy || S.over) { return; }
+    if (!KEY) { expired(); return; }
+    G.busy = true;
+    login({code: code}, function (x) {
+      G.busy = false; $("gi").value = ""; put($("gm"), "");
+      if (x.status === 200 && x.d.ok) { said("", false); document.body.dataset.gate = "open"; start(); return; }
+      if (x.status === 403) { said("✖ this link no longer works — run: ade web --print-link (or start ade web again)", true); return; }
+      if (x.d.locked) { said("locked: press Enter in ade's terminal for a new code", true); return; }
+      if (x.status === 401) { said("✖ wrong code (" + x.d.left + " of 5 left)", true); return; }
+      said(x.status ? "✖ ade web refused it (" + x.status + ")" : "✖ ade web does not answer: is it still running?", true);
+    });
+  }
+  function shut(why) {
+    G.gen += 1; $("alert").hidden = true; $("alert").textContent = "";
+    ["sync", "mon", "unread"].forEach(function (id) { put($(id), ""); });
+    S.agents = []; S.alerts = []; S.note = ""; S.picked = null; S.chose = false; S.feed = []; S.cursor = ""; S.syncs = [];
+    S.feedKey = ""; S.logFor = null; S.logKey = "";
+    list(); $("dbody").textContent = ""; $("feed").textContent = ""; put($("hub"), "locked"); put($("counts"), "");
+    help(false); said(why, false); prompt();
+  }
+  function lock() {
+    if (G.busy) { return; }
+    G.busy = true; shut("· locking…");
+    login({lock: true}, function (x) {
+      G.busy = false;
+      if (x.status === 200) { said("· locked: type the code shown in ade web's terminal to open it again", false); return; }
+      said(x.status ? "✖ ade web refused the lock (" + x.status + "): stop it with ade web --stop" : "✖ ade web does not answer: the session may still be open; stop it with ade web --stop", true);
+    });
+  }
+  function start() {
+    if (location.search) { history.replaceState(null, "", "/"); }
+    focusPane(0);
+    if (G.started) { tick(); return; }
+    G.started = true;
+    document.addEventListener("visibilitychange", function () { if (!document.hidden) { tick(); } });
+    clock(); tick(); setInterval(tick, 3000); setInterval(clock, 1000);
+  }
   // keys and panes
   function focusPane(i, quiet) {
     S.pane = i;
@@ -5796,16 +5863,23 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
     if (!quiet) { $(PANES[i]).focus({ preventScroll: false }); }
   }
   PANES.forEach(function (p, j) { $(p).addEventListener("focusin", function () { focusPane(j, true); }); });
-  function help(on) { $("help").hidden = !on; if (!on) { $(PANES[S.pane]).focus(); } }
+  function help(on) { $("help").hidden = !on; if (!on && document.body.dataset.gate === "open") { $(PANES[S.pane]).focus(); } }
   function theme() {
     var root = document.documentElement, cur = root.dataset.theme || (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
     root.dataset.theme = cur === "light" ? "dark" : "light";
   }
   function scrollBy(i, dy) { var b = $(PANES[i]).querySelector(".body"); b.scrollTop += dy; }
   $("fi").addEventListener("input", function () { S.filter = $("fi").value.trim().toLowerCase(); put($("fm"), $("fi").value); list(); });
+  $("gi").addEventListener("input", function () { put($("gm"), $("gi").value.toUpperCase()); });
+  $("gate").addEventListener("click", function () { $("gi").focus(); });
   document.addEventListener("keydown", function (e) {
     if (e.metaKey || e.ctrlKey || e.altKey) { return; }
     var k = e.key, inF = document.activeElement === $("fi");
+    if (document.body.dataset.gate !== "open") {   // the prompt: every key goes to the code
+      if (k === "Enter") { e.preventDefault(); if ($("gi").value.trim()) { unlock($("gi").value); } }
+      else if (document.activeElement !== $("gi")) { $("gi").focus(); }
+      return;
+    }
     if (!$("help").hidden) { if (k === "q" || k === "Escape" || k === "?") { e.preventDefault(); help(false); } return; }
     if (inF) {
       if (k === "Escape") { e.preventDefault(); $("fi").value = ""; S.filter = ""; put($("fm"), ""); list(); focusPane(0); }
@@ -5822,14 +5896,13 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
     else if (k === "e") { focusPane(2); }
     else if (k === "?") { help(true); }
     else if (k === "t") { theme(); }
+    else if (k === "q") { lock(); }
     else if (k === "Escape") { focusPane(0); }
     else { hit = false; }
     if (hit) { e.preventDefault(); }
   });
   $("help").addEventListener("click", function (e) { if (e.target === $("help")) { help(false); } });
-  if (location.search) { history.replaceState(null, "", "/"); }
-  document.addEventListener("visibilitychange", function () { if (!document.hidden) { tick(); } });
-  clock(); tick(); setInterval(tick, 3000); setInterval(clock, 1000);
+  if (document.body.dataset.gate === "open") { start(); } else { prompt(); }
 }());
 </script>
 </body>
@@ -5838,6 +5911,54 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
 
 TEXT = "text/plain; charset=utf-8"
 def same(a, b): return hmac.compare_digest(a.encode("utf-8", "replace"), b.encode())
+# story M2: the code. Each start makes one, shown on this process's own terminal (/dev/tty) only: never stdout, stderr,
+# a file or a command line. The page sends it to POST /login (the one route that is not GET) and gets a session cookie.
+# 5 wrong codes use it up, counted per run (not per client); Enter in the terminal makes a new one. Sessions live in
+# memory only: they end after 12 hours or when the server stops.
+ALPHA = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"   # no look-alikes: no 0/O, no 1/I/L
+TRIES = 5; SESSION_MAX = 12 * 3600; SESSIONS_MAX = 32
+_t = os.environ.get("ADE_WEB_TEST_SESSION_SECONDS", "")   # the test switch: 1 to 43200 only, so it can only shorten a session
+SESSION = int(_t) if re.fullmatch(r"[0-9]{1,5}", _t) and 1 <= int(_t) <= SESSION_MAX else SESSION_MAX
+GLOCK = threading.Lock(); GATE = {"code": None, "wrong": 0}; SESSIONS = {}   # session id -> when it ends (time.time())
+try:
+    TTY = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+except OSError:
+    sys.stderr.write("ade: web: ade web shows the code for the page on its own terminal, and it has no controlling terminal "
+                     "here (a service, or an agent's session without one): run ade web in a terminal; nothing was started\n"); sys.exit(2)
+for _n in (signal.SIGTTIN, signal.SIGTTOU): signal.signal(_n, signal.SIG_IGN)   # a background job still shows its code (Enter is read only in the foreground)
+def tty_say(msg):
+    try: os.write(TTY, ("ade web: %s\n" % msg).encode())
+    except OSError: pass
+def new_code():
+    c = "".join(secrets.choice(ALPHA) for _ in range(8))
+    with GLOCK: GATE["code"] = c; GATE["wrong"] = 0
+    tty_say("the code for the page: %s (the page asks for it; Enter here makes a new one)" % c)
+def check(typed):
+    """(right, tries left, used up) for a code typed on the page; a wrong one counts against this run's code"""
+    typed = re.sub(r"[\s-]", "", typed).upper()[:16]
+    with GLOCK:
+        c = GATE["code"]
+        if c is None: return False, 0, True
+        if hmac.compare_digest(typed.encode("utf-8", "replace"), c.encode()): return True, TRIES - GATE["wrong"], False
+        GATE["wrong"] += 1; left = TRIES - GATE["wrong"]
+        if left <= 0: GATE["code"] = None
+    if left <= 0: tty_say("the code is used up (%d wrong codes on the page): press Enter here for a new one (in the background: fg first)" % TRIES)
+    return False, max(left, 0), left <= 0
+def tty_keys():   # Enter in the terminal: a new code
+    while True:
+        try: b = os.read(TTY, 1024)
+        except OSError as e:
+            if e.errno in (errno.EIO, errno.EINTR, errno.EAGAIN): time.sleep(0.5); continue
+            return
+        if not b: time.sleep(0.5); continue
+        if b"\n" in b or b"\r" in b: new_code()
+def session_new():
+    sid = secrets.token_urlsafe(32); now = time.time()
+    with GLOCK:
+        for k in [k for k, t in SESSIONS.items() if t <= now]: del SESSIONS[k]
+        while len(SESSIONS) >= SESSIONS_MAX: del SESSIONS[min(SESSIONS, key=SESSIONS.get)]
+        SESSIONS[sid] = now + SESSION
+    return sid
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "ade-web"; sys_version = ""; timeout = 15
     def log_message(self, *a): pass   # no access log: the first request line carries the token
@@ -5852,23 +5973,59 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def send_json(self, value):   # the one way data leaves: every string hidden, no "<" spelled out
         self.reply(200, "application/json; charset=utf-8", json.dumps(scrub(value)).replace("<", "\\u003c").encode("ascii"))
     def refuse(self, code, text): self.reply(code, TEXT, (text + "\n").encode())
-    def other(self):   # every method but GET
+    def drain(self):   # at most 64 KiB of a body is read; its length, or -1 when it has none
         n = self.headers.get("Content-Length", "")
-        if n.isdigit(): self.rfile.read(min(int(n), 65536))
+        if not re.fullmatch(r"[0-9]{1,9}", n): return b"", -1
+        return self.rfile.read(min(int(n), 65536)), int(n)
+    def other(self):   # every method but GET (and POST /login)
+        self.drain()
+        if self.path.split("?", 1)[0] == "/login": return self.reply(405, TEXT, b"POST only\n", (("Allow", "POST"),))
         self.reply(405, TEXT, b"read-only: GET only\n", (("Allow", "GET"),))
     def __getattr__(self, name):
         if name.startswith("do_"): return self.other
         raise AttributeError(name)
-    def cookie_ok(self):   # any cookie of the name may be the right one (another page on this host can plant one more)
-        ok = False
+    def session(self):   # the live session a cookie names, or None; any cookie of the name may be the right one (another page on this host can plant one more)
+        now = time.time(); found = None
+        with GLOCK: live = [k for k, t in SESSIONS.items() if t > now]
         for h in self.headers.get_all("Cookie") or []:
             for part in h.split(";")[:64]:
                 k, _, v = part.strip().partition("=")
-                if k == CNAME and same(v, COOKIE): ok = True
-        return ok
-    def do_GET(self):
+                if k == CNAME:
+                    for sid in live:
+                        if same(v, sid): found = sid
+        return found
+    def host_ok(self):
         hosts = self.headers.get_all("Host") or []
-        if len(hosts) != 1 or hosts[0].strip().lower() not in HOSTS: return self.refuse(403, "forbidden")
+        return len(hosts) == 1 and hosts[0].strip().lower() in HOSTS
+    def do_POST(self):   # POST /login only: {"code": "..."} opens a session, {"lock": true} ends this one
+        if self.path.split("?", 1)[0] != "/login": return self.other()
+        body, n = self.drain()
+        if not self.host_ok(): return self.refuse(403, "forbidden")
+        origins = self.headers.get_all("Origin") or []   # a browser always names the page that posts: it must be this one
+        if len(origins) != 1 or origins[0].strip().lower() not in ORIGINS: return self.refuse(403, "forbidden")
+        if not same(self.headers.get("X-Ade-Key", "")[:128], TOKEN): return self.refuse(403, "forbidden")
+        if self.headers.get("Sec-Fetch-Site", "same-origin").strip().lower() not in ("same-origin", "none"): return self.refuse(403, "forbidden")
+        if self.headers.get("Content-Type", "").split(";")[0].strip().lower() != "application/json": return self.refuse(415, "JSON only")
+        if n > 1024: return self.refuse(413, "too long")
+        try: d = json.loads(body.decode("utf-8"))
+        except ValueError: d = None
+        if not isinstance(d, dict): return self.refuse(400, "bad request")
+        JS = "application/json; charset=utf-8"
+        if d.get("lock") is True:
+            sid = self.session()
+            if sid:
+                with GLOCK: SESSIONS.pop(sid, None)
+            return self.reply(200, JS, b'{"ok": true}', (("Set-Cookie", "%s=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict" % CNAME),))
+        if not isinstance(d.get("code"), str): return self.refuse(400, "bad request")
+        right, left, used = check(d["code"])
+        if right:
+            sid = session_new()
+            tty_say("a page signed in (%s); the code is used, so the next page needs a new one" % hide(self.client_address[0]))
+            new_code()   # a code opens one page: one seen on a screen share opens nothing once it is used
+            return self.reply(200, JS, b'{"ok": true}', (("Set-Cookie", "%s=%s; Path=/; Max-Age=%d; HttpOnly; SameSite=Strict" % (CNAME, sid, SESSION)),))
+        return self.reply(401, JS, json.dumps(dict({"ok": False, "left": left}, **({"locked": True} if used else {}))).encode())
+    def do_GET(self):
+        if not self.host_ok(): return self.refuse(403, "forbidden")
         origins = self.headers.get_all("Origin") or []   # a browser names the page that asks; only this one may
         if origins and (len(origins) != 1 or origins[0].strip().lower() not in ORIGINS): return self.refuse(403, "forbidden")
         try:
@@ -5877,15 +6034,16 @@ class Handler(http.server.BaseHTTPRequestHandler):
             u = None
         path = u.path if u and self.path.startswith("/") and not u.scheme and not u.netloc else None
         linked = path == "/" and len(q.get("k", [])) == 1 and same(q["k"][0], TOKEN)
-        if not (linked or self.cookie_ok()): return self.refuse(403, "forbidden")
+        sid = self.session()
+        if path == "/":   # the link alone gets the code prompt (no data in it); a session gets the dashboard
+            if not (linked or sid): return self.refuse(403, "forbidden")
+            if linked: opener_off()   # the browser has the link: the file that carried it goes
+            return self.reply(200, "text/html; charset=utf-8", HTML_OPEN if sid else HTML_GATE)
         # the API also wants the token in a header the page's script sends: a cookie is not kept to one port, so a
         # program on another 127.0.0.1 port the browser visits could get the cookie, never the token
-        if path != "/" and not same(self.headers.get("X-Ade-Key", "")[:128], TOKEN): return self.refuse(403, "forbidden")
-        if path != "/" and self.headers.get("Sec-Fetch-Site", "same-origin").strip().lower() not in ("same-origin", "none"): return self.refuse(403, "forbidden")
-        if path == "/":
-            more = (("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Strict" % (CNAME, COOKIE)),) if linked else ()
-            if linked: opener_off()   # the browser has the link: the file that carried it goes
-            return self.reply(200, "text/html; charset=utf-8", HTML, more)
+        if not same(self.headers.get("X-Ade-Key", "")[:128], TOKEN): return self.refuse(403, "forbidden")
+        if self.headers.get("Sec-Fetch-Site", "same-origin").strip().lower() not in ("same-origin", "none"): return self.refuse(403, "forbidden")
+        if not sid: return self.refuse(401, "the code is needed: type the code shown in ade web's terminal")
         if path == "/api/agents": return self.send_json(overview())
         if path == "/api/events":
             since = q.get("since", [""])
@@ -5910,8 +6068,9 @@ def listen(port):
         if FIXED or port == 0: die("port %d is in use on %s; nothing was started (without --port, ade web finds a free one)" % (port, BIND))
         return listen(0)
 server = listen(PORT); PORT = server.server_address[1]
-TOKEN = secrets.token_urlsafe(32); COOKIE = secrets.token_urlsafe(32); NONCE = secrets.token_urlsafe(16); CNAME = "ade_web_%d" % PORT
-HTML = PAGE.replace("__NONCE__", NONCE).replace("__THEME__", theme_css()).replace("__FONT__", FONT).encode("utf-8")
+TOKEN = secrets.token_urlsafe(32); NONCE = secrets.token_urlsafe(16); CNAME = "ade_web_%d" % PORT
+HTML = PAGE.replace("__NONCE__", NONCE).replace("__THEME__", theme_css()).replace("__FONT__", FONT)
+HTML_GATE = HTML.replace("__GATE__", "code").encode("utf-8"); HTML_OPEN = HTML.replace("__GATE__", "open").encode("utf-8")
 HOSTS = set("%s:%d" % (h, PORT) for h in (("127.0.0.1", "localhost") if MODE == "local" else (BIND,) + ((NAME,) if NAME != "-" else ())))
 ORIGINS = set("http://" + h for h in HOSTS)
 URL = "http://%s:%d/?k=%s" % (BIND, PORT, TOKEN)
@@ -5958,15 +6117,16 @@ def stop(*_): raise KeyboardInterrupt
 signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGHUP, stop)
 try:
     if OPEN and open_page():
-        say("the dashboard of the hub %s is open in your browser: read-only, this machine only (127.0.0.1:%d). ade web --print-link prints its address. Ctrl-C or ade web --stop stops it." % (hide(LABEL), PORT))
+        say("the dashboard of the hub %s is open in your browser: read-only, this machine only (127.0.0.1:%d). It asks for the code shown in this terminal. ade web --print-link prints its address. Ctrl-C or ade web --stop stops it." % (hide(LABEL), PORT))
     elif MODE == "local":
         say(URL)
-        say("a read-only view of the hub %s: its agents, their logs, the journal and the chat log. This machine only (127.0.0.1). Ctrl-C or ade web --stop stops it." % hide(LABEL))
+        say("a read-only view of the hub %s: its agents, their logs, the journal and the chat log. This machine only (127.0.0.1). The page asks for the code shown in this terminal. Ctrl-C or ade web --stop stops it." % hide(LABEL))
     else:
         say(URL)
         if NAME != "-": say("http://%s:%d/?k=%s" % (NAME, PORT, TOKEN))
         say("a read-only view of the hub %s: its agents, their logs, the journal and the chat log. Open the address on a device that is signed in to your tailnet. Ctrl-C stops it." % hide(LABEL))
-        say("anyone on your tailnet with the link can read these logs; the link changes every start. It listens on this machine's Tailscale address only (%s), not on any other network." % BIND)
+        say("anyone on your tailnet with the link and the code (shown in this terminal) can read these logs: the link alone is not enough. Both change every start. It listens on this machine's Tailscale address only (%s), not on any other network." % BIND)
+    new_code(); threading.Thread(target=tty_keys, daemon=True).start()
     server.serve_forever(poll_interval=0.5)
 except KeyboardInterrupt:
     pass
