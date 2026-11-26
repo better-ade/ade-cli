@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+
+## 0.2.12
 - CI tests every hub command against a real hub (C1): `tests/e2e/hub_commands.sh`, in `e2e-linux` and `e2e-macos`,
   makes a hub from the real template and runs `method`, `models`, `roles`, `context`, `sync`, `notify`, `chat`,
   `dispatch` and `agent-run` against it, offline. The suite job installs tmux and poppler on macOS and poppler-utils
