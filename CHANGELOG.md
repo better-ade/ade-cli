@@ -1,6 +1,8 @@
 # Changelog
 
 ## Unreleased
+
+## 0.2.13
 - `ade web` asks for a code before it shows anything (M2): each start prints a code of 8 characters on its own
   terminal only, and the page shows a terminal-line prompt until it is typed. A code opens one page (the next is shown once it is used). 5 wrong codes use it up until Enter is
   pressed in that terminal (a new code); a session lasts 12 hours or until the server stops, and `q` on the page locks
