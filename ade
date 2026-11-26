@@ -5729,7 +5729,7 @@ class Chrome:
     def close(self):
         try:
             if self.p.poll() is None: self.send("Browser.close")
-        except OSError: pass
+        except (OSError, Timeout): pass   # Closed: its pipe can end before it has exited (and poll() still sees it)
         try: self.p.wait(3)
         except subprocess.TimeoutExpired: pass
         try: os.killpg(self.p.pid, signal.SIGKILL)   # it and every helper it started (its own session)

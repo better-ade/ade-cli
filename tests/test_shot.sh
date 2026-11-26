@@ -6,7 +6,7 @@
 DAY=2026-11-23; HMS=104507
 shot_fixture() {
   fresh; F="$T/fakebin"; mkdir -p "$F" "$T/log"; export FAKE_LOG="$T/log" ADE_NOW="${DAY}T10:45:07Z"
-  unset FAKE_CHROME FAKE_OS FAKE_UNSHARE_RC FAKE_SCREEN_FAIL FAKE_SEND_RC DISPLAY TMUX ADE_UI_SESSION
+  unset FAKE_CHROME FAKE_OS FAKE_UNSHARE_RC FAKE_LINGER FAKE_SCREEN_FAIL FAKE_SEND_RC DISPLAY TMUX ADE_UI_SESSION
   P="$T/proj"; mkdir -p "$P/docs"; git init -q "$P"; echo "<h1>report</h1>" > "$P/docs/report.html"
   make_hub "$T/hub" hub; printf 'HUB_NAME=acme\n' > "$T/hub/hub.conf"; export ADE_HUB="$T/hub"
   # Playwright's Chromium, where the hub looks for it: a stand-in that answers the DevTools pipe (fd 3 in, fd 4 out)
@@ -19,7 +19,10 @@ open(log + "/chrome.argv", "a").write("\n".join(sys.argv[1:]) + "\n--\n")
 # sandboxfail: Ubuntu 23.10+ (AppArmor): its sandbox cannot start, so it exits at once unless --no-sandbox; dies: always
 if mode == "dies" or (mode == "sandboxfail" and "--no-sandbox" not in sys.argv):
     sys.stderr.write("".join("[1:1:ERROR:gpu_init.cc(1)] early line %d\n" % i for i in range(30)) + "[2:2:FATAL:zygote_host_impl_linux.cc(127)] No usable sandbox!\n"
-                     "[2:2:FATAL:x.cc(9)] last line, token=s3cr3tvalue99\n"); sys.exit(1)
+                     "[2:2:FATAL:x.cc(9)] last line, token=s3cr3tvalue99\n")
+    # lingers: its pipe is closed while it is still shutting down (not yet reaped), the window ade's retry must survive
+    if os.environ.get("FAKE_LINGER"): import time; os.close(3); os.close(4); time.sleep(1)
+    sys.exit(1)
 def png(w, h):
     def ch(t, d): return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d) & 0xffffffff)
     return (b"\x89PNG\r\n\x1a\n" + ch(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
@@ -446,6 +449,10 @@ url_sandbox_retry() {
   assert_eq "$(grep -c '^--$' "$T/log/chrome.argv")" 2 "started twice"
   assert_eq "$(awk '/^--$/{n++; next} $0=="--no-sandbox"{print n}' "$T/log/chrome.argv")" 1 "--no-sandbox only the second time"
   [ ! -s "$T/err" ] || fail "nothing on stderr when the retry works [$(cat "$T/err")]"
+  # the same, but its pipe closes before it has exited: the retry still happens (once flaky, now pinned)
+  shot_fixture; export FAKE_OS=Linux FAKE_LINGER=1; FAKE_CHROME=sandboxfail shot url https://example.test/ --name lingered
+  assert_eq "$RC" 0 "saved when its pipe closes before it exits [$(cat "$T/err")]"; pngsize "$(ev)/$HMS-lingered.png" > /dev/null || fail "a PNG saved"
+  assert_eq "$(grep -c '^--$' "$T/log/chrome.argv")" 2 "started twice"; unset FAKE_LINGER
   # AC2: a Chromium that always exits at once: the error names the last lines it wrote; nothing saved; the rest is kept
   shot_fixture; export FAKE_OS=Linux; FAKE_CHROME=dies shot url https://example.test/; assert_eq "$RC" 1 "a Chromium that always exits"
   assert_eq "$(grep -c '^--$' "$T/log/chrome.argv")" 2 "tried with and without its sandbox"
