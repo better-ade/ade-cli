@@ -38,6 +38,7 @@ jobs:
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: bash tests/e2e/clean.sh
       - run: bash tests/e2e/upgrade.sh
+      - run: bash tests/e2e/import.sh
       - run: bash tests/e2e/interactive.sh
       - run: UI_CAPTURES="$GITHUB_WORKSPACE/ui-captures" bash tests/e2e/ui_snapshots.sh
       - if: always()
@@ -52,6 +53,7 @@ jobs:
       - run: brew install tmux > /dev/null
       - run: /bin/bash tests/e2e/clean.sh
       - run: /bin/bash tests/e2e/upgrade.sh
+      - run: /bin/bash tests/e2e/import.sh
       - run: /bin/bash tests/e2e/interactive.sh
   # layer 8: line coverage of ade (traced); the report is an artifact; fails below tests/coverage-floor
   coverage:

@@ -32,7 +32,8 @@ table() {
     orchestrator) echo "R|orchestrator new X --hub $H"; echo "R|orchestrator start X"; echo "R|orchestrator stop X"
       echo "R|orchestrator logs X"; echo "R|orchestrator remove X" ;;
     hub) echo "R|hub new X --no-github --persona p --client c --owner o"; echo "R|hub use X"
-      echo "A|hub new okname --no-github --dir $T/ah --client c --owner o"; echo "A|hub new okname --no-github --dir $T/ah --persona p --owner o" ;;
+      echo "A|hub new okname --no-github --dir $T/ah --client c --owner o"; echo "A|hub new okname --no-github --dir $T/ah --persona p --owner o"
+      echo "R|hub import X"; echo "R|hub import $T/nosuch --share --name X" ;;
     claude) echo "D1|claude X"; echo "R|claude -- --resume X --dangerously-skip-permissions"
       echo "R|orchestrator new okname --hub $H --channel X" ;;
     setup) echo "R|setup --test X"; echo "R|setup --tools X" ;;

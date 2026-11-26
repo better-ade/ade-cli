@@ -93,6 +93,16 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `bin/init --list` names the personas); the hub counts as made only when `bin/init`
   exits 0 and `hub.conf` exists.
 
+## `ade hub import` and the hub (I3; ade-brain I1, I2)
+- The source must be a hub (`bin/lib.sh`, `hub.conf`) with an executable `bin/adopt` (ade-brain I2, its contract
+  `.ade/context/adopt.md` there); without it ade refuses (exit 2, "update that hub first") and removes the clone.
+- Order, in the fresh clone `<dir>/<name>` (`HUB` set, no input): `bin/setup`, then `bin/adopt --share`,
+  `bin/adopt --handover --owner <name> [--from <x>]` or `bin/adopt --clone --owner <name> --name <name>`. ade prints their output as
+  is (bin/adopt's "Left to do by hand:" list). Either one failing: the clone is removed, exit 1.
+- Folder name: `--name`, else (share, handover) the source's last path part without `.git`; `^[a-z0-9][a-z0-9-]{0,63}$`.
+- `--clone` (not `--no-github`): `gh repo create <name> --private --source . --remote origin --push` in the hub, after
+  it is saved as the default; failures use the `repo-*` kinds. Share and handover keep the source's `origin`.
+
 ## Install (A3)
 - `install.sh` piped from curl reads `main/VERSION` and downloads `ade` from the tag `v<VERSION>`; release tags are
   `vX.Y.Z` (the org release workflow).

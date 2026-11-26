@@ -45,6 +45,7 @@ Hubs:
   claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root, as tab 0 of ade ui when tmux is
               there (ADE_UI=off: in this terminal); with a folder, ade work <folder>
   hub         ade hub new <name> [--private|--public] [--dir <folder>] [--persona P --client C --owner O]
+              | ade hub import <url|path> [--share|--handover|--clone] [--owner <name>] [--from <login|none>] [--name <new>] [--dir <folder>]
               | ade hub list | ade hub use <path>
   project     ade project add <path-or-git-url>... [--name N] [--no-init] [--yes] | add --scan <folder> | list: load repos
               you already have into the hub as project folders (the hub's bin/new, then the ACCESS.md Code row from the
@@ -571,6 +572,7 @@ cmd_hub() {
   local sub="${1:-}"; [ $# -gt 0 ] && shift
   case "$sub" in
     new) hub_new "$@" ;;
+    import) hub_import "$@" ;;
     list)
       [ $# -eq 0 ] || die 2 "usage: ade hub list"
       local d p; d="$(default_hub)"
@@ -583,7 +585,7 @@ cmd_hub() {
       [ $# -eq 1 ] || die 2 "usage: ade hub use <path>"
       is_hub "$1" || die 2 "$1 is not a hub (no bin/lib.sh and hub.conf)"
       local p; p="$(cd "$1" && pwd -P)"; remember_hub "$p"; echo "default hub: $p" ;;
-    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] | ade hub list | ade hub use <path>" ;;
+    *) die 2 "usage: ade hub new <name> [--private|--public] [--dir <folder>] | ade hub import <url|path> [--share|--handover|--clone] | ade hub list | ade hub use <path>" ;;
   esac
 }
 
@@ -615,6 +617,15 @@ hub_first_save() {
     [ "$CHOICE" = retry ] || { echo "Going on; to save it later: $later"; return 0; }
   done
 }
+# repo_failure <name>: after a gh repo create that failed (run_logged), the kind of failure and the line to show
+repo_failure() {
+  case "$FAIL_TEXT" in
+    *"already exists"*) kind="repo-taken"; why="GitHub already has a repository named $1 on your account" ;;
+    *"not logged in"*|*"gh auth login"*|*authenticat*|*credentials*|*permission*|*forbidden*|*"http 401"*|*"http 403"*|*"not accessible"*|*saml*)
+      kind="repo-auth"; why="GitHub refused: not signed in, or no permission to make $1" ;;
+    *) kind="repo-create"; why="GitHub did not make the repository $1: $FAIL_LINE" ;;
+  esac
+}
 hub_again() { printf 'ade hub new %s' "$1"; [ "$2" = "$HOME/hubs" ] || printf ' --dir %s' "$(tilde "$2")"; [ "$3" != --public ] || printf ' --public'; }   # <name> <dir> <vis>
 hub_new() {
   local name="${1:-}" vis=--private dir="$HOME/hubs" gh=1 target persona="" client="" owner="" resume=0 v why kind own=0; [ $# -gt 0 ] && shift
@@ -640,13 +651,7 @@ hub_new() {
     mkdir -p "$dir" || die 1 "cannot create $dir"
     until run_logged "$dir" gh repo create "$name" --template "$ADE_HUB_TEMPLATE" "$vis" --clone; do
       [ ! -d "$target" ] || rm -rf -- "$target"   # a clone this try left half-made (the folder was not there before it)
-      case "$FAIL_TEXT" in
-        *"already exists"*) kind="repo-taken"; why="GitHub already has a repository named $name on your account" ;;
-        *"not logged in"*|*"gh auth login"*|*authenticat*|*credentials*|*permission*|*forbidden*|*"http 401"*|*"http 403"*|*"not accessible"*|*saml*)
-          kind="repo-auth"; why="GitHub refused: not signed in, or no permission to make $name" ;;
-        *) kind="repo-create"; why="GitHub did not make the repository $name: $FAIL_LINE" ;;
-      esac
-      failed "$kind" "$why" "$FAIL_FILE"
+      repo_failure "$name"; failed "$kind" "$why" "$FAIL_FILE"
       case "$CHOICE" in sign-in) gh_login || true ;;
         name) ask_hub_name "$dir"; name="$ANSWER"; target="$dir/$name"; [ "$own" = 0 ] || ASK_AGAIN="$(hub_again "$name" "$dir" "$vis")" ;; esac
     done
@@ -678,6 +683,66 @@ hub_new() {
   target="$(cd "$target" && pwd -P)"; remember_hub "$target"
   hub_first_save "$target" "$gh" "$vis"
   echo "default hub: $(tilde "$target")"; [ "${GUIDE_ON:-0}" = 1 ] || echo "next: ade (what to do next)"
+}
+
+# hub_import (story I3): someone's hub, cloned to this machine and taken the hub's own way: its bin/setup, then its
+# bin/adopt (ade-brain I2, .ade/context/hub-interface.md "ade hub import"). share: join it; handover: it becomes yours;
+# clone: a new hub of your own (its own private GitHub repo unless --no-github). Every answer is checked before the
+# clone; a clone that is not a hub, has no bin/adopt (older than I2) or whose bin/setup or bin/adopt fails is removed.
+IMPORT_USAGE="usage: ade hub import <url|path> [--share|--handover|--clone] [--owner <name>] [--from <login|none>] [--name <new>] [--dir <folder>]"
+hub_import() {
+  local src="${1:-}" mode="" owner="" name="" from="" dir="$HOME/hubs" gh=1 target why kind adopt repo s; [ $# -gt 0 ] && shift
+  case "$src" in ""|-*) die 2 "$IMPORT_USAGE" ;; esac
+  why="$(ask_bad "$src")"; [ -z "$why" ] || die 2 "the source: $why"
+  while [ $# -gt 0 ]; do case "$1" in
+    --share|--handover|--clone) [ -z "$mode" ] || die 2 "one of --share, --handover or --clone"; mode="${1#--}"; shift ;;
+    --owner|--name|--from|--dir) [ $# -ge 2 ] && [ -n "$2" ] || die 2 "$1 needs a value"
+      why="$(ask_bad "$2")"; [ -z "$why" ] || die 2 "$1: $why"
+      case "$1" in --owner) owner="$2" ;; --name) name="$2" ;; --from) from="$2" ;; *) dir="$2" ;; esac; shift 2 ;;
+    --no-github) gh=0; shift ;;
+    *) die 2 "$IMPORT_USAGE" ;;
+  esac; done
+  if [ -z "$mode" ]; then
+    [ -t 0 ] || die 2 "how to take this hub: pass --share, --handover or --clone ($IMPORT_USAGE)"
+    echo "How you take this hub:"
+    ask_choice "Mode" "" "share|join it: it stays its owner's hub, you work in it too" \
+      "handover|it becomes yours: you are its owner from now on" "clone|a copy of your own: a new hub, its own name and history"
+    mode="$CHOICE"
+  fi
+  [ "$mode" != share ] || [ -z "$owner" ] || die 2 "--owner is for --handover and --clone (a share keeps the owner)"
+  [ "$mode" = handover ] || [ -z "$from" ] || die 2 "--from is for --handover (the previous owner's memory folder, or none)"
+  [ "$mode" = clone ] || [ "$gh" = 1 ] || die 2 "$IMPORT_USAGE (a share or handover keeps the hub's own repo)"
+  case "$dir" in /*) ;; *) dir="$PWD/$dir" ;; esac
+  if [ -z "$name" ] && [ "$mode" != clone ]; then name="$(basename "${src%/}")"; name="${name%.git}"; fi
+  if [ -z "$name" ]; then ask_text "The new hub's name (lower-case letters, digits and -):"; name="$ANSWER"; fi
+  matches "$name" '^[a-z0-9][a-z0-9-]{0,63}$' || die 2 "hub names are lower-case letters, digits and - (start with a letter or digit, at most 64): pass --name"
+  target="$dir/$name"
+  [ ! -e "$target" ] || die 2 "$target already exists; pick another --name or --dir"
+  [ "$mode" != clone ] || [ ! -e "$HOME/.agent-hub/$name" ] || die 2 "a hub named $name is already on this machine ($(tilde "$HOME/.agent-hub/$name")): pick another --name"
+  [ "$mode" = share ] || [ -n "$owner" ] || { ASK_AGAIN="ade hub import $src --$mode --name $name"; ask_text "Owner (your name, as it should appear in the hub):"; owner="$ANSWER"; }
+  ASK_AGAIN="ade hub import $src --$mode --name $name${owner:+ --owner '$owner'}${from:+ --from $from}"
+  if [ "$mode" = clone ] && [ "$gh" = 1 ]; then github_ready || exit $?; fi
+  mkdir -p "$dir" || die 1 "cannot create $dir"
+  git clone -q -- "$src" "$target" || { rm -rf -- "$target"; die 1 "could not clone $src"; }
+  is_hub "$target" || { rm -rf -- "$target"; die 2 "$src is not a hub (no bin/lib.sh and hub.conf); nothing kept"; }
+  [ -x "$target/bin/adopt" ] || { rm -rf -- "$target"; die 2 "$src has no bin/adopt (a hub from before ade-brain I2): update that hub first (its owner pulls the latest ade-brain), then import it again; nothing kept"; }
+  echo "hub cloned to $(tilde "$target")"
+  adopt=(--"$mode"); [ "$mode" = share ] || adopt+=(--owner "$owner"); [ "$mode" != clone ] || adopt+=(--name "$name"); [ -z "$from" ] || adopt+=(--from "$from")
+  why=""; for s in setup adopt; do
+    if [ "$s" = setup ]; then (cd "$target" && HUB="$target" ./bin/setup < /dev/null) || why="its bin/setup failed"
+    else (cd "$target" && HUB="$target" ./bin/adopt "${adopt[@]}" < /dev/null) || why="its bin/adopt ${adopt[0]} did not finish"; fi
+    [ -z "$why" ] || { rm -rf -- "$target"; die 1 "the hub was not taken: $why (the lines above say why); the clone is removed (what its bin/setup linked for Claude stays)"; }
+  done
+  target="$(cd "$target" && pwd -P)"; remember_hub "$target"
+  if [ "$mode" = clone ] && [ "$gh" = 1 ]; then repo="$name"
+    echo "Making your private GitHub repository $repo for the new hub:"
+    until run_logged "$target" gh repo create "$repo" --private --source . --remote origin --push; do
+      ASK_AGAIN="cd $(tilde "$target") && gh repo create $repo --private --source . --remote origin --push"
+      repo_failure "$repo"; failed "$kind" "$why" "$FAIL_FILE"
+      case "$CHOICE" in sign-in) gh_login || true ;; name) ask_text "Another name for the GitHub repository:"; repo="$ANSWER" ;; esac
+    done
+  fi
+  echo "default hub: $(tilde "$target")"; echo "next: ade (what to do next)"
 }
 
 # ade with no arguments: what to do next (story A3)
