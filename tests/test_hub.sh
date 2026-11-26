@@ -1,5 +1,6 @@
 #!/bin/bash
 # story A3: `ade hub new|list|use`, `ade` alone, and the curl install. Fake gh, local template repo, fake bin/init.
+# story I3: `ade hub import`, against a local fake hub (bin/setup and bin/adopt log their calls).
 . "$(dirname "$0")/helpers.sh"
 
 # a local hub template: bin/lib.sh and a bin/init that writes hub.conf and logs where it ran
@@ -101,6 +102,103 @@ curl_install() {   # AC7
   assert_eq "$("$T/prefix/bin/ade" version 2>/dev/null)" "ade 1.2.3" "a failed download keeps the old binary"
 }
 
-ALL="new_with_github public_and_dir no_github refusals_create_nothing bare_ade list_and_use curl_install"
+# story I3: a hub to import at $T/src/<name>: bin/setup and bin/adopt log where they ran and their arguments; a clone's
+# bin/adopt starts a fresh history like the real one. noadopt: a hub from before I2 (no bin/adopt)
+make_src() {
+  S="$T/src/$1"; mkdir -p "$S/bin"; git init -q "$S"; : > "$S/bin/lib.sh"; echo "HUB_NAME=$1" > "$S/hub.conf"
+  printf '#!/bin/bash\necho "setup in $PWD HUB=$HUB" >> "%s/setup.log"\n' "$T" > "$S/bin/setup"
+  if [ "${2:-}" != noadopt ]; then cat > "$S/bin/adopt" <<STUB
+#!/bin/bash
+echo "adopt in \$PWD HUB=\$HUB: \$*" >> "$T/adopt.log"
+if [ "\$1" = --clone ]; then rm -rf .git && git init -q && git add -A && git commit -qm adopted; fi
+echo; echo "Left to do by hand:"; echo "The schedule: bin/schedule install"
+STUB
+  fi
+  chmod +x "$S"/bin/*; commit_tag "$S" src
+}
+stub_gh_log() {   # a fake gh that only logs "<pwd>: <args>"
+  local d="$T/fakebin"; mkdir -p "$d"; export GH_LOG="$T/gh.log"; : > "$GH_LOG"
+  printf '#!/bin/bash\necho "$PWD: $*" >> "$GH_LOG"\nexit 0\n' > "$d/gh"; chmod +x "$d/gh"; export PATH="$d:$PATH"
+}
+import_modes() {   # I3 AC1: each mode clones, runs bin/setup then bin/adopt with its flags, and makes it the default
+  local h
+  fresh; make_src acme; stub_gh_log; h="$HOME/hubs/acme"
+  bash "$ADE" hub import "$T/src/acme" --share < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "share exit"; }
+  assert_eq "$(cat "$T/setup.log")" "setup in $h HUB=$h" "bin/setup ran in the clone"
+  assert_eq "$(cat "$T/adopt.log")" "adopt in $h HUB=$h: --share" "bin/adopt --share"
+  assert_eq "$(cat "$HOME/.config/ade/hub")" "$h" "share: the default hub"
+  assert_contains "$T/out" "Left to do by hand:" "bin/adopt's list is shown"
+  assert_contains "$T/out" "default hub: ~/hubs/acme" "says it is the default"
+  bash "$ADE" hub list | grep -qxF "* $h" || fail "listed as the default"
+  [ ! -s "$GH_LOG" ] || fail "share makes no GitHub call"
+  assert_eq "$(git -C "$h" remote get-url origin)" "$T/src/acme" "a share keeps its origin"
+
+  fresh; make_src acme; stub_gh_log; mkdir -p "$T/else"; h="$T/else/mine"
+  bash "$ADE" hub import "$T/src/acme" --handover --owner "Ana Lee" --name mine --dir "$T/else" < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "handover exit"; }
+  assert_eq "$(cat "$T/adopt.log")" "adopt in $h HUB=$h: --handover --owner Ana Lee" "bin/adopt --handover --owner (one argument)"
+  assert_eq "$(cat "$HOME/.config/ade/hub")" "$h" "handover: the default hub in --dir as --name"
+  bash "$ADE" hub import "$T/src/acme" --handover --owner Bo --from none --name mine2 --dir "$T/else" < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "handover --from"; }
+  assert_contains "$T/adopt.log" ": --handover --owner Bo --from none" "--from reaches bin/adopt"
+
+  fresh; make_src acme; stub_gh_log; h="$HOME/hubs/mycopy"
+  printf 'Ana\n' | bash "$ADE" hub import "$T/src/acme" --clone --name mycopy --no-github > "$T/out" 2>&1 || { cat "$T/out"; fail "clone exit"; }
+  assert_eq "$(cat "$T/adopt.log")" "adopt in $h HUB=$h: --clone --owner Ana --name mycopy" "bin/adopt --clone, the owner asked"
+  assert_eq "$(cat "$HOME/.config/ade/hub")" "$h" "clone: the default hub"
+  [ -f "$T/setup.log" ] || fail "clone: bin/setup ran"
+}
+import_ask_and_refusals() {   # I3 AC2: no mode and no terminal: exit 2, nothing cloned; a folder that exists: refused
+  fresh; make_src acme; stub_gh_log
+  bash "$ADE" hub import "$T/src/acme" < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "no mode, no terminal"
+  assert_contains "$T/out" "--share, --handover or --clone" "names the flags"
+  [ ! -e "$HOME/hubs" ] && [ ! -e "$HOME/.config/ade/hub" ] || fail "nothing cloned, no default"
+  for a in "--share --clone" "--share --owner x" "--share --name Bad" "--share --name" "--bogus" ""; do
+    # shellcheck disable=SC2086
+    bash "$ADE" hub import "$T/src/acme" $a < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "refused: [$a]"; done
+  bash "$ADE" hub import < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "no source"
+  [ ! -e "$HOME/hubs" ] || fail "refusals clone nothing"
+  mkdir -p "$HOME/hubs/acme"; echo keep > "$HOME/hubs/acme/f"
+  bash "$ADE" hub import "$T/src/acme" --share < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "an existing folder"
+  assert_eq "$(ls -A "$HOME/hubs/acme")" "f" "the existing folder is untouched"; [ ! -e "$T/adopt.log" ] || fail "nothing run"
+  rm -rf "$HOME/hubs/acme"   # at a terminal, the mode is asked
+  pty_run 'share\n' bash "$ADE" hub import "$T/src/acme" > "$T/out" 2>&1 || { cat "$T/out"; fail "asked at a terminal"; }
+  assert_contains "$T/out" "handover" "the modes are listed"; assert_contains "$T/adopt.log" ": --share" "the answer is the mode"
+}
+import_github() {   # I3 AC3: a clone gets its own private repo (gh repo create, pushed) unless --no-github
+  local h; fresh; make_src acme; stub_gh_log; h="$HOME/hubs/copy2"
+  bash "$ADE" hub import "$T/src/acme" --clone --owner Ana --name copy2 < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "clone with github"; }
+  assert_contains "$GH_LOG" "$h: repo create copy2 --private --source . --remote origin --push" "gh repo create, private, pushed"
+  assert_eq "$(cat "$HOME/.config/ade/hub")" "$h" "the default hub"
+  fresh; make_src acme; stub_gh_log
+  bash "$ADE" hub import "$T/src/acme" --clone --owner Ana --name copy3 --no-github < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "no-github"; }
+  [ ! -s "$GH_LOG" ] || fail "--no-github: no gh call"
+}
+import_old_or_not_hub() {   # I3 AC4: a hub without bin/adopt (older than I2) is refused and its clone removed
+  fresh; make_src old noadopt; stub_gh_log
+  bash "$ADE" hub import "$T/src/old" --share < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "old hub refused"
+  assert_contains "$T/out" "update that hub first" "the reason"
+  [ ! -e "$HOME/hubs/old" ] || fail "the clone is removed"; [ ! -e "$T/setup.log" ] || fail "nothing run in it"
+  [ ! -e "$HOME/.config/ade/hub" ] || fail "no default"
+  mkdir -p "$T/src/plain"; git init -q "$T/src/plain"; echo x > "$T/src/plain/x"; commit_tag "$T/src/plain" x
+  bash "$ADE" hub import "$T/src/plain" --share < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "not a hub"
+  [ ! -e "$HOME/hubs/plain" ] || fail "a non-hub clone is removed"
+  make_src acme; printf '#!/bin/bash\necho refused >&2; exit 2\n' > "$T/src/acme/bin/adopt"   # a bin/adopt that refuses
+  commit_tag "$T/src/acme" adopt-fails
+  bash "$ADE" hub import "$T/src/acme" --share < /dev/null > "$T/out" 2>&1; assert_eq "$?" 1 "bin/adopt failing fails the import"
+  assert_contains "$T/out" "the clone is removed" "says so"; [ ! -e "$HOME/hubs/acme" ] || fail "a clone whose bin/adopt failed is removed"
+  [ ! -e "$HOME/.config/ade/hub" ] || fail "no default after a failure"
+  mkdir -p "$HOME/.agent-hub/taken"
+  bash "$ADE" hub import "$T/src/acme" --clone --owner A --name taken --no-github < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "a clone name this machine has"
+  [ ! -e "$HOME/hubs/taken" ] || fail "refused before the clone"
+  bash "$ADE" hub import "$T/src/acme" --share --from none < /dev/null > "$T/out" 2>&1; assert_eq "$?" 2 "--from only with --handover"
+  bash "$ADE" hub import "$T/src/none" --share < /dev/null > "$T/out" 2>&1; assert_eq "$?" 1 "a clone that fails"
+  [ ! -e "$HOME/hubs/none" ] || fail "nothing left"
+}
+import_documented() {   # I3 AC5
+  fresh; bash "$ADE" hub > "$T/out" 2>&1; assert_contains "$T/out" "ade hub import" "usage lists import"
+  bash "$ADE" help > "$T/out" 2>&1; assert_contains "$T/out" "ade hub import" "help lists import"
+  assert_contains "$REPO/README.md" "ade hub import" "README"; assert_contains "$REPO/CHANGELOG.md" "ade hub import" "CHANGELOG"
+}
+
+ALL="new_with_github public_and_dir no_github refusals_create_nothing bare_ade list_and_use curl_install import_modes import_ask_and_refusals import_github import_old_or_not_hub import_documented"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

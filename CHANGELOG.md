@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+- `ade hub import <url|path> [--share|--handover|--clone] [--owner <name>] [--name <new>] [--dir <folder>]
+  [--no-github]` (I3): bring in someone's hub. It is cloned into `~/hubs/<name>` (or `--dir`), checked to be a hub,
+  then the hub's own `bin/setup` and `bin/adopt` run: `--share` joins it, `--handover` makes you its owner (`--from`: the previous owner's memory folder), `--clone`
+  makes a new hub of your own with its own private GitHub repo (`--no-github`: none). No mode: asked at a terminal,
+  refused otherwise (exit 2). A hub without `bin/adopt` (older than ade-brain I2) is refused, "update that hub first",
+  and its clone removed. The hub becomes the default; `bin/adopt` lists what is left by hand. No secret is copied.
+
 ## 0.2.10
 - The guide asks which tools you use (A23): a new optional step after your hub lists the services ade has a recipe
   for at the pinned ade-skills tag, then the coming ones, then any other; a ready pick runs `ade connect <service>`
