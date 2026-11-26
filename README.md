@@ -94,6 +94,8 @@ mkdir -p ~/.config/ade && echo ~/hubs/my-hub > ~/.config/ade/hub   # or export A
 ade doctor                       # the hub's bin/doctor
 ade status                       # the hub's sessions (bin/sessions)
 ade work projects/api --role builder   # start or resume a focus agent (bin/work)
+ade keys                         # your AI tool keys, the one place: the list, then (at a terminal) set the missing ones
+ade keys share alice glm         # share, receive and set go to the hub's bin/keys as typed
 
 # Load repos you already have into the hub (A21)
 ade project add ~/Project/api ~/Project/web    # each becomes projects/<name>, with its ACCESS.md Code row
@@ -299,7 +301,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade notify …` | Send a notification (hub `bin/notify`) | **built** (A1) |
 | `ade chat …` | Chat with the hub (hub `bin/chat`) | **built** (A1) |
 | `ade method …` | The hub's method tools (hub `bin/method`) | **built** (A1) |
-| `ade keys …` | Manage provider keys (hub `bin/keys`) | **built** (A1) |
+| `ade keys [--missing]` \| `ade keys set <tool>` \| `share …` \| `receive …` | The one place for your AI tool keys: the hub's list; at a terminal, when a key is missing, one question "Set the missing keys now? [y/N]", then each missing one at a hidden prompt (empty skips; a failed store is said and the next is asked), then the list again. `--missing`: no question (a terminal only, else exit 2). Not a terminal: the list alone, as before. Every other argument goes to the hub's `bin/keys` unchanged | **built** (A1, [A26](docs/stories/A26-ade-keys-guided.md)) |
 | `ade models …` | Show or set models (hub `bin/models`) | **built** (A1) |
 | `ade roles …` | Show or set roles (hub `bin/roles`) | **built** (A1) |
 | `ade doctor` | Check the hub's health (hub `bin/doctor`) | **built** (A1) |

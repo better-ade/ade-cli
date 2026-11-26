@@ -23,7 +23,9 @@ Hub commands (run the hub's bin/ scripts):
   notify      send a notification (bin/notify)
   chat        chat with the hub (bin/chat)
   method      the hub's method tools (bin/method)
-  keys        manage provider keys (bin/keys)
+  keys        ade keys [--missing] | set <tool> | share … | receive …: the one place for your AI tool keys (bin/keys):
+              the list, then at a terminal one question to set the missing ones (--missing: no question); set,
+              share and receive go to the hub's bin/keys as typed
   models      show or set models (bin/models)
   roles       show or set roles (bin/roles)
   doctor      check the hub's health (bin/doctor)
@@ -935,11 +937,12 @@ ask_secret() {   # ask_secret <prompt>: a hidden answer into SECRET (not echoed,
   local rc=0
   if [ -t 0 ]; then
     # echo goes off before the prompt shows, so keys typed (or pasted) the moment it appears are never echoed
-    stty -echo 2> /dev/null; trap 'stty echo 2> /dev/null' EXIT INT TERM
+    # Ctrl-C stops ade (130), echo back on: a handled INT would let read go on with echo on and show the next key typed
+    stty -echo 2> /dev/null; trap 'stty echo 2> /dev/null' EXIT TERM; trap 'stty echo 2> /dev/null; echo; die 130 "stopped (Ctrl-C); that key was not stored"' INT
     printf '%s ' "$1"; IFS= read -rs SECRET || rc=1
     stty echo 2> /dev/null; trap - EXIT INT TERM
   else printf '%s ' "$1"; IFS= read -r SECRET || rc=1; fi
-  echo; [ "$rc" = 0 ] || die 1 "setup stopped: no answer"
+  echo; [ "$rc" = 0 ] || die 1 "stopped: no answer"
 }
 yes_no() { ask_yn "$1" n; }
 
@@ -1013,17 +1016,57 @@ key_put() {
   [ "$rc" = 0 ] || KEY_ERR="$(plain "$(printf '%s\n' "$err" | sed 's/^value for [A-Za-z0-9._-]*: *//' | grep -v '^[[:space:]]*$' | tail -1)")"
   return "$rc"
 }
-store_key() {   # store_key <hub> <tool>: hidden prompt, then the hub's bin/keys set <tool> on stdin; 1 = skipped
+store_key() {   # store_key <hub> <tool> [once]: hidden prompt, then the hub's bin/keys set <tool> on stdin; 1 = skipped;
+  # with once (ade keys), a failed store is said in one line (never the value) and returns 2, with no question
   local hub="$1" tool="$2" rc
   while :; do
     ask_secret "Paste the $tool key (hidden; empty skips):"
     [ -n "$SECRET" ] || { SECRET=""; return 1; }
     key_put "$hub" "$tool"; rc=$?
     [ "$rc" != 0 ] || break
+    [ -z "${3:-}" ] || { echo "The $tool key was not stored (the hub's bin/keys set $tool, exit $rc${KEY_ERR:+: $KEY_ERR})"; return 2; }
     failed key-store "The $tool key was not stored (the hub's bin/keys set $tool, exit $rc)"
   done
   record_key "$hub" "$tool"
   echo "$tool key stored in the hub's key store"
+}
+
+# ade keys (A26): the hub's list; at a terminal, when an AI tool key is missing, one question, then each missing one at
+# ade's hidden prompt (store_key once), then the list again. --missing: no question (a terminal only, else exit 2).
+# Not a terminal, or an agent session: the hub's bin/keys as before (exec). Any other arguments: passed through unchanged.
+# The missing ones are KEYS_ASKED the list does not show as "<tool> stored", as key_stored reads it; a tool name never
+# comes from the hub's output. Not anthropic (optional: the Claude login serves; ade keys set anthropic stores one) and
+# not telegram (a chat token). ade setup keeps its own KEY_PROVIDERS.
+KEYS_ASKED="deepseek glm muse gemini"
+keys_terminal() { [ -t 0 ] && [ -t 1 ] && ! agent_context; }
+keys_list() {   # <hub>: the hub's list as it printed it; KEYS_MISSING: the missing tools; the list's exit code
+  local out rc p; KEYS_MISSING=""
+  out="$(hub_run "$1" keys < /dev/null; rc=$?; echo "x$rc")"; rc="${out##*x}"; out="${out%x*}"
+  printf '%s' "$out"; case "$out" in ""|*$'\n') ;; *) echo ;; esac   # a list without its last newline still ends a line
+  [ "$rc" = 0 ] || return "$rc"
+  for p in $KEYS_ASKED; do
+    printf '%s\n' "$out" | awk -v n="$p" '$1 == n && $2 == "stored" { f = 1 } END { exit !f }' || KEYS_MISSING="${KEYS_MISSING:+$KEYS_MISSING }$p"
+  done
+}
+cmd_keys() {
+  local only=0 hub p rc bad=0
+  # each run_hub is followed by exit: an exported RUN_HUB_WAIT=1 would otherwise come back into the guided part
+  if [ $# -eq 1 ] && [ "$1" = --missing ]; then only=1; elif [ $# -gt 0 ]; then run_hub keys "$@"; exit $?; fi
+  if ! keys_terminal; then
+    [ "$only" = 0 ] || die 2 "ade keys --missing asks for each key at a terminal (it refuses pipes and agent sessions); nothing changed"
+    run_hub keys; exit $?; fi
+  hub="$(find_hub)" || exit $?
+  [ -e "$hub/bin/keys" ] || die 2 "this hub has no bin/keys; update it"; [ -x "$hub/bin/keys" ] || die 2 "bin/keys is not executable"
+  keys_list "$hub" || exit $?
+  if [ -z "$KEYS_MISSING" ]; then [ "$only" = 0 ] || echo "no AI tool key is missing"; return 0; fi
+  echo "missing: $(printf '%s' "$KEYS_MISSING" | sed 's/ /, /g')"
+  [ "$only" = 1 ] || ( ASK_EOF=no; ask_yn "Set the missing keys now?" n ) || return 0
+  for p in $KEYS_MISSING; do
+    store_key "$hub" "$p" once; rc=$?
+    case "$rc" in 1) echo "$p: skipped" ;; 2) bad=1 ;; esac
+  done
+  echo; keys_list "$hub" || exit $?
+  [ "$bad" = 0 ] || exit 1
 }
 
 # live_test <hub> <provider>: one tiny read-only task in a throwaway folder through the hub's bin/agent --live-test.
@@ -6173,7 +6216,8 @@ case "$cmd" in
   chat) if [ "${1:-}" = setup ] && [ $# -ge 2 ]; then   # the channel is recorded once its setup succeeds
       h="$(find_hub)" || exit $?; hub_run "$h" chat "$@" || exit $?; record_channel "$h" "$2"; exit 0; fi
     run_hub chat "$@" ;;
-  dispatch|notify|method|keys|models|roles|sync|context) run_hub "$cmd" "$@" ;;
+  keys) cmd_keys "$@" ;;
+  dispatch|notify|method|models|roles|sync|context) run_hub "$cmd" "$@" ;;
   doctor) tools_report; run_hub doctor "$@" ;;
   files) cmd_files "$@" ;;
   view) cmd_view "$@" ;;
