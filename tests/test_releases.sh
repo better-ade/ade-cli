@@ -186,7 +186,17 @@ release_workflow_passes_assets() {   # item 11: the shared release workflow atta
   grep -Eq '^ +with: \{.*assets: ade[ ,}]' "$REPO/.github/workflows/release.yml" || fail "release.yml passes assets: ade"
 }
 
+ci_real_tools() {   # story C1 AC8: the suite installs the real tools its tests would skip without; both e2e jobs run hub_commands
+  local ci="$REPO/.github/workflows/ci.yml"
+  job() { awk -v j="  $1:" '$0==j{p=1;next} p&&/^  [a-z]/{p=0} p' "$ci"; }   # the lines of one job
+  job suite | grep -Eq 'Darwin.*brew install.*(tmux.*poppler|poppler.*tmux)' || fail "suite installs tmux and poppler on macOS"
+  job suite | grep -Eq 'Linux.*apt-get install.*poppler-utils' || fail "suite installs poppler-utils on Linux"
+  job e2e-linux | grep -Eq 'run: (/bin/)?bash tests/e2e/hub_commands\.sh$' || fail "e2e-linux runs hub_commands.sh"
+  job e2e-macos | grep -Eq 'run: (/bin/)?bash tests/e2e/hub_commands\.sh$' || fail "e2e-macos runs hub_commands.sh"
+  [ -f "$REPO/tests/e2e/hub_commands.sh" ] || fail "tests/e2e/hub_commands.sh exists"
+}
+
 ALL="once_a_day_once_per_version security_every_command badge_and_telegram sha_mismatch_refused manifest_fail_closed manifest_bound
-  offline_never_blocks never_delays_a_command no_check_no_request auto_update_policy auto_update_failure_says_why release_workflow_passes_assets"
+  offline_never_blocks never_delays_a_command no_check_no_request auto_update_policy auto_update_failure_says_why release_workflow_passes_assets ci_real_tools"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

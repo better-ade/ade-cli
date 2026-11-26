@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- CI tests every hub command against a real hub (C1): `tests/e2e/hub_commands.sh`, in `e2e-linux` and `e2e-macos`,
+  makes a hub from the real template and runs `method`, `models`, `roles`, `context`, `sync`, `notify`, `chat`,
+  `dispatch` and `agent-run` against it, offline. The suite job installs tmux and poppler on macOS and poppler-utils
+  on Linux, so the real-tmux and real-pdftotext tests run instead of skipping.
 - `ade keys` sets the missing keys for you (A26): the hub's list as before, then, at a terminal and when an AI tool
   key is missing (deepseek, glm, muse, gemini; the optional Anthropic key is never asked for: `ade keys set anthropic`), one question "Set the missing keys now? [y/N]"; yes asks
   for each at ade's hidden prompt (empty skips; a failed store says so, without the value, and moves on, exit 1)
