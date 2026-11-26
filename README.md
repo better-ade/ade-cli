@@ -227,25 +227,37 @@ run; over SSH with no display (and outside Visual Studio Code's own terminal) th
 
 ## The web view ([A19](docs/stories/A19-web-view.md))
 
-`ade web` shows the hub in a browser, read-only: the agents and their state (the hub's `bin/sessions`), the picked
-agent's log (its events and its `STATE.md`), today's and yesterday's journal, and the chat log, refreshed every
-3 seconds. It runs in the foreground and prints the address to open; Ctrl-C stops it.
+`ade web` opens a live, read-only dashboard of the hub's agents in your browser (M1): a terminal UI in the browser,
+in `ade ui`'s colours. Every agent with its state (● busy, ○ idle, ◐ ready, ▲ quiet, ✖ blocked), its `STATE.md` line,
+its last check-in when the hub records one, and how long it has been in that state; the orchestrator (main) first. Above
+them, the alerts: an agent quiet, likely waiting at a prompt, or not started; a monitor alerting; unread notes to main.
+The status bar shows the counts, the last sync, the monitors and the inbox. The picked agent's detail (its `STATE.md`,
+journal entries and events) and the hub's event feed update every 3 seconds. Keyboard first: `j`/`k` move, Enter
+opens, Tab changes pane, `/` filters, `e` the events, `?` the keys, `q`/Esc closes. Dark first, a light variant from the
+same tokens, panes stacked on a phone, no animation under reduced motion. Every asset is inline: the page makes no
+request but its own API.
 
 ```
 $ ade web
-ade web: http://127.0.0.1:8765/?k=<a random token>
+the dashboard of the hub acme is open in your browser: read-only, this machine only (127.0.0.1:8765). ...
 ```
 
 | Command | What it does |
 |---|---|
-| `ade web [--port N]` | The page on `127.0.0.1` only: port 8765 when it is free, else a free one |
+| `ade web [--port N]` | The dashboard on `127.0.0.1` only (port 8765 when it is free, else a free one), opened in your browser |
+| `ade web --no-open` | The same, without opening a browser: it prints the address to open |
 | `ade web --tailnet` | The page on this machine's Tailscale address only, so your phone can open it |
+| `ade web --stop` | Stops the running dashboard (only `ade web`'s own server); nothing running is fine |
 | `ade web --print-link` | The running page's address; nothing and exit 1 when none runs |
 
 - **Read-only.** It answers GET and nothing else (405). No request changes, starts or stops anything. It reads the
   journal, the chat log, the event log and each listed agent's `STATE.md`; a request never names a file.
 - **The link is the key.** The address holds a random token, new at every start; without it the answer is 403. The
-  page keeps it as a cookie the page's own script cannot read. Do not paste the address anywhere public.
+  page keeps it for its tab and sends it with every request (a cookie alone opens nothing). Do not paste the address
+  anywhere public. When `ade web`
+  opens the browser, the token is never on a command line: the browser opens a file only you can read, removed once the
+  link is used (or after 60 s); it never opens a browser over SSH. A request from another site, or naming another host
+  (DNS rebinding), is refused.
 - **Keys are hidden.** Every line passes the same rule as `ade chat logs` (Telegram bot tokens, key-shaped strings,
   long opaque runs), plus GitHub tokens, `sk_` keys, AWS access key ids, `Authorization:` headers, the user and
   password of a URL, the value after a name ending in `password`, `secret`, `token` or `key`, and private key
@@ -296,7 +308,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 |---|---|---|
 | `ade work <folder> [--role <r>]` | Start or resume a focus agent (hub `bin/work`), as a tab of the hub's `ade ui` session and never a new window: the session is made when it is not there (`ade ui` shows it). `ADE_UI=off`, no tmux or the ADE app: the hub's own way | **built** (A1, A6) |
 | `ade status` | List sessions (hub `bin/sessions`) | **built** (A1) |
-| `ade web [--port N] [--tailnet]` \| `--print-link` | A read-only page of the agents, their logs, the journal and the chat log, on `127.0.0.1` behind a random link; `--tailnet`: on this machine's Tailscale address only | **built** (A19) |
+| `ade web [--port N] [--tailnet] [--no-open]` \| `--print-link` \| `--stop` | A live, read-only dashboard of the agents (state, alerts, check-ins, events), the journal and the chat log, on `127.0.0.1` behind a random link, opened in your browser; `--tailnet`: on this machine's Tailscale address only | **built** (A19, M1) |
 | `ade dispatch …` | Hand a task to an agent (hub `bin/dispatch`) | **built** (A1) |
 | `ade notify …` | Send a notification (hub `bin/notify`) | **built** (A1) |
 | `ade chat …` | Chat with the hub (hub `bin/chat`) | **built** (A1) |

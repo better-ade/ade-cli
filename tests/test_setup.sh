@@ -159,7 +159,8 @@ focus_multi_live_tests() {   # AC9
 no_gpt_or_codex() {   # AC11
   fresh; setup_fakes; setup_hub; setup 1 "" n
   ! grep -qiE "gpt|codex|openai" "$T/out" || fail "never offered"
-  ! grep -qiE "gpt|codex|openai" "$ADE" || fail "not in ade either"
+  # (ade web's inline font is lines of base64 only: letters there are data, not a name)
+  ! grep -vE '^[A-Za-z0-9+/=]{64,}$' "$ADE" | grep -qiE "gpt|codex|openai" || fail "not in ade either"
 }
 
 telegram_step() {   # AC12 (the step itself, one thing at a time to a bot that passed its test: test_telegram.sh)

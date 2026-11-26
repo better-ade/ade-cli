@@ -39,10 +39,11 @@ Orchestrators (one per hub, run by the hub's bin/chat):
 Hubs:
   ui          ade ui [--detach]: one tmux window, a tab per agent (keys: prefix ? in it)
   dash        ade dash [--once]: the fleet panel (agents, tickets, last events)
-  web         ade web [--port N] [--tailnet] | --print-link: a read-only page of the agents, their logs, the journal and the
-              chat log, keys hidden, on 127.0.0.1 behind a random link (Ctrl-C stops it); --tailnet: on this machine's
-              Tailscale address instead, for your phone (anyone on your tailnet with the link can read it); --print-link:
-              the running page's address, else nothing and exit 1
+  web         ade web [--port N] [--tailnet] [--no-open] | --print-link | --stop: a live, read-only dashboard of the agents
+              (state, alerts, events, logs, journal), keys hidden, on 127.0.0.1 behind a random link, opened in your
+              browser (--no-open: print the link instead); --tailnet: on this machine's Tailscale address instead, for
+              your phone (anyone on your tailnet with the link can read it); --print-link: the running page's address,
+              else nothing and exit 1; --stop: stops the running one (Ctrl-C does too)
   setup       ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]: the guide, one step at a time (resumes where you are)
   claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root, as tab 0 of ade ui when tmux is
               there (ADE_UI=off: in this terminal); with a folder, ade work <folder>
@@ -4794,7 +4795,7 @@ PY
 # standard library on 127.0.0.1, or with --tailnet on this machine's Tailscale address only. The address carries a
 # random token; ~/.config/ade/web (0600: the server's pid, then the address) is there while it runs.
 WEB_LINK="$CONF_DIR/web"
-WEB_USAGE="usage: ade web [--port N] [--tailnet] | ade web --print-link"
+WEB_USAGE="usage: ade web [--port N] [--tailnet] [--no-open] | ade web --print-link | ade web --stop"
 # web_link: the running server's address: line 2 of the link file, while the pid on line 1 lives and the address still
 # answers (a pid can be another program's after a crash or a restart of the machine); a stale file is removed
 web_link() {
@@ -4833,26 +4834,45 @@ except Exception:
   web_tailnet_ip "$ip" || die 1 "tailscale ip -4 did not print one address in 100.64.0.0/10: not a Tailscale address, so nothing was started"
   printf '%s %s\n' "$ip" "${name:--}"
 }
+# web_stop: ends the running ade web of this user (the link file's pid, once it is sure that pid is that server: it
+# answers on its address and its command line is python3 with this link file), then waits for the link file to go
+web_stop() {
+  local pid="" cmd i=0
+  web_link > /dev/null || { echo "ade web is not running"; return 0; }
+  IFS= read -r pid < "$WEB_LINK" 2> /dev/null
+  matches "$pid" '^[0-9]+$' || die 1 "the link file names no process; nothing was stopped"
+  cmd="$(ps -ww -p "$pid" -o command= 2> /dev/null)"
+  # ade web's own server: python -I -c <its code> ... <this link file> (macOS shows python3 as .../Python)
+  case "$cmd" in *[Pp]ython*" -I -c "*"ThreadingHTTPServer"*" $WEB_LINK "*) ;; *) die 1 "process $pid is not ade web; nothing was stopped" ;; esac
+  kill -TERM "$pid" 2> /dev/null || die 1 "could not stop process $pid"
+  while kill -0 "$pid" 2> /dev/null; do i=$((i + 1)); [ "$i" -lt 100 ] || die 1 "ade web (process $pid) did not stop within 10 s"; sleep 0.1; done
+  echo "ade web: stopped"
+}
 cmd_web() {
-  local port="" fixed=0 mode=local link=0 hub bind=127.0.0.1 name=- t
+  local port="" fixed=0 mode=local link=0 stop=0 open=1 hub bind=127.0.0.1 name=- t k
   while [ $# -gt 0 ]; do
     case "$1" in
       --port) { [ $# -ge 2 ] && matches "$2" '^[1-9][0-9]{3,4}$' && [ "$2" -ge 1024 ] && [ "$2" -le 65535 ]; } || die 2 "$WEB_USAGE (N: a port from 1024 to 65535)"
         port="$2"; fixed=1; shift 2 ;;
       --tailnet) mode=tailnet; shift ;;
+      --no-open) open=0; shift ;;
       --print-link) link=1; shift ;;
+      --stop) stop=1; shift ;;
       *) die 2 "$WEB_USAGE" ;;
     esac
   done
-  if [ "$link" = 1 ]; then [ "$fixed$mode" = 0local ] || die 2 "$WEB_USAGE"; web_link; return; fi
+  if [ "$link$stop" != 00 ]; then [ "$fixed$mode$open$link$stop" = 0local110 ] || [ "$fixed$mode$open$link$stop" = 0local101 ] || die 2 "$WEB_USAGE"; fi
+  if [ "$link" = 1 ]; then web_link; return; fi
+  if [ "$stop" = 1 ]; then web_stop; return; fi
   hub="$(find_hub)" || exit $?
   command -v python3 > /dev/null 2>&1 || die 1 "ade web needs python3 (ade setup --tools installs it)"
-  ! web_link > /dev/null || die 1 "ade web is already running (ade web --print-link prints its address); stop that one with Ctrl-C first"
+  ! web_link > /dev/null || die 1 "ade web is already running (ade web --print-link prints its address); stop that one with Ctrl-C or ade web --stop first"
   if [ "$fixed" = 0 ]; then port="${ADE_WEB_PORT:-8765}"; { matches "$port" '^[1-9][0-9]{3,4}$' && [ "$port" -ge 1024 ] && [ "$port" -le 65535 ]; } || port=8765; fi
-  if [ "$mode" = tailnet ]; then t="$(web_tailnet)" || exit $?; bind="${t%% *}"; name="${t#* }"; fi
+  if [ "$mode" = tailnet ]; then t="$(web_tailnet)" || exit $?; bind="${t%% *}"; name="${t#* }"; open=0; fi
   ( umask 077; mkdir -p "$CONF_DIR" ) && chmod 700 "$CONF_DIR" || die 1 "cannot create $CONF_DIR"
   HUB="$hub"; export HUB   # as run_hub: the hub's bin/sessions reads it
-  web_py "$hub" "$(hub_state "$hub")" "$(hub_label "$hub")" "$mode" "$bind" "$port" "$fixed" "$name" "$WEB_LINK"
+  for k in $THEME_KEYS; do export "ADE_THEME_$k=$(theme_get "$k")"; done   # the page uses ade ui's colours
+  web_py "$hub" "$(hub_state "$hub")" "$(hub_label "$hub")" "$mode" "$bind" "$port" "$fixed" "$name" "$WEB_LINK" "$open"
 }
 # web_py <hub> <state folder> <hub name> <local|tailnet> <address> <port> <port fixed 0|1> <MagicDNS name|-> <link file>:
 # the server, in the foreground until Ctrl-C. Run with -I. GET only. It opens, for reading, only: <hub>/journal/<today
@@ -4861,9 +4881,9 @@ cmd_web() {
 # through hide(): the hub's bin/chat logs rule (bin/agent.py ESCAPES and HIDE), then ade's additions (MORE).
 web_py() {
   local src; IFS= read -r -d '' src <<'PY' || true
-import errno, functools, hmac, http.server, ipaddress, json, os, re, secrets, signal, socket, socketserver, stat, subprocess, sys, threading, time, urllib.parse
-HUB, STATE, LABEL, MODE, BIND, PORT, FIXED, NAME, LINK = sys.argv[1:10]
-HUB = os.path.realpath(HUB); STATE = os.path.realpath(STATE); PORT = int(PORT); FIXED = FIXED == "1"
+import calendar, errno, functools, hmac, http.server, ipaddress, json, os, re, secrets, shutil, signal, socket, socketserver, stat, subprocess, sys, tempfile, threading, time, urllib.parse
+HUB, STATE, LABEL, MODE, BIND, PORT, FIXED, NAME, LINK, OPEN = sys.argv[1:11]
+HUB = os.path.realpath(HUB); STATE = os.path.realpath(STATE); PORT = int(PORT); FIXED = FIXED == "1"; OPEN = OPEN == "1" and MODE == "local"
 CAP = 256 * 1024   # at most this much of a file's end is read
 RAW = 4096         # at most this much of a line is looked at: the hub's "<id>.<secret>" pattern is quadratic on one long run
 LINE = 2000        # and this much of a line is sent
@@ -4894,11 +4914,12 @@ PK_LINE = re.compile(r"(?:[A-Za-z0-9+/=]+|<hidden>)")   # a line of a block whos
 PK = "<hidden private key>"
 MORE = [(re.compile(r"(?i)(authorization\s{0,8}[:=]\s{0,8})\S.*"), r"\1<hidden>"),
         (re.compile(r"(?i)\b(bearer\s{1,8})[A-Za-z0-9._~+/=-]{8,}"), r"\1<hidden>"),
-        (re.compile(r"(?i)((?:password|passwd|secret|token|key)(?:\\?[\"'])?\s{0,8}[:=]\s{0,8})(?:\\?\"[^\"]*\"?|\\?'[^']*'?|<hidden[^>]{0,16}>|[^\s\"'&,;]+)"), r"\1<hidden>"),
+        (re.compile(r"(?i)((?:password|passwd|secret|token|key)(?:\\?[\"'])?\s{0,8}(?:[:=]|%3[dD])\s{0,8})(?:\\?\"[^\"]*\"?|\\?'[^']*'?|<hidden[^>]{0,16}>|[^\s\"'&,;]+)"), r"\1<hidden>"),
+        (re.compile(r"(?i)\b((?:set-)?cookie\s{0,8}:\s{0,8})\S.*"), r"\1<hidden>"),
         (re.compile(r"(://)[^\s/@]{1,512}(@)"), r"\1<hidden>\2"),
         (re.compile(r"(?<![A-Za-z0-9])(?:AKIA|ASIA)[A-Z0-9]{16}(?![A-Za-z0-9])"), "<hidden key>"),
         (re.compile(r"(?<![A-Za-z0-9])(?:sk|pk|rk)_[A-Za-z0-9_-]{12,}"), "<hidden key>"),
-        (re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,})"), "<hidden token>"),
+        (re.compile(r"(?<![A-Za-z0-9])(?:gh[pousr]_[A-Za-z0-9]{16,}|github_pat_[A-Za-z0-9_]{16,}|glpat-[A-Za-z0-9_-]{16,})"), "<hidden token>"),
         (re.compile(PK_BEGIN.pattern + r".*?(?:" + PK_END.pattern + r"|$)"), PK), (PK_END, PK)]
 WORD = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.:=/+~%@-"
 def clean(text):
@@ -4908,8 +4929,12 @@ def clean(text):
     return text.rstrip(WORD) + " [line cut]" if cut else text
 @functools.lru_cache(maxsize=2048)   # a log's last lines are mostly the ones of the request before: each is worked out once
 def patterns(text):
-    for p, r in HIDE + MORE: text = p.sub(r, text)
+    dot = "." in text
+    for p, r in HIDE + MORE:
+        if p is DOTTED and not dot: continue   # it needs a "."; without one it would only spend time (quadratic on a long run)
+        text = p.sub(r, text)
     return text[:LINE]
+DOTTED = HIDE[1][0]
 def hide(text): return patterns(clean(text))
 def hide_lines(lines):
     """hide() for the lines of one file, with a private key block that spans lines hidden as one marker"""
@@ -4934,16 +4959,25 @@ def scrub(v):   # every string of an answer, keys too
     if isinstance(v, dict): return {scrub(k): scrub(x) for k, x in v.items()}
     return v
 
-def tail(path, root, n):
-    """the last n lines (not yet hidden) of a regular file that really is under root; [] for anything else"""
+def inside(real, root): return real != root and os.path.commonpath([real, root]) == root
+def opened(path, root):
+    """(file, stat) of a regular file that really is under root, open for reading; None for anything else"""
     try:
         real = os.path.realpath(path)
-        if real == root or os.path.commonpath([real, root]) != root: return []
+        if not inside(real, root): return None
         fd = os.open(real, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
-        with os.fdopen(fd, "rb") as f:
-            st = os.fstat(fd)
-            if not stat.S_ISREG(st.st_mode): return []
-            f.seek(max(0, st.st_size - CAP)); data = f.read(CAP)
+    except (OSError, ValueError):
+        return None
+    f = os.fdopen(fd, "rb"); st = os.fstat(fd)
+    if stat.S_ISREG(st.st_mode): return f, st
+    f.close(); return None
+def tail(path, root, n):
+    """the last n lines (not yet hidden) of a regular file that really is under root; [] for anything else"""
+    got = opened(path, root)
+    if not got: return []
+    f, st = got
+    try:
+        with f: f.seek(max(0, st.st_size - CAP)); data = f.read(CAP)
     except (OSError, ValueError):
         return []
     lines = data.decode("utf-8", "replace").split("\n")
@@ -4976,17 +5010,23 @@ def sessions():
         SEEN.update(at=time.time(), rows=rows, note=note)
         return rows, note
 def agent_log(name):
-    """an agent of the list, by its name: its events and its folder's STATE.md; None when the list has no such name"""
+    """an agent of the list (or main, the orchestrator), by its name: its events, its folder's STATE.md and journal
+    entries, and the commands that act on it; None when the list has no such name"""
     row = next((r for r in sessions()[0] if r["name"] == name), None)
-    if row is None: return None
-    folder = row["folder"]; state = []; events = []
-    if FOLDER.fullmatch(folder): state = tail(os.path.join(HUB, folder, "STATE.md"), HUB, 200)
+    if row is None and name != "main": return None
+    folder = row["folder"] if row else "main"; state = []; events = []
+    if folder == "main": state = tail(os.path.join(HUB, "STATE.md"), HUB, 200)
+    elif FOLDER.fullmatch(folder): state = tail(os.path.join(HUB, folder, "STATE.md"), HUB, 200)
     for line in tail(os.path.join(STATE, "events.jsonl"), STATE, 4000):
         try: e = json.loads(line)
         except ValueError: continue
         if isinstance(e, dict) and (e.get("from") == folder or e.get("to") in (folder, "all")):
             events.append("%s  %s -> %s  %s: %s" % tuple(str(e.get(k, "?")) for k in ("time", "from", "to", "kind", "text")))
-    return {"agent": name, "folder": folder, "events": events[-200:], "state": state}
+    if folder == "main": commands = ["ade claude", "ade ui"]
+    elif FOLDER.fullmatch(folder): commands = ["ade work " + folder, "ade ui"]
+    else: commands = ["ade ui"]
+    return {"agent": name, "folder": folder, "events": events[-200:], "state": state,
+            "journal": journal_of("hub" if folder == "main" else folder), "commands": commands}
 def journal():
     now = time.time(); out = {}
     for key, back in (("today", 0), ("yesterday", 86400)):
@@ -4994,118 +5034,802 @@ def journal():
         out[key] = {"date": day, "lines": tail(os.path.join(HUB, "journal", day + ".md"), HUB, 400)}
     return out
 
+# story M1: the monitor's data. Times in the hub are UTC "YYYY-MM-DDTHH:MM:SSZ"; anything else counts as no time.
+STAMP = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z")
+def epoch(s):
+    if not isinstance(s, str) or not STAMP.fullmatch(s): return None
+    try: return calendar.timegm(time.strptime(s, "%Y-%m-%dT%H:%M:%SZ"))
+    except ValueError: return None
+def ago(s):
+    s = int(max(0, s))
+    return "%dm" % (s // 60) if s < 3600 else "%dh%02dm" % (s // 3600, s % 3600 // 60) if s < 86400 else "%dd%02dh" % (s // 86400, s % 86400 // 3600)
+HEAD = re.compile(r"## ([0-9]{2}:[0-9]{2}) UTC · (\S+)\s*$")
+def journal_of(folder):
+    """the entries of one folder ("hub" for the hub root) in today's and yesterday's journal: one line per text line,
+    the first of an entry with its date and time; the last 80"""
+    out = []; now = time.time()
+    for back in (86400, 0):
+        day = time.strftime("%Y-%m-%d", time.gmtime(now - back)); mine = False
+        for line in hide_lines(tail(os.path.join(HUB, "journal", day + ".md"), HUB, 2000)):
+            m = HEAD.match(line)
+            if m: mine = m.group(2) == folder; first = "%s %s  " % (day[5:], m.group(1)); continue
+            if line.startswith("## "): mine = False; continue
+            if mine and line.strip(): out.append(first + line); first = " " * len(first)
+    return out[-80:]
+def state_line(folder):
+    """the last line of a folder's STATE.md that is not a heading, a fence or blank, hidden, its list mark gone"""
+    path = os.path.join(HUB, "STATE.md") if folder == "main" else os.path.join(HUB, folder, "STATE.md") if FOLDER.fullmatch(folder) else None
+    if not path: return ""
+    for line in reversed(hide_lines(tail(path, HUB, 200))):
+        t = line.strip()
+        if t and not t.startswith(("#", "```", "<!--", "---")): return t.lstrip("-*> ").strip()[:300]
+    return ""
+def event_rows(n):
+    """the event log's last n entries that are JSON objects"""
+    out = []
+    for line in tail(os.path.join(STATE, "events.jsonl"), STATE, n):
+        try: e = json.loads(line)
+        except ValueError: continue
+        if isinstance(e, dict): out.append(e)
+    return out
+def facts(rows):
+    """per sender: the time of its last event of any kind but quiet, its last quiet, blocked and check-in event"""
+    f = {}
+    for e in rows:
+        t = epoch(e.get("time")); who = e.get("from")
+        if t is None or not isinstance(who, str): continue
+        d = f.setdefault(who, {"other": 0, "quiet": 0, "blocked": 0, "checkin": 0}); k = e.get("kind")
+        if k == "quiet": d["quiet"] = max(d["quiet"], t)
+        else: d["other"] = max(d["other"], t)
+        if k == "blocked": d["blocked"] = max(d["blocked"], t)
+        if e.get("checkin") is True: d["checkin"] = max(d["checkin"], t)
+    return f
+STATES = {"busy": "busy", "idle": "idle", "ready": "ready", "blocked": "blocked", "-": "starting"}
+PROMPT = 15 * 60   # busy with no change for this long: likely waiting at a prompt
+SLOW = 3 * 60      # listed with no status for this long after its start: it has not started
+def judge(row, fx):
+    """(state, since): bin/sessions' STATUS, then a blocked event newer than its LAST, then a quiet event newer than
+    both and than every other event from that folder"""
+    last, started = epoch(row["last"]), epoch(row["started"])
+    st = STATES.get(row["status"], "unknown"); since = last or started
+    if fx.get("blocked", 0) > (last or 0): st, since = "blocked", fx["blocked"]
+    q = fx.get("quiet", 0)
+    if q and q > (last or 0) and q >= fx.get("other", 0): st, since = "quiet", q
+    return st, since
+def monitors():
+    """the hub's monitor state (<state>/monitor-state: <key>.status, <key>.alert while alerting): a summary and an
+    alert per alerting monitor"""
+    d = os.path.realpath(os.path.join(STATE, "monitor-state")); out = {"checks": 0, "alerting": 0, "time": None}; alerts = []
+    try:
+        if not inside(d, STATE): return out, alerts
+        names = sorted(os.listdir(d))[:4000]
+    except OSError:
+        return out, alerts
+    keys = [n[:-len(".status")] for n in names if n.endswith(".status")]; on = set(n[:-len(".alert")] for n in names if n.endswith(".alert"))
+    newest = 0
+    for k in keys:
+        try: newest = max(newest, os.lstat(os.path.join(d, k + ".status")).st_mtime)
+        except OSError: pass
+    out.update(checks=len(keys), alerting=len(on), time=int(newest) or None)
+    for k in sorted(on)[:50]:
+        text = (tail(os.path.join(d, k + ".status"), STATE, 1) or [""])[0]
+        alerts.append({"kind": "monitor", "agent": None, "text": "monitor %s: %s" % (k.replace("-monitors-d-", " / "), text[:200] or "ALERT")})
+    return out, alerts
+def syncs(n):
+    """the last n lines of the hub's sync log (<ISO time> <text>)"""
+    out = []
+    for line in tail(os.path.join(STATE, "logs", "sync.log"), STATE, n):
+        t, _, text = line.partition(" ")
+        if not STAMP.fullmatch(t): t, text = "", line
+        out.append({"time": t, "text": text, "ok": not re.search(r"(?i)\b(fail|failed|refused|error|conflict)", text)})
+    return out
+INBOX = {"at": 0.0, "n": None}
+def unread():
+    """bin/inbox --count main (it only reads), at most every 2 s; None when the hub has none or it fails"""
+    with LOCK:
+        if time.time() - INBOX["at"] < 2: return INBOX["n"]
+        n = None; exe = os.path.join(HUB, "bin", "inbox")
+        if os.access(exe, os.X_OK):
+            try:
+                r = subprocess.run([exe, "--count", "main"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=5, cwd=HUB)
+                out = r.stdout.decode("ascii", "replace").strip()
+                if r.returncode == 0 and re.fullmatch(r"[0-9]{1,9}", out): n = int(out)
+            except (subprocess.TimeoutExpired, OSError): pass
+        INBOX.update(at=time.time(), n=n)
+        return n
+def overview():
+    """what /api/agents answers: main (the orchestrator) and every session, their state, the alerts, the hub's health"""
+    rows, note = sessions(); now = time.time(); fx = facts(event_rows(4000)); agents = []; alerts = []
+    if not any(r["name"] == "main" for r in rows):
+        rows = [{"name": "main", "folder": "main", "started": "-", "role": "orchestrator", "status": "?", "last": "-", "engine": "-"}] + rows
+    for r in rows:
+        main = r["name"] == "main"; folder = "main" if main and r["folder"] == "main" else r["folder"]
+        st, since = judge(r, fx.get(folder, {}))
+        a = {k: r[k] for k in ("name", "folder", "started", "role", "status", "last", "engine")}
+        a.update(state=st, since=since, line=state_line(folder), checkin=fx.get(folder, {}).get("checkin") or None, orchestrator=main)
+        agents.append(a)
+        last, started = epoch(r["last"]), epoch(r["started"])
+        if st == "quiet": alerts.append({"kind": "quiet", "agent": r["name"], "text": "%s is quiet (for %s)" % (r["name"], ago(now - since))})
+        if r["status"] == "busy" and last and now - last > PROMPT:
+            alerts.append({"kind": "prompt", "agent": r["name"], "text": "%s may be waiting at a prompt (busy, nothing new for %s)" % (r["name"], ago(now - last))})
+        if r["status"] == "-" and started and now - started > SLOW:
+            alerts.append({"kind": "prompt", "agent": r["name"], "text": "%s has not started after %s (a prompt waiting?)" % (r["name"], ago(now - started))})
+    mon, more = monitors(); alerts += more
+    n = unread()
+    if n: alerts.append({"kind": "unread", "agent": "main", "text": "%d unread %s to main" % (n, "note" if n == 1 else "notes")})
+    counts = {}
+    for a in agents: counts[a["state"]] = counts.get(a["state"], 0) + 1
+    last_sync = syncs(1)
+    return {"hub": LABEL, "time": time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime(now)), "now": int(now), "note": note, "agents": agents,
+            "counts": counts, "alerts": alerts, "sync": last_sync[0] if last_sync else None, "monitor": mon, "unread": n}
+CURSOR = re.compile(r"([0-9]{1,20})-([0-9]{1,20})")
+EVENTS = 200
+def events_since(since):
+    """/api/events: the log's entries after the cursor "<inode>-<offset>" (at most 256 KB and 200 of them), the new
+    cursor, and the last 5 syncs. No cursor, a bad one, or a log that was rotated or cut: its last 200, reset true."""
+    out = {"events": [], "cursor": "0-0", "reset": True, "syncs": syncs(5)}
+    got = opened(os.path.join(STATE, "events.jsonl"), STATE)
+    if not got: return out
+    f, st = got; m = CURSOR.fullmatch(since or "")
+    reset = not m or int(m.group(1)) != st.st_ino or int(m.group(2)) > st.st_size
+    start = max(0, st.st_size - CAP) if reset else int(m.group(2))
+    if not reset and st.st_size - start > CAP: start = st.st_size - CAP; reset = True   # too far behind: the newest part
+    try:
+        with f: f.seek(start); data = f.read(min(CAP, st.st_size - start))
+    except (OSError, ValueError):
+        return out
+    end = data.rfind(b"\n") + 1; used = data[:end]
+    lines = used.decode("utf-8", "replace").split("\n")[:-1] if end else []
+    if reset and start > 0 and lines: lines = lines[1:]   # the first line may be cut
+    rows = []
+    for line in lines[-EVENTS:]:
+        try: e = json.loads(line[:RAW * 2])
+        except ValueError: continue
+        if not isinstance(e, dict): continue
+        rows.append({k: (e.get(k) if isinstance(e.get(k), str) else "?") for k in ("time", "from", "to", "kind", "text")})
+        rows[-1]["checkin"] = e.get("checkin") is True
+    out.update(events=rows, cursor="%d-%d" % (st.st_ino, start + end), reset=reset)
+    return out
+
+# the page's colours: ade ui's (~/.config/ade/theme, the ADE_THEME_<key> the shell passes), dark first, and a light
+# variant made from the same tokens; every text colour is pushed (toward white on dark, black on light) until it has
+# WCAG AA contrast (4.5:1) on each background the page puts it on
+HEX = re.compile(r"#[0-9a-fA-F]{6}")
+THEME_DEFAULT = {"bg": "#1e1e2e", "fg": "#cdd6f4", "accent": "#89b4fa", "orchestrator": "#cba6f7", "busy": "#f9e2af", "idle": "#a6e3a1", "blocked": "#f38ba8", "unread": "#fab387"}
+THEME = {k: (os.environ.get("ADE_THEME_" + k, "") if HEX.fullmatch(os.environ.get("ADE_THEME_" + k, "")) else d) for k, d in THEME_DEFAULT.items()}
+def rgb(h): return tuple(int(h[i:i + 2], 16) for i in (1, 3, 5))
+def mix(a, b, t): return tuple(a[i] + (b[i] - a[i]) * t for i in range(3))
+def luma(c):
+    v = [x / 255.0 for x in c]; v = [x / 12.92 if x <= 0.03928 else ((x + 0.055) / 1.055) ** 2.4 for x in v]
+    return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2]
+def contrast(a, b): x, y = sorted((luma(a), luma(b)), reverse=True); return (x + 0.05) / (y + 0.05)
+def hexof(c): return "#%02x%02x%02x" % tuple(int(round(max(0, min(255, x)))) for x in c)
+def legible(c, grounds, toward, need=4.6):
+    t = 0.0; x = c
+    while min(contrast(rgb(hexof(x)), g) for g in grounds) < need and t < 1: t = min(1.0, t + 0.04); x = mix(c, toward, t)
+    return rgb(hexof(x))
+def palette(light):
+    white, black = (255, 255, 255), (0, 0, 0)
+    if light: bg, ink = mix(rgb(THEME["fg"]), white, 0.82), rgb(THEME["bg"])
+    else: bg, ink = rgb(THEME["bg"]), rgb(THEME["fg"])
+    toward = white if luma(bg) < 0.18 else black
+    p = {"bg": bg, "bar": mix(bg, ink, 0.08), "sel": mix(bg, rgb(THEME["accent"]), 0.18), "line": mix(bg, ink, 0.3)}
+    grounds = [p["bg"], p["bar"], p["sel"]]
+    p["fg"] = legible(ink, grounds, toward); p["dim"] = legible(mix(ink, bg, 0.4), grounds, toward)
+    for k, v in (("accent", "accent"), ("orch", "orchestrator"), ("busy", "busy"), ("idle", "idle"), ("blocked", "blocked"), ("unread", "unread")):
+        p[k] = legible(rgb(THEME[v]), grounds, toward)
+    return p
+def theme_css():
+    def block(p): return " ".join("--%s: %s;" % (k, hexof(v)) for k, v in sorted(p.items())) + " --veil: rgba(%d, %d, %d, 0.82);" % tuple(int(x) for x in p["bg"])
+    dark, light = block(palette(False)), block(palette(True))
+    return (":root { color-scheme: dark; %s }\n@media (prefers-color-scheme: light) { :root:not([data-theme=\"dark\"]) { color-scheme: light; %s } }\n"
+            ":root[data-theme=\"light\"] { color-scheme: light; %s }" % (dark, light, light))
+
+# the page's one font, inline (no request leaves the page): JetBrains Mono 2.304 Regular, cut to the characters the page
+# uses (Latin-1, punctuation, arrows, box drawing, blocks, the state glyphs), as WOFF2. Copyright 2020 The JetBrains
+# Mono Project Authors (https://github.com/JetBrains/JetBrainsMono), under the SIL Open Font License 1.1
+# (https://openfontlicense.org); the font's own name table keeps that notice and the licence. Reserved Font Name: none.
+FONT = "".join("""
+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
+0m+o+IP/2NjAB6FdJGRMAwAA
+""".split())
+
 PAGE = """<!doctype html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
+<meta name="color-scheme" content="dark light">
 <title>ade web</title>
 <style nonce="__NONCE__">
-:root { color-scheme: light dark; --bg: #f6f6f4; --card: #ffffff; --ink: #1c1c1a; --dim: #6b6b66; --line: #d9d9d3; --busy: #b45309; --idle: #15803d; --pick: #1d4ed8; }
-@media (prefers-color-scheme: dark) { :root { --bg: #161615; --card: #20201e; --ink: #ececea; --dim: #9a9a94; --line: #383835; --busy: #fbbf24; --idle: #4ade80; --pick: #93c5fd; } }
+@font-face { font-family: "ADE Mono"; font-weight: 400; font-style: normal; font-display: block; src: url(data:font/woff2;base64,__FONT__) format("woff2"); }
+__THEME__
 * { box-sizing: border-box; }
-body { margin: 0; padding: 12px; background: var(--bg); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-main { max-width: 1100px; margin: 0 auto; }
-header { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 4px; }
-h1 { font-size: 18px; margin: 0; }
-h2 { font-size: 15px; margin: 18px 0 6px; }
-h3 { font-size: 13px; margin: 10px 0 4px; color: var(--dim); font-weight: 600; }
-.dim { color: var(--dim); font-size: 13px; }
-#note { color: var(--busy); font-size: 13px; min-height: 1.2em; }
-#agents { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 8px; }
-.agent { text-align: left; font: inherit; color: inherit; background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 9px 11px; cursor: pointer; min-height: 44px; }
-.agent.on { border-color: var(--pick); box-shadow: 0 0 0 1px var(--pick); }
-.agent b { display: block; overflow-wrap: anywhere; }
-.agent span { display: block; font-size: 13px; color: var(--dim); overflow-wrap: anywhere; }
-.agent .busy { color: var(--busy); font-weight: 600; }
-.agent .idle, .agent .ready { color: var(--idle); font-weight: 600; }
-pre { margin: 0; padding: 9px 11px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; max-height: 46vh; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: 12.5px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
-pre.none { color: var(--dim); font-family: inherit; }
-footer { margin: 18px 0 8px; }
+html, body { height: 100%; }
+body { margin: 0; background: var(--bg); color: var(--fg); overflow: hidden;
+  font: 13px/20px "ADE Mono", ui-monospace, Menlo, "DejaVu Sans Mono", Consolas, monospace; font-synthesis: none;
+  font-variant-ligatures: none; font-feature-settings: "liga" 0, "calt" 0, "tnum" 1; font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+b, h1, h2 { font: inherit; margin: 0; }
+pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; }
+::selection { background: var(--sel); color: var(--fg); }
+#app { display: grid; grid-template-rows: 20px auto minmax(0, 1fr) 20px; height: 100vh; height: 100dvh; }
+#bar { display: flex; gap: 2ch; padding: 0 1ch 0 0; background: var(--bar); white-space: nowrap; overflow: hidden; }
+#bar > * { flex: 0 0 auto; }
+#bar .tag { background: var(--accent); color: var(--bg); padding: 0 1ch; }
+#hub { color: var(--fg); overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 4ch; }
+#counts { display: flex; gap: 1ch; }
+#health { display: flex; gap: 2ch; color: var(--dim); }
+#clock { margin-left: auto; color: var(--dim); }
+.c-busy, .bad-busy { color: var(--busy); } .c-idle { color: var(--idle); } .c-ready { color: var(--accent); }
+.c-quiet { color: var(--unread); } .c-blocked, .bad { color: var(--blocked); } .ok { color: var(--idle); } .c-none { color: var(--dim); }
+#alert { padding: 0 1ch; background: var(--blocked); color: var(--bg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#alert.wait { background: var(--busy); }
+#grid { display: grid; grid-template-columns: minmax(0, 11fr) minmax(0, 9fr); grid-template-rows: minmax(0, 1fr) 262px;
+  gap: 10px 1ch; padding: 10px 1ch 0; min-height: 0; }
+.pane { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; border: 1px solid var(--line); outline: none; }
+@media (min-resolution: 2dppx) { .pane { border-width: 0.5px; } }
+.pane.on { border-color: var(--accent); }
+.pt { position: absolute; top: -10px; left: 1ch; padding: 0 1ch; background: var(--bg); color: var(--dim); white-space: nowrap; }
+.pt .n { color: var(--dim); }
+.pane.on .pt { color: var(--accent); }
+.body { flex: 1 1 auto; min-height: 0; overflow: auto; margin-top: 10px; padding: 0 0 9px; overscroll-behavior: contain; scroll-behavior: smooth;
+  scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+#list { grid-column: 1; grid-row: 1; }
+#detail { grid-column: 2; grid-row: 1; }
+#events { grid-column: 1 / 3; grid-row: 2; }
+.row { height: 40px; cursor: pointer; padding-right: 1ch; }
+.row .l1, .row .l2 { display: flex; height: 20px; white-space: nowrap; }
+.row span { overflow: hidden; text-overflow: ellipsis; }
+.row.sel { background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); }
+.mk { flex: 0 0 2ch; text-align: center; color: var(--blocked); }
+.g { flex: 0 0 2ch; display: inline-block; }
+.g i, .spin i { display: inline-block; width: 1ch; text-align: center; font-style: normal; }
+.g .win { display: inline-block; width: 1ch; overflow: hidden; vertical-align: top; }
+.spin { display: none; width: 10ch; white-space: nowrap; animation: spin 1s steps(10, end) infinite; }
+.s-busy .spin { display: inline-block; } .s-busy .dot { display: none; }
+@keyframes spin { from { transform: translateX(0); } to { transform: translateX(-10ch); } }
+.nm { flex: 0 0 15ch; padding-right: 1ch; color: var(--fg); }
+.orch .nm { color: var(--orch); }
+.fd { flex: 1 1 0; min-width: 0; padding-right: 1ch; color: var(--dim); }
+.rl { flex: 0 0 13ch; padding-right: 1ch; color: var(--dim); }
+.en { flex: 0 0 9ch; padding-right: 1ch; color: var(--dim); }
+.tm { flex: 0 0 8ch; text-align: right; color: var(--fg); }
+.tr { flex: 0 0 4ch; padding-left: 2ch; color: var(--line); }
+.ln { flex: 1 1 0; min-width: 0; color: var(--dim); }
+.ck { flex: 0 0 auto; padding-left: 1ch; color: var(--idle); }
+.s-busy .g { color: var(--busy); } .s-idle .g { color: var(--idle); } .s-ready .g { color: var(--accent); }
+.s-quiet .g { color: var(--unread); } .s-blocked .g { color: var(--blocked); } .s-starting .g, .s-unknown .g { color: var(--dim); }
+.alerting .tm { color: var(--blocked); }
+.say { padding: 0 1ch 0 2ch; color: var(--dim); white-space: pre-wrap; overflow-wrap: anywhere; }
+.say.bad { color: var(--blocked); }
+#flt { position: relative; display: flex; height: 20px; padding: 0 1ch 0 2ch; border-top: 1px solid var(--line); color: var(--dim); white-space: nowrap; overflow: hidden; }
+@media (min-resolution: 2dppx) { #flt { border-top-width: 0.5px; } }
+#flt .pr { color: var(--accent); padding-right: 1ch; }
+#fm { color: var(--fg); overflow: hidden; }
+#fm:empty::before { content: "filter"; color: var(--dim); }
+#flt:focus-within #fm:empty::before { content: ""; }
+.cur { display: none; width: 1ch; height: 16px; margin-top: 2px; background: var(--fg); }
+#flt:focus-within .cur { display: inline-block; animation: blink 1.06s steps(1, end) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+#fi { position: absolute; inset: 0; width: 100%; opacity: 0; border: 0; padding: 0; font: inherit; color: transparent; background: transparent; }
+.dh { display: flex; gap: 1ch; padding: 0 1ch; white-space: nowrap; overflow: hidden; }
+.dh .nm { flex: 0 1 auto; padding: 0; }
+.dh .fd { flex: 1 1 auto; }
+.sec { display: flex; align-items: center; gap: 1ch; padding: 0 1ch; margin-top: 20px; color: var(--accent); white-space: nowrap; }
+.sec::after { content: ""; flex: 1; border-top: 1px solid var(--line); }
+@media (min-resolution: 2dppx) { .sec::after { border-top-width: 0.5px; } }
+.txt { padding: 0 1ch; color: var(--fg); }
+.txt.none { color: var(--dim); }
+.cmd { padding: 0 1ch; color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; }
+.cmd::before { content: "$ "; color: var(--idle); }
+.ev { display: flex; padding: 0 1ch; min-height: 20px; }
+.ev span { flex: 0 0 auto; padding-right: 1ch; white-space: nowrap; }
+.ev .t { color: var(--dim); }
+.ev .who { width: 13ch; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+.ev .to { width: 12ch; overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
+.ev .k { width: 9ch; color: var(--accent); }
+.ev .x { flex: 1 1 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); padding: 0; }
+.k-idle .k, .k-checkin .k { color: var(--idle); } .k-pushed .k { color: var(--busy); } .k-contract .k { color: var(--orch); }
+.k-quiet .k { color: var(--unread); } .k-blocked .k { color: var(--blocked); } .k-ended .k, .k-sync .k { color: var(--dim); }
+.k-sync .who { color: var(--dim); } .k-sync.bad .k { color: var(--blocked); }
+#keys { display: flex; gap: 2ch; padding: 0 1ch; color: var(--dim); white-space: nowrap; overflow: hidden; }
+#keys b { color: var(--accent); }
+#help { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--veil); padding: 1ch; }
+#help[hidden] { display: none; }
+#help .box { position: relative; background: var(--bg); border: 1px solid var(--accent); padding: 20px 2ch 10px; max-width: 100%; }
+#help .box .pt { color: var(--accent); }
+#help pre { color: var(--fg); }
+@media (max-width: 720px) {
+  body { overflow: auto; }
+  #app { display: block; height: auto; }
+  #bar { flex-wrap: wrap; column-gap: 2ch; row-gap: 0; white-space: normal; height: auto; padding: 0 1ch; }
+  #bar .tag { margin-left: -1ch; }
+  #clock { margin-left: 0; }
+  #alert { white-space: normal; }
+  #grid { display: block; padding: 10px 1ch 10px; }
+  .pane { margin-bottom: 20px; }
+  #detail .body, #events .body { max-height: 70vh; }
+  .rl, .en { display: none; }
+  .nm { flex-basis: 12ch; }
+  .ev { flex-wrap: wrap; }
+  .ev .x { flex-basis: 100%; padding-left: 0; }
+  #keys { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
+  .s-busy .spin { display: none; } .s-busy .dot { display: inline-block; }
+  #flt:focus-within .cur { opacity: 1; }
+}
 </style>
 </head>
 <body>
-<main>
-<header><h1 id="hub">ade web</h1><span class="dim" id="when"></span></header>
-<div id="note" role="status"></div>
-<h2>Agents</h2>
-<div id="agents"></div>
-<p class="dim" id="none" hidden>No agent is running in this hub.</p>
-<section id="log" hidden>
-<h2 id="logname">Agent log</h2>
-<h3>Events</h3>
-<pre id="events"></pre>
-<h3>STATE.md</h3>
-<pre id="state"></pre>
+<div id="app">
+<header id="bar"><span class="tag">ade</span><b id="hub">connecting</b><span id="counts"></span><span id="health"><span id="sync"></span><span id="mon"></span><span id="unread"></span></span><span id="clock"></span></header>
+<div id="alert" role="status" hidden></div>
+<main id="grid">
+<section id="list" class="pane on" tabindex="0" aria-label="agents"><h2 class="pt">agents <span class="n" id="nlist"></span></h2>
+<div class="body" id="rows" role="listbox" aria-label="agents"><div class="say">· connecting to the hub…</div></div>
+<label id="flt"><span class="pr">/</span><span id="fm"></span><span class="cur"></span><input id="fi" type="text" autocomplete="off" spellcheck="false" aria-label="filter agents"></label>
 </section>
-<h2>Journal</h2>
-<h3 id="day0">Today</h3>
-<pre id="today"></pre>
-<h3 id="day1">Yesterday</h3>
-<pre id="yesterday"></pre>
-<h2>Chat log</h2>
-<pre id="chat"></pre>
-<footer class="dim">Read-only. Keys and tokens are hidden. Refreshed every 3 seconds while this page is in view.</footer>
+<section id="detail" class="pane" tabindex="0" aria-label="detail"><h2 class="pt">detail</h2>
+<div class="body" id="dbody"><div class="say">· pick an agent on the left</div></div>
+</section>
+<section id="events" class="pane" tabindex="0" aria-label="events"><h2 class="pt">events <span class="n" id="nev"></span></h2>
+<div class="body" id="feed" role="log"><div class="say">· waiting for the first events</div></div>
+</section>
 </main>
+<footer id="keys"><span><b>j k</b> move</span><span><b>⏎</b> detail</span><span><b>⇥</b> pane</span><span><b>/</b> filter</span><span><b>e</b> events</span><span><b>t</b> theme</span><span><b>?</b> help</span><span>read-only · keys hidden</span></footer>
+</div>
+<div id="help" hidden role="dialog" aria-label="keys"><div class="box"><h2 class="pt">keys</h2><pre>j k  ↑ ↓   move in a pane
+⏎          show the agent's detail
+⇥  ⇧⇥      next or previous pane
+/          filter the agents (Esc clears)
+e          jump to the events
+g G        top or bottom of a pane
+t          light or dark
+?          this help
+q  Esc     close it
+
+Read-only: to act, run the command the
+detail pane shows. Keys and tokens are
+hidden. Refreshed every 3 seconds.</pre></div></div>
 <script nonce="__NONCE__">
 (function () {
   "use strict";
-  var picked = null, chose = false, over = false, turn = 0;
+  var STATES = ["busy", "idle", "ready", "quiet", "blocked"];
+  var GLYPH = { busy: "●", idle: "○", ready: "◐", quiet: "▲", blocked: "✖", starting: "◌", unknown: "·" };
+  var SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+  var PANES = ["list", "detail", "events"];
+  var S = { agents: [], rows: {}, picked: null, chose: false, filter: "", over: false, skew: 0, cursor: "", feed: [], syncs: [],
+            feedKey: "", alerts: [], down: 0, pane: 0, logFor: null, logKey: "" };
   function $(id) { return document.getElementById(id); }
-  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } e.textContent = text; return e; }
-  function fill(id, lines, none) {
-    var box = $(id), low = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
-    box.textContent = lines.length ? lines.join("\\n") : none;
-    box.className = lines.length ? "" : "none";
+  function el(tag, cls, text) { var e = document.createElement(tag); if (cls) { e.className = cls; } if (text !== undefined) { e.textContent = text; } return e; }
+  function put(node, text) { if (node.textContent !== text) { node.textContent = text; } }
+  function now() { return Date.now() / 1000 + S.skew; }
+  function two(n) { return n < 10 ? "0" + n : "" + n; }
+  function dur(s) {
+    s = Math.max(0, Math.floor(s));
+    if (s < 60) { return s + "s"; }
+    if (s < 3600) { return Math.floor(s / 60) + "m" + two(s % 60) + "s"; }
+    if (s < 86400) { return Math.floor(s / 3600) + "h" + two(Math.floor(s % 3600 / 60)) + "m"; }
+    return Math.floor(s / 86400) + "d" + two(Math.floor(s % 86400 / 3600)) + "h";
+  }
+  function hhmm(t) { return typeof t === "string" && t.length >= 16 ? t.slice(11, 16) + "Z" : "--:--"; }
+  function short(f) { var a = S.agents, i; for (i = 0; i < a.length; i++) { if (a[i].folder === f) { return a[i].name; } } return f; }
+  function glyph(state) {
+    var g = el("span", "g"), w = el("span", "win"), sp = el("span", "spin"), i;
+    for (i = 0; i < SPIN.length; i++) { sp.appendChild(el("i", "", SPIN.charAt(i))); }
+    w.appendChild(sp); w.appendChild(el("i", "dot", GLYPH[state] || "·")); g.appendChild(w); return g;
+  }
+  // the status bar, the alert line and the clock
+  function clock() {
+    var d = new Date(now() * 1000);
+    put($("clock"), two(d.getUTCHours()) + ":" + two(d.getUTCMinutes()) + ":" + two(d.getUTCSeconds()) + "Z");
+    var line = $("alert");
+    if (S.over) { return; }
+    if (S.down) {
+      var left = Math.max(0, Math.ceil((S.down - Date.now()) / 1000));
+      line.hidden = false; line.className = "wait"; put(line, "· waiting for the hub… retrying in " + left + "s");
+    } else if (S.alerts.length) {
+      line.hidden = false; line.className = "";
+      put(line, "▲ " + S.alerts.length + (S.alerts.length === 1 ? " alert" : " alerts") + " · " + S.alerts.map(function (a) { return a.text; }).join(" · "));
+    } else { line.hidden = true; }
+    var all = S.agents, i, r;
+    for (i = 0; i < all.length; i++) { r = S.rows[all[i].name]; if (r) { put(r.tm, all[i].since ? dur(now() - all[i].since) : "–"); } }
+  }
+  function bar(d) {
+    put($("hub"), d.hub); document.title = "ade web · " + d.hub;
+    var c = $("counts"); c.textContent = "";
+    STATES.forEach(function (s) { var n = d.counts[s] || 0, x = el("span", n ? "c-" + s : "c-none", GLYPH[s] + " " + n); x.title = s; c.appendChild(x); });
+    var sy = $("sync");
+    if (d.sync) { sy.className = d.sync.ok ? "" : "bad"; put(sy, "sync " + (d.sync.ok ? "✓ " : "✗ ") + hhmm(d.sync.time)); } else { sy.className = ""; put(sy, "sync –"); }
+    var m = $("mon"), mo = d.monitor;
+    if (mo.checks) { m.className = mo.alerting ? "bad" : ""; put(m, "monitors " + (mo.alerting ? "✗ " + mo.alerting + "/" + mo.checks : "✓ " + mo.checks)); } else { m.className = ""; put(m, "monitors –"); }
+    var u = $("unread");
+    if (typeof d.unread === "number") { u.className = d.unread ? "c-quiet" : ""; put(u, "inbox " + d.unread); } else { put(u, ""); }
+  }
+  // the agent list: one row per agent, kept and updated in place
+  function row(a) {
+    var r = { box: el("div", "row"), mk: el("span", "mk", " "), nm: el("span", "nm"), fd: el("span", "fd"), rl: el("span", "rl"), en: el("span", "en"),
+              tm: el("span", "tm"), ln: el("span", "ln"), ck: el("span", "ck"), state: null };
+    var l1 = el("div", "l1"), l2 = el("div", "l2");
+    r.box.setAttribute("role", "option"); r.box.dataset.name = a.name;
+    r.g = glyph(a.state);
+    [r.mk, r.g, r.nm, r.fd, r.rl, r.en, r.tm].forEach(function (x) { l1.appendChild(x); });
+    l2.appendChild(el("span", "tr", "└")); l2.appendChild(r.ln); l2.appendChild(r.ck);
+    r.box.appendChild(l1); r.box.appendChild(l2);
+    r.box.addEventListener("click", function () { S.chose = true; pick(a.name); focusPane(0, true); });
+    return r;
+  }
+  function shown(a) {
+    var f = S.filter; if (!f) { return true; }
+    return [a.name, a.folder, a.role, a.engine, a.state].join(" ").toLowerCase().indexOf(f) >= 0;
+  }
+  function list() {
+    var box = $("rows"), seen = {}, order = [], alerting = {};
+    S.alerts.forEach(function (x) { if (x.agent) { alerting[x.agent] = true; } });
+    S.agents.forEach(function (a) {
+      var r = S.rows[a.name] || (S.rows[a.name] = row(a));
+      seen[a.name] = true;
+      if (!shown(a)) { return; }
+      order.push(r.box);
+      var cls = "row s-" + a.state + (a.orchestrator ? " orch" : "") + (alerting[a.name] ? " alerting" : "") + (a.name === S.picked ? " sel" : "");
+      if (r.box.className !== cls) { r.box.className = cls; }
+      r.box.setAttribute("aria-selected", a.name === S.picked ? "true" : "false");
+      if (r.state !== a.state) { r.g.querySelector(".dot").textContent = GLYPH[a.state] || "·"; r.state = a.state; r.g.title = a.state; }
+      put(r.mk, alerting[a.name] ? "!" : " ");
+      put(r.nm, a.name); put(r.fd, a.folder); put(r.rl, a.role === "-" ? "" : a.role); put(r.en, a.engine === "-" ? "" : a.engine);
+      put(r.ln, a.line || (a.state === "starting" ? "starting…" : "no STATE.md line yet"));
+      put(r.ck, a.checkin ? "✓ checked in " + dur(now() - a.checkin) + " ago" : "");
+    });
+    Object.keys(S.rows).forEach(function (n) { if (!seen[n]) { delete S.rows[n]; } });
+    var extra = [];
+    if (S.note) { extra.push(el("div", "say bad", "! " + S.note)); }
+    if (S.agents.length && !S.agents.some(function (a) { return !a.orchestrator; })) { extra.push(el("div", "say", "· no agents running — start one with: ade work <folder>")); }
+    if (S.filter && !order.length) { extra.push(el("div", "say", "· no agent matches /" + S.filter)); }
+    var want = order.concat(extra), i;
+    var same = box.children.length === want.length;
+    for (i = 0; same && i < want.length; i++) { if (box.children[i] !== want[i]) { same = false; } }
+    if (!same) { for (i = 0; i < want.length; i++) { box.appendChild(want[i]); } while (box.children.length > want.length) { box.removeChild(box.firstChild); } }
+    put($("nlist"), S.filter ? order.length + "/" + S.agents.length : "" + S.agents.length);
+  }
+  function move(by) {
+    var vis = S.agents.filter(shown), i = -1, j;
+    for (j = 0; j < vis.length; j++) { if (vis[j].name === S.picked) { i = j; } }
+    if (!vis.length) { return; }
+    i = Math.max(0, Math.min(vis.length - 1, i + by));
+    S.chose = true; pick(vis[i].name);
+    var r = S.rows[vis[i].name]; if (r && r.box.scrollIntoView) { r.box.scrollIntoView({ block: "nearest" }); }
+  }
+  function pick(name) {
+    if (S.picked === name) { list(); return; }
+    S.picked = name; S.logKey = ""; list(); detail(null); log();
+  }
+  // the detail pane: STATE.md, the folder's journal, the commands to run
+  function detail(d) {
+    var box = $("dbody"), a = null, i;
+    for (i = 0; i < S.agents.length; i++) { if (S.agents[i].name === S.picked) { a = S.agents[i]; } }
+    if (!a) { box.textContent = ""; box.appendChild(el("div", "say", S.picked ? "· " + S.picked + " has ended" : "· pick an agent on the left")); return; }
+    var key = JSON.stringify([a.name, a.folder, a.role, a.engine, a.state, d]);
+    if (key === S.logKey) { return; }
+    S.logKey = key;
+    var top = box.scrollTop; box.textContent = "";
+    var h = el("div", "dh"); h.appendChild(el("span", "nm" + (a.orchestrator ? " orch" : ""), a.name)); h.appendChild(el("span", "fd", a.folder));
+    h.appendChild(el("span", "c-" + a.state, a.state)); box.appendChild(h);
+    var who = [a.role, a.engine].filter(function (x) { return x && x !== "-"; }).join(" · ");
+    if (who) { box.appendChild(el("div", "txt none", who)); }
+    function block(title, lines, none) {
+      box.appendChild(el("div", "sec", title));
+      box.appendChild(el("pre", lines && lines.length ? "txt" : "txt none", lines && lines.length ? lines.join("\\n") : none));
+    }
+    if (!d) { block("STATE.md", [], "loading…"); return; }
+    block("STATE.md", d.state, "· this folder has no STATE.md");
+    block("journal", d.journal, "· no journal entry today or yesterday");
+    box.appendChild(el("div", "sec", "run"));
+    (d.commands || []).forEach(function (c) { box.appendChild(el("div", "cmd", c)); });
+    box.scrollTop = top;
+  }
+  // the event feed: the log's new lines, and the last syncs, in time order
+  function feed() {
+    var items = S.feed.slice(), box = $("feed");
+    S.syncs.forEach(function (s) { items.push({ time: s.time, from: "sync", to: "", kind: "sync", text: s.text, bad: !s.ok }); });
+    items.sort(function (a, b) { return a.time < b.time ? -1 : a.time > b.time ? 1 : 0; });
+    items = items.slice(-400);
+    var key = items.length + "|" + (items.length ? JSON.stringify(items[items.length - 1]) : "") + "|" + JSON.stringify(S.syncs);
+    if (key === S.feedKey) { return; }
+    S.feedKey = key;
+    var low = box.scrollHeight - box.scrollTop - box.clientHeight < 30;
+    box.textContent = "";
+    if (!items.length) { box.appendChild(el("div", "say", "· no events yet — agents write them as they work")); }
+    items.forEach(function (e) {
+      var kind = e.checkin ? "checkin" : e.kind, line = el("div", "ev k-" + String(kind).replace(/[^a-z]/g, "") + (e.bad ? " bad" : ""));
+      line.appendChild(el("span", "t", hhmm(e.time)));
+      line.appendChild(el("span", "who", e.from === "sync" ? "hub" : short(e.from)));
+      line.appendChild(el("span", "to", e.to ? "→ " + short(e.to) : ""));
+      line.appendChild(el("span", "k", kind));
+      line.appendChild(el("span", "x", e.text));
+      box.appendChild(line);
+    });
+    put($("nev"), "" + items.length);
     if (low) { box.scrollTop = box.scrollHeight; }
   }
-  function note(text) { $("note").textContent = text; }
-  function ask(path, then, gone) {
-    if (over) { return; }
-    fetch(path, { credentials: "same-origin", cache: "no-store" }).then(function (r) {
-      if (r.status === 403) { over = true; note("This link no longer works. Run ade web --print-link, or start ade web again, and open the address it prints."); return null; }
-      if (r.status === 404 && gone) { gone(); return null; }
-      return r.ok ? r.json() : null;
-    }).then(function (d) { if (d && !over) { note(""); then(d); } }).catch(function () { if (!over) { note("No answer from ade web. Is it still running?"); } });
+  // asking the server: the link's token, kept for this tab only (sessionStorage is one origin, port included), goes
+  // with every API request as a header; the cookie alone is not enough
+  var KEY = "";
+  try { KEY = new URLSearchParams(location.search).get("k") || ""; } catch (e) { KEY = ""; }
+  try { if (KEY) { sessionStorage.setItem("ade-web-key", KEY); } else { KEY = sessionStorage.getItem("ade-web-key") || ""; } } catch (e) { /* no storage: this load only */ }
+  function expired() {
+    S.over = true; var line = $("alert"); line.hidden = false; line.className = "";
+    line.textContent = "· this link no longer works — run: ade web --print-link (or start ade web again) and open the address it prints";
   }
-  function pick(name) { picked = name; $("log").hidden = !name; if (name) { $("logname").textContent = "Agent log: " + name; fill("events", [], "Loading"); fill("state", [], "Loading"); log(); } mark(); }
-  function mark() { var all = $("agents").children, i; for (i = 0; i < all.length; i++) { all[i].className = all[i].dataset.name === picked ? "agent on" : "agent"; } }
+  function ask(path, then) {
+    if (S.over) { return; }
+    if (!KEY) { expired(); return; }
+    fetch(path, { credentials: "same-origin", cache: "no-store", headers: { "X-Ade-Key": KEY } }).then(function (r) {
+      if (r.status === 403) { expired(); return null; }
+      if (r.status === 404) { return { gone: true }; }
+      return r.ok ? r.json() : null;
+    }).then(function (d) { if (d && !S.over) { S.down = 0; then(d); clock(); } }, function () {
+      if (!S.over) { S.down = Date.now() + 3000; clock(); }
+    });
+  }
   function agents() {
     ask("/api/agents", function (d) {
-      var box = $("agents"), seen = false;
-      $("hub").textContent = "ade web: " + d.hub; document.title = "ade web: " + d.hub; $("when").textContent = "updated " + d.time + (d.note ? " (" + d.note + ")" : "");
-      box.textContent = ""; $("none").hidden = d.agents.length > 0;
-      d.agents.forEach(function (a) {
-        var b = el("button", "agent", ""); b.type = "button"; b.dataset.name = a.name;
-        b.appendChild(el("b", "", a.name));
-        b.appendChild(el("span", a.status, a.status === "-" ? "starting" : a.status));
-        b.appendChild(el("span", "", a.folder + (a.role === "-" ? "" : ", " + a.role) + ", " + a.engine));
-        b.appendChild(el("span", "", "last " + a.last + ", started " + a.started));
-        b.addEventListener("click", function () { chose = true; pick(a.name); });
-        box.appendChild(b); if (a.name === picked) { seen = true; }
-      });
-      if (picked && !seen) { pick(null); } else if (!picked && !chose && d.agents.length) { chose = true; pick(d.agents[0].name); } else { mark(); }
+      if (d.gone) { return; }
+      S.skew = d.now - Date.now() / 1000; S.agents = d.agents; S.alerts = d.alerts; S.note = d.note;
+      bar(d);
+      var names = S.agents.map(function (a) { return a.name; });
+      if (!S.chose && !S.picked && names.length) { S.picked = names[0]; }
+      list();
+      if (S.picked && names.indexOf(S.picked) < 0) { detail(null); } else { log(); }
     });
   }
   function log() {
-    var name = picked; if (!name) { return; }
+    var name = S.picked; if (!name) { detail(null); return; }
     ask("/api/log?agent=" + encodeURIComponent(name), function (d) {
-      if (name !== picked) { return; }
-      fill("events", d.events, "No event from or to this agent yet."); fill("state", d.state, "This agent's folder has no STATE.md.");
-    }, function () { if (name === picked) { pick(null); } });
-  }
-  function rest() {
-    ask("/api/journal", function (d) {
-      $("day0").textContent = "Today, " + d.today.date + " (UTC)"; $("day1").textContent = "Yesterday, " + d.yesterday.date + " (UTC)";
-      fill("today", d.today.lines, "No journal entry today."); fill("yesterday", d.yesterday.lines, "No journal entry yesterday.");
+      if (name !== S.picked) { return; }
+      if (d.gone) { detail(null); return; }
+      detail({ state: d.state, journal: d.journal, commands: d.commands });
     });
-    ask("/api/chat", function (d) { fill("chat", d.lines, "The chat log is empty."); });
   }
-  function tick() { if (document.hidden || over) { return; } agents(); log(); if (turn % 2 === 0) { rest(); } turn += 1; }
+  function events() {
+    ask("/api/events?since=" + encodeURIComponent(S.cursor), function (d) {
+      if (d.gone) { return; }
+      if (d.reset) { S.feed = []; }
+      S.feed = S.feed.concat(d.events).slice(-400); S.cursor = d.cursor; S.syncs = d.syncs; feed();
+    });
+  }
+  function tick() { if (document.hidden || S.over) { return; } agents(); events(); }
+  // keys and panes
+  function focusPane(i, quiet) {
+    S.pane = i;
+    PANES.forEach(function (p, j) { $(p).className = j === i ? "pane on" : "pane"; });
+    if (!quiet) { $(PANES[i]).focus({ preventScroll: false }); }
+  }
+  PANES.forEach(function (p, j) { $(p).addEventListener("focusin", function () { focusPane(j, true); }); });
+  function help(on) { $("help").hidden = !on; if (!on) { $(PANES[S.pane]).focus(); } }
+  function theme() {
+    var root = document.documentElement, cur = root.dataset.theme || (window.matchMedia && matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+    root.dataset.theme = cur === "light" ? "dark" : "light";
+  }
+  function scrollBy(i, dy) { var b = $(PANES[i]).querySelector(".body"); b.scrollTop += dy; }
+  $("fi").addEventListener("input", function () { S.filter = $("fi").value.trim().toLowerCase(); put($("fm"), $("fi").value); list(); });
+  document.addEventListener("keydown", function (e) {
+    if (e.metaKey || e.ctrlKey || e.altKey) { return; }
+    var k = e.key, inF = document.activeElement === $("fi");
+    if (!$("help").hidden) { if (k === "q" || k === "Escape" || k === "?") { e.preventDefault(); help(false); } return; }
+    if (inF) {
+      if (k === "Escape") { e.preventDefault(); $("fi").value = ""; S.filter = ""; put($("fm"), ""); list(); focusPane(0); }
+      else if (k === "Enter" || k === "ArrowDown" || k === "Tab") { e.preventDefault(); focusPane(0); }
+      return;
+    }
+    var hit = true;
+    if (k === "j" || k === "ArrowDown") { if (S.pane === 0) { move(1); } else { scrollBy(S.pane, 20); } }
+    else if (k === "k" || k === "ArrowUp") { if (S.pane === 0) { move(-1); } else { scrollBy(S.pane, -20); } }
+    else if (k === "g") { scrollBy(S.pane, -1e6); } else if (k === "G") { scrollBy(S.pane, 1e6); }
+    else if (k === "Enter") { focusPane(1); }
+    else if (k === "Tab") { focusPane((S.pane + (e.shiftKey ? 2 : 1)) % 3); }
+    else if (k === "/") { $("fi").focus(); }
+    else if (k === "e") { focusPane(2); }
+    else if (k === "?") { help(true); }
+    else if (k === "t") { theme(); }
+    else if (k === "Escape") { focusPane(0); }
+    else { hit = false; }
+    if (hit) { e.preventDefault(); }
+  });
+  $("help").addEventListener("click", function (e) { if (e.target === $("help")) { help(false); } });
   if (location.search) { history.replaceState(null, "", "/"); }
-  document.addEventListener("visibilitychange", function () { if (!document.hidden) { turn = 0; tick(); } });
-  tick(); setInterval(tick, 3000);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) { tick(); } });
+  clock(); tick(); setInterval(tick, 3000); setInterval(clock, 1000);
 }());
 </script>
 </body>
@@ -5121,7 +5845,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.send_response(code)
         for k, v in (("Content-Type", ctype), ("Content-Length", str(len(body))), ("Cache-Control", "no-store"), ("X-Content-Type-Options", "nosniff"),
                      ("X-Frame-Options", "DENY"), ("Referrer-Policy", "no-referrer"), ("Cross-Origin-Resource-Policy", "same-origin"),
-                     ("Content-Security-Policy", "default-src 'none'; script-src 'nonce-%s'; style-src 'nonce-%s'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" % (NONCE, NONCE))) + tuple(more):
+                     ("Content-Security-Policy", "default-src 'none'; script-src 'nonce-%s'; style-src 'nonce-%s'; font-src data:; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'" % (NONCE, NONCE))) + tuple(more):
             self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD": self.wfile.write(body)
@@ -5145,6 +5869,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         hosts = self.headers.get_all("Host") or []
         if len(hosts) != 1 or hosts[0].strip().lower() not in HOSTS: return self.refuse(403, "forbidden")
+        origins = self.headers.get_all("Origin") or []   # a browser names the page that asks; only this one may
+        if origins and (len(origins) != 1 or origins[0].strip().lower() not in ORIGINS): return self.refuse(403, "forbidden")
         try:
             u = urllib.parse.urlsplit(self.path); q = urllib.parse.parse_qs(u.query, keep_blank_values=True, max_num_fields=8)
         except ValueError:
@@ -5152,14 +5878,18 @@ class Handler(http.server.BaseHTTPRequestHandler):
         path = u.path if u and self.path.startswith("/") and not u.scheme and not u.netloc else None
         linked = path == "/" and len(q.get("k", [])) == 1 and same(q["k"][0], TOKEN)
         if not (linked or self.cookie_ok()): return self.refuse(403, "forbidden")
+        # the API also wants the token in a header the page's script sends: a cookie is not kept to one port, so a
+        # program on another 127.0.0.1 port the browser visits could get the cookie, never the token
+        if path != "/" and not same(self.headers.get("X-Ade-Key", "")[:128], TOKEN): return self.refuse(403, "forbidden")
         if path != "/" and self.headers.get("Sec-Fetch-Site", "same-origin").strip().lower() not in ("same-origin", "none"): return self.refuse(403, "forbidden")
         if path == "/":
             more = (("Set-Cookie", "%s=%s; Path=/; HttpOnly; SameSite=Strict" % (CNAME, COOKIE)),) if linked else ()
+            if linked: opener_off()   # the browser has the link: the file that carried it goes
             return self.reply(200, "text/html; charset=utf-8", HTML, more)
-        if path == "/api/agents":
-            rows, note = sessions()
-            return self.send_json({"hub": LABEL, "time": time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime()), "note": note,
-                                   "agents": [{k: r[k] for k in ("name", "folder", "started", "role", "status", "last", "engine")} for r in rows]})
+        if path == "/api/agents": return self.send_json(overview())
+        if path == "/api/events":
+            since = q.get("since", [""])
+            return self.send_json(events_since(since[0])) if len(since) == 1 else self.refuse(404, "not found")
         if path == "/api/log":
             who = q.get("agent", []); found = agent_log(who[0]) if len(who) == 1 else None
             return self.send_json(found) if found else self.refuse(404, "not found")
@@ -5181,9 +5911,37 @@ def listen(port):
         return listen(0)
 server = listen(PORT); PORT = server.server_address[1]
 TOKEN = secrets.token_urlsafe(32); COOKIE = secrets.token_urlsafe(32); NONCE = secrets.token_urlsafe(16); CNAME = "ade_web_%d" % PORT
-HTML = PAGE.replace("__NONCE__", NONCE).encode("utf-8")
+HTML = PAGE.replace("__NONCE__", NONCE).replace("__THEME__", theme_css()).replace("__FONT__", FONT).encode("utf-8")
 HOSTS = set("%s:%d" % (h, PORT) for h in (("127.0.0.1", "localhost") if MODE == "local" else (BIND,) + ((NAME,) if NAME != "-" else ())))
+ORIGINS = set("http://" + h for h in HOSTS)
 URL = "http://%s:%d/?k=%s" % (BIND, PORT, TOKEN)
+# opening the browser (local only): the link goes in a file only this user can read (0600, in a new 0700 folder), and
+# the opener gets that file's path, so the token is never in a command line; the file goes once the link is used, after
+# 60 s, or when the server stops
+OPENER = {"dir": None}
+def opener_off():
+    d = OPENER["dir"]; OPENER["dir"] = None
+    if d: shutil.rmtree(d, ignore_errors=True)
+def browser():
+    """the command that opens a file in the browser, or None: never over SSH, never on Linux without a display"""
+    if os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"): return None
+    if sys.platform == "darwin": return "open"
+    if sys.platform.startswith("linux") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")): return "xdg-open"
+    return None
+def open_page():
+    exe = browser()
+    if not exe: return False
+    try:
+        d = tempfile.mkdtemp(prefix="ade-web."); OPENER["dir"] = d; f = os.path.join(d, "open.html")
+        fd = os.open(f, os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_NOFOLLOW", 0), 0o600)
+        with os.fdopen(fd, "w") as o:
+            o.write('<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url=%s">'
+                    '<title>ade web</title><a href="%s">open ade web</a>\n' % (URL, URL))
+        subprocess.Popen([exe, f], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+    except OSError:
+        opener_off(); return False
+    t = threading.Timer(60, opener_off); t.daemon = True; t.start()
+    return True
 def link_off():
     try:
         with open(LINK) as f: mine = f.readline().strip() == str(os.getpid())
@@ -5199,10 +5957,13 @@ except OSError as e:
 def stop(*_): raise KeyboardInterrupt
 signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGHUP, stop)
 try:
-    say(URL)
-    if MODE == "local":
-        say("a read-only view of the hub %s: its agents, their logs, the journal and the chat log. This machine only (127.0.0.1). Ctrl-C stops it." % hide(LABEL))
+    if OPEN and open_page():
+        say("the dashboard of the hub %s is open in your browser: read-only, this machine only (127.0.0.1:%d). ade web --print-link prints its address. Ctrl-C or ade web --stop stops it." % (hide(LABEL), PORT))
+    elif MODE == "local":
+        say(URL)
+        say("a read-only view of the hub %s: its agents, their logs, the journal and the chat log. This machine only (127.0.0.1). Ctrl-C or ade web --stop stops it." % hide(LABEL))
     else:
+        say(URL)
         if NAME != "-": say("http://%s:%d/?k=%s" % (NAME, PORT, TOKEN))
         say("a read-only view of the hub %s: its agents, their logs, the journal and the chat log. Open the address on a device that is signed in to your tailnet. Ctrl-C stops it." % hide(LABEL))
         say("anyone on your tailnet with the link can read these logs; the link changes every start. It listens on this machine's Tailscale address only (%s), not on any other network." % BIND)
@@ -5210,7 +5971,7 @@ try:
 except KeyboardInterrupt:
     pass
 finally:
-    link_off(); server.server_close()
+    link_off(); opener_off(); server.server_close()
 say("stopped")
 PY
   exec python3 -I -c "$src" "$@"
