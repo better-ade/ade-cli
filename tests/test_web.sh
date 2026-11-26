@@ -852,7 +852,9 @@ web_stops_cleanly() {
   # --stop: the server ends, its link file and its port are gone
   start; login; local old="$CK" port="$PORT" pid="$SRV"
   PATH="$WPATH" "$ADE" web --stop > "$T/out" 2> "$T/err"; assert_eq "$?" 0 "--stop"; assert_contains "$T/out" "stopped" "says it stopped"
-  kill -0 "$pid" 2> /dev/null && fail "the server still runs after --stop"; wait "$SRV" 2> /dev/null; SRV=""
+  # $pid is the test's terminal harness: --stop waits for the server itself, the harness ends a moment after it
+  local i=0; while kill -0 "$pid" 2> /dev/null; do i=$((i + 1)); [ "$i" -lt 50 ] || fail "the server still runs after --stop"; sleep 0.1; done
+  wait "$SRV" 2> /dev/null; SRV=""
   [ ! -e "$L" ] || fail "the link file is left after --stop"; refused 127.0.0.1 "$port" || fail "the port still answers"
   # started again on the same port: nothing stale is reused; the old cookie and link are refused
   start; CK="$old"; api "/api/agents"; assert_eq "$CODE" 401 "the old cookie after a restart (story M2: 401, no session)"
