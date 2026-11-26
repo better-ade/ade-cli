@@ -233,7 +233,7 @@ its last check-in when the hub records one, and how long it has been in that sta
 them, the alerts: an agent quiet, likely waiting at a prompt, or not started; a monitor alerting; unread notes to main.
 The status bar shows the counts, the last sync, the monitors and the inbox. The picked agent's detail (its `STATE.md`,
 journal entries and events) and the hub's event feed update every 3 seconds. Keyboard first: `j`/`k` move, Enter
-opens, Tab changes pane, `/` filters, `e` the events, `?` the keys, `q`/Esc closes. Dark first, a light variant from the
+opens, Tab changes pane, `/` filters, `e` the events, `?` the keys, `q`/Esc closes the keys (`q` elsewhere locks the page). Dark first, a light variant from the
 same tokens, panes stacked on a phone, no animation under reduced motion. Every asset is inline: the page makes no
 request but its own API.
 
@@ -250,8 +250,15 @@ the dashboard of the hub acme is open in your browser: read-only, this machine o
 | `ade web --stop` | Stops the running dashboard (only `ade web`'s own server); nothing running is fine |
 | `ade web --print-link` | The running page's address; nothing and exit 1 when none runs |
 
-- **Read-only.** It answers GET and nothing else (405). No request changes, starts or stops anything. It reads the
+- **Read-only.** It answers GET and nothing else (405), but for the code (`POST /login`). No request changes, starts or stops anything. It reads the
   journal, the chat log, the event log and each listed agent's `STATE.md`; a request never names a file.
+- **The code (M2).** The link alone is not enough: each start prints a code of 8 characters in `ade web`'s own
+  terminal (never in its output, a log or a file), and the page asks for it on a terminal line
+  (`ade web · enter the code shown in your terminal: █`). A code opens one page: once used, `ade web` says a page signed in and shows
+  the next. After 5 wrong codes it is used up: press Enter in that terminal for a new one (Enter makes a new one at
+  any time; run it in the foreground). A session lasts 12 hours or until `ade web` stops; `q`
+  on the page locks it again. With no controlling terminal (a service, or an agent's session without one) `ade web`
+  says why and starts nothing (exit 2). After `q`, reloading needs the link again: `ade web --print-link` prints it.
 - **The link is the key.** The address holds a random token, new at every start; without it the answer is 403. The
   page keeps it for its tab and sends it with every request (a cookie alone opens nothing). Do not paste the address
   anywhere public. When `ade web`
@@ -264,7 +271,7 @@ the dashboard of the hub acme is open in your browser: read-only, this machine o
   blocks. A commit id or another long run of letters and digits is hidden too, and a line over 4096 characters is cut. Logs can still hold your code and your
   customers' context: that is what the page is for, so treat the link like the logs.
 - **`--tailnet`.** It listens on the address `tailscale ip -4` prints (100.64.0.0/10) and on no other, never on every
-  interface. **Anyone on your tailnet with the link can read these logs.** `ade` never installs Tailscale or signs in
+  interface. **Anyone on your tailnet with the link and the code can read these logs.** `ade` never installs Tailscale or signs in
   to it; when it is missing or signed out, `ade web --tailnet` says how (https://tailscale.com/download, then
   `tailscale up`) and starts nothing. No public address, no tunnel.
 - It needs only `python3`. Inside an ADE Computer, open the address in the desktop's own browser.

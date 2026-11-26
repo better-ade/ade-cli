@@ -412,7 +412,7 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `export PATH="$HOME/.bun/bin:$PATH"   # added by ade: bun` is appended to `~/.zshrc` (zsh), `~/.bashrc` (bash) or
   `~/.profile` (any other `$SHELL`), said first; never when that file already names `.bun/bin` or `BUN_INSTALL`.
 
-## `ade web` (A19, M1)
+## `ade web` (A19, M1, M2)
 - **From the hub (read only):** `bin/sessions` with no argument (its nine columns `NAME FOLDER PID PARENT STARTED
   ROLE STATUS LAST ENGINE`, one row per line, split on blanks; a row that is not nine fields is left out);
   `<hub>/journal/<UTC date>.md`; `<hub>/<folder>/STATE.md` for a row's FOLDER when it is `projects/<name>` or
@@ -427,9 +427,24 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   must reach `ade`'s copy (`web_py`). `ade` cuts a line to 4096 characters before the rule runs: its
   `[A-Za-z0-9]{16,}\.[A-Za-z0-9_-]{8,}` is quadratic on one long run (250,000 characters: over a minute), and
   `bin/chat logs` and `redact` run it on the whole text.
-- **HTTP (GET only, else 405):** `/?k=<token>` or `/` with the cookie: the page; `/api/agents`; `/api/events?since=
+- **The code (M2):** each start writes an 8-character code (alphabet `ABCDEFGHJKMNPQRSTUVWXYZ23456789`, from
+  `secrets`) to `/dev/tty` only: never stdout, stderr, a log, a file or a command line. With no controlling terminal it
+  prints why on stderr and exits 2 before it listens. Each right code opens one page: it then says `a page signed in`
+  on the terminal and shows a new code. Enter on that terminal (in the foreground) makes a new code; 5 wrong codes (per run, not per
+  client) use it up until then. Compared in constant time. Sessions live in memory only (at most 32), for 12 hours or
+  until the server stops.
+- **`POST /login` (M2, the only non-GET route; PUT, DELETE, PATCH and the like: 405 with `Allow: POST`; GET is
+  answered as any other path):** the same Host,
+  Origin (exactly one, the page's), `X-Ade-Key` and `Sec-Fetch-Site` checks as the API (403), then `Content-Type:
+  application/json` (else 415), at most 1024 bytes (413), a JSON object (400). `{"code": "<code>"}`: 200 `{"ok":
+  true}` with `Set-Cookie: ade_web_<port>=<session>; Path=/; Max-Age=43200; HttpOnly; SameSite=Strict`, or 401
+  `{"ok": false, "left": <n>}` (plus `"locked": true` when used up). `{"lock": true}`: the session ends, 200 and the
+  cookie with `Max-Age=0`.
+- **HTTP (GET only, else 405):** `/?k=<token>` or `/` with a session: the page (with the link and no session: only the
+  code prompt, `data-gate="code"`); `/api/agents`; `/api/events?since=
   <cursor>`; `/api/log?agent=<name from the list>`; `/api/journal`; `/api/chat`. JSON, every string hidden, `<` sent
-  as `\u003c`. 403 without the cookie `ade_web_<port>` (HttpOnly, SameSite=Strict), with a Host header other than the
+  as `\u003c`. An API with the token header but no session: 401 (nothing read, no hub command run). 403 without the
+  link or a session cookie `ade_web_<port>` (HttpOnly, SameSite=Strict), with a Host header other than the
   served address (DNS rebinding), with an `Origin` other than the page's, or (an API) with `Sec-Fetch-Site` other than
   same-origin, or (an API) without the header `X-Ade-Key: <token>` (the page keeps the link's token in
   sessionStorage: a cookie is not kept to one port); 404 for anything else. CSP `default-src 'none'`, scripts and styles by nonce, `font-src data:`,
@@ -452,7 +467,8 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   link; the file goes on the link's first use, after 60 s, or at stop.
 - **Environment:** `ADE_WEB_PORT` (the default port, 8765); `ADE_THEME_<key>` (set by `ade` from
   `~/.config/ade/theme`: `#rrggbb` colours, anything else ignored). Tests only: `ADE_WEB_TEST_TAILNET_LOOPBACK=1` (a loopback
-  address may stand in for the Tailscale one).
+  address may stand in for the Tailscale one); `ADE_WEB_TEST_SESSION_SECONDS=<1..43200>` (a shorter
+  session; anything else is ignored, so it can only shorten one).
 - **Tailscale (`--tailnet`):** `tailscale status --json` (`BackendState` must be `Running`; `Self.DNSName`) and
   `tailscale ip -4` (one address in 100.64.0.0/10). Only asked, never installed, started or signed in.
 

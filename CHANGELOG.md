@@ -1,6 +1,10 @@
 # Changelog
 
 ## Unreleased
+- `ade web` asks for a code before it shows anything (M2): each start prints a code of 8 characters on its own
+  terminal only, and the page shows a terminal-line prompt until it is typed. A code opens one page (the next is shown once it is used). 5 wrong codes use it up until Enter is
+  pressed in that terminal (a new code); a session lasts 12 hours or until the server stops, and `q` on the page locks
+  it. `--tailnet` asks for it too. With no controlling terminal, `ade web` exits 2 and starts nothing. New: `POST /login`.
 - `ade web` is a live dashboard of the agents (M1): a terminal UI in the browser, in `ade ui`'s colours (dark first,
   light from the same tokens), with tmux-like panes (status bar, agents, detail, events, keys), keyboard first
   (`j`/`k`, Enter, Tab, `/`, `e`, `?`, `q`/Esc), stacked on a phone, no animation under reduced motion, and one inline

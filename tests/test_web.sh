@@ -116,11 +116,35 @@ PY
   local o; for o in open xdg-open; do
     printf '#!/bin/bash\necho "%s $*" >> "$CALLS"; cp "$1" "%s/opened.html" 2> /dev/null; exit 0\n' "$o" "$T" > "$F/$o"; chmod +x "$F/$o"; done
   export DISPLAY=:99; unset SSH_CONNECTION SSH_TTY WAYLAND_DISPLAY; mkdir -p "$T/tmp"
+  # story M2: ade web shows its code on its own terminal (/dev/tty), so each run gets one: a new pseudo-terminal as its
+  # controlling terminal, its stdout and stderr still the files given. What it writes there goes to $T/tty.out; bytes
+  # added to $T/tty.in are typed into it (a newline is Enter). TERM, HUP and INT are passed on; the exit status is its.
+  cat > "$T/tty.py" <<'PY'
+import fcntl, os, select, signal, subprocess, sys, termios, time
+d = sys.argv[1]; m, s = os.openpty()
+def ctty(): fcntl.ioctl(s, termios.TIOCSCTTY, 0)
+p = subprocess.Popen(sys.argv[2:], stdin=subprocess.DEVNULL, start_new_session=True, preexec_fn=ctty)
+# s stays open here: on macOS a terminal that no process holds open stops being the child's terminal
+for n in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT): signal.signal(n, lambda n, f: p.send_signal(n))
+out = open(os.path.join(d, "tty.out"), "ab", buffering=0); fed = [0]
+def pump():
+    try: b = os.read(m, 4096) if select.select([m], [], [], 0.05)[0] else b""
+    except OSError: b = b""; time.sleep(0.05)
+    if b: out.write(b)
+    try:
+        with open(os.path.join(d, "tty.in"), "rb") as f: data = f.read()
+    except OSError: data = b""
+    if len(data) > fed[0]: os.write(m, data[fed[0]:]); fed[0] = len(data)
+while p.poll() is None: pump()
+pump()
+sys.exit(p.returncode if p.returncode >= 0 else 128 - p.returncode)
+PY
+  TTYRUN=(python3 -I "$T/tty.py" "$T")
 }
 # start [args]: ade web in the background; URL, PORT and K from its first line
 start() {
-  : > "$T/web.out"; : > "$T/web.err"
-  PATH="$WPATH" TMPDIR="$T/tmp" "$ADE" web --no-open "$@" > "$T/web.out" 2> "$T/web.err" &
+  : > "$T/web.out"; : > "$T/web.err"; : > "$T/tty.out"; rm -f "$T/tty.in"
+  PATH="$WPATH" TMPDIR="$T/tmp" "${TTYRUN[@]}" "$ADE" web --no-open "$@" > "$T/web.out" 2> "$T/web.err" &
   SRV=$!; local i=0
   until grep -q '^ade web: http://' "$T/web.out"; do
     kill -0 "$SRV" 2> /dev/null || { cat "$T/web.err" >&2; fail "ade web $* ended before it printed its address"; }
@@ -140,9 +164,25 @@ get() {
   local p="$1"; shift
   CODE="$(curl -q -s --path-as-is --max-time 10 -o "$T/body" -D "$T/head" -w '%{http_code}' "$@" "$BASE$p")" || fail "no answer for $p"
 }
-# login: the first visit; CK is the cookie it set. api: a request with that cookie (sent as a header: curl's own cookie
-# jar would keep it from a request whose Host header names another host, which is the server's decision to make here)
-login() { get "/?k=$K"; assert_eq "$CODE" 200 "the link"; CK="$(tr -d '\r' < "$T/head" | sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\);.*/\1/p' | head -1)"; [ -n "$CK" ] || fail "the first visit set no cookie"; }
+# tty_code [old]: the code ade web last wrote to its terminal (story M2), waiting for one other than old
+tty_code() {
+  local c="" i=0
+  while :; do
+    c="$(tr -d '\r' < "$T/tty.out" | sed -n 's/.*ade web: the code for the page: \([A-Za-z0-9]*\).*/\1/p' | tail -1)"
+    [ -n "$c" ] && [ "$c" != "${1:-}" ] && break
+    i=$((i + 1)); [ "$i" -lt 100 ] || fail "no code on ade web's terminal in 10 s"; sleep 0.1; done
+  printf '%s' "$c"
+}
+# post <json> [curl args]: POST /login as the page sends it (its own Origin, the token header, JSON)
+post() { local b="$1"; shift; get "/login" -X POST -H "Origin: $BASE" -H "X-Ade-Key: $K" -H "Content-Type: application/json" --data-binary "$b" "$@"; }
+set_cookie() { tr -d '\r' < "$T/head" | sed -n 's/^[Ss]et-[Cc]ookie: \([^;]*\);.*/\1/p' | head -1; }
+# login: the first visit with the link, then the code from the terminal; CK is the session cookie it set. api: a request
+# with that cookie (sent as a header: curl's own cookie jar would keep it from a request whose Host header names another
+# host, which is the server's decision to make here)
+login() {
+  get "/?k=$K"; assert_eq "$CODE" 200 "the link"
+  post "{\"code\": \"$(tty_code)\"}"; assert_eq "$CODE" 200 "the code"; CK="$(set_cookie)"; [ -n "$CK" ] || fail "the code set no cookie"
+}
 api() { local p="$1"; shift; get "$p" -H "Cookie: $CK" -H "X-Ade-Key: $K" "$@"; }
 # flat: every string of the JSON body, one per line, in $T/text (the body itself spells < as \u003c)
 flat() { python3 -c 'import json, sys
@@ -171,7 +211,7 @@ t_local() {
   assert_eq "$(listeners "$PORT")" "127.0.0.1:$PORT" "the free port is on 127.0.0.1 only"
   [ "$URL" != "$firsturl" ] || fail "two servers printed the same link"
   # --port N busy: refused, nothing served
-  if PATH="$WPATH" HOME="$T/home3" "$ADE" web --port "$p" > "$T/out" 2> "$T/err"; then fail "--port on a busy port started"; fi
+  if PATH="$WPATH" HOME="$T/home3" "${TTYRUN[@]}" "$ADE" web --port "$p" > "$T/out" 2> "$T/err"; then fail "--port on a busy port started"; fi
   assert_contains "$T/err" "port $p is in use" "a busy --port says so"
   stop; SRV="$first"; stop
   # --port N free
@@ -191,11 +231,11 @@ t_token() {
   get "/?k="; assert_eq "$CODE" 403 "an empty token"
   get "/api/agents"; assert_eq "$CODE" 403 "the API without a cookie"; assert_not_contains "$T/body" "api" "403 carries no agent"
   get "/api/agents?k=$K"; assert_eq "$CODE" 403 "the link's token opens the page only, never the API"
-  get "/api/chat" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=wrong"; assert_eq "$CODE" 403 "a wrong cookie"
-  get "/api/chat" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=$K"; assert_eq "$CODE" 403 "the link's token is not the cookie"
+  get "/api/chat" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=wrong"; assert_eq "$CODE" 401 "a wrong cookie (story M2: the right token header without a session is 401)"
+  get "/api/chat" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=$K"; assert_eq "$CODE" 401 "the link's token is not the cookie"
   assert_not_contains "$T/body" "chat line one" "403 carries no log"
   login
-  grep -i '^set-cookie:' "$T/head" > "$T/cookie" || fail "the first visit sets no cookie"
+  grep -i '^set-cookie:' "$T/head" > "$T/cookie" || fail "the code sets no cookie"
   assert_contains "$T/cookie" "ade_web_$PORT=" "the cookie is named for the port"
   grep -qi 'httponly' "$T/cookie" || fail "the cookie is not HttpOnly"
   grep -qi 'samesite=strict' "$T/cookie" || fail "the cookie is not SameSite=Strict"
@@ -204,7 +244,7 @@ t_token() {
   # several cookies of that name (another page on this host can plant one with a longer path): one right one is enough
   get "/api/agents" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=planted; x=1; $CK"; assert_eq "$CODE" 200 "a planted cookie before the real one"
   get "/api/agents" -H "X-Ade-Key: $K" -H "Cookie: $CK; ade_web_$PORT=planted"; assert_eq "$CODE" 200 "a planted cookie after the real one"
-  get "/api/agents" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=planted; ade_web_$PORT=; ade_web_1=${CK#*=}"; assert_eq "$CODE" 403 "only wrong cookies"
+  get "/api/agents" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=planted; ade_web_$PORT=; ade_web_1=${CK#*=}"; assert_eq "$CODE" 401 "only wrong cookies"
   api "/api/agents"; assert_eq "$CODE" 200 "the API with the cookie"
   assert_not_contains "$T/web.out" "GET " "no access log on stdout"; assert_not_contains "$T/web.err" "$K" "the token is never logged"
   stop
@@ -244,7 +284,7 @@ t_readonly() {
 }
 
 t_page() {
-  fixture; start; login
+  fixture; start; login; api "/"   # story M2: login ends on POST /login, so the page is asked for
   grep -qi '^content-type: text/html; charset=utf-8' "$T/head" || fail "the page is not HTML"
   assert_contains "$T/body" '<meta name="viewport"' "the page fits a phone"
   # one document: no address but its own API, no script or style from elsewhere
@@ -400,7 +440,7 @@ t_tailnet() {
     assert_not_contains "$T/out" "http://" "[$a]: no address printed"; done
   # an address in the range that this machine does not have: only that address is tried, then refused
   TS_IP="100.127.255.254"; TS_JSON="$(ts_json Running "mac.tail1234.ts.net.")"
-  PATH="$WPATH" "$ADE" web --tailnet > "$T/out" 2> "$T/err" & SRV=$!
+  : > "$T/tty.out"; PATH="$WPATH" "${TTYRUN[@]}" "$ADE" web --tailnet > "$T/out" 2> "$T/err" & SRV=$!
   ( sleep 10; kill "$SRV" 2> /dev/null ) & local guard=$!
   if wait "$SRV"; then SRV=""; fail "--tailnet served on an address this machine does not have"; fi
   SRV=""; { kill "$guard"; wait "$guard"; } 2> /dev/null
@@ -415,8 +455,8 @@ t_tailnet() {
   assert_eq "$(listeners "$PORT")" "$TS_IP:$PORT" "listens on the Tailscale address only"
   [ "$TS_IP" = 127.0.0.1 ] || refused 127.0.0.1 "$PORT" || fail "--tailnet also answers on 127.0.0.1"
   assert_contains "$T/web.out" "http://mac.tail1234.ts.net:$PORT/?k=$K" "the MagicDNS address is printed"
-  assert_contains "$T/web.out" "anyone on your tailnet with the link can read these logs" "the plain warning"
-  assert_contains "$T/web.out" "the link changes every start" "says the link changes"
+  assert_contains "$T/web.out" "anyone on your tailnet with the link and the code (shown in this terminal) can read these logs" "the plain warning"
+  assert_contains "$T/web.out" "the link alone is not enough" "says the link alone is not enough"
   assert_eq "$(sort -u "$CALLS" | tr '\n' ';')" "tailscale ip -4;tailscale status --json;" "tailscale is only asked, never changed"
   login
   local h
@@ -603,7 +643,7 @@ web_loopback_only() {
 web_token_required() {
   acme; snapshot > "$T/before"
   # ade opens the page itself: the token is in a 0600 file the opener is given, never on a command line or the terminal
-  : > "$T/web.out"; PATH="$WPATH" TMPDIR="$T/tmp" "$ADE" web > "$T/web.out" 2> "$T/web.err" & SRV=$!
+  : > "$T/web.out"; : > "$T/tty.out"; PATH="$WPATH" TMPDIR="$T/tmp" "${TTYRUN[@]}" "$ADE" web > "$T/web.out" 2> "$T/web.err" & SRV=$!
   local i=0; until [ -s "$T/opened.html" ] && grep -q 'open in your browser\|is open in your browser' "$T/web.out"; do
     kill -0 "$SRV" 2> /dev/null || { cat "$T/web.err" >&2; fail "ade web ended before it opened the page"; }
     i=$((i + 1)); [ "$i" -lt 100 ] || { cat "$T/web.out" "$T/web.err" "$CALLS" >&2; ls -la "$T/tmp" >&2; fail "ade web opened nothing in 10 s"; }; sleep 0.1; done
@@ -620,24 +660,24 @@ web_token_required() {
   if grep -q '^sessions\|^inbox' "$CALLS"; then fail "a hub command ran before any request"; fi
   local p; for p in "/" "/api/agents" "/api/events" "/api/events?since=" "/api/log?agent=api" "/api/journal" "/api/chat" "/?k=" "/?k=${K%?}" "/api/agents?k=$K"; do
     get "$p"; assert_eq "$CODE" 403 "$p without the cookie"; assert_not_contains "$T/body" "api" "$p: 403 carries no data"; done
-  get "/api/agents" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=$K"; assert_eq "$CODE" 403 "the token is not the cookie"
+  get "/api/agents" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=$K"; assert_eq "$CODE" 401 "the token is not the cookie (story M2: 401, no session)"
   if grep -q '^sessions\|^inbox' "$CALLS"; then fail "a refused request ran a hub command"; fi
   login; [ ! -e "$f" ] || fail "the link file is kept after the link was used"
   api "/api/agents"; assert_eq "$CODE" 200 "the cookie and the token open the API"; api "/api/events"; assert_eq "$CODE" 200 "and the events"
   # a cookie is not kept to one port (another 127.0.0.1 server the browser visits gets it): alone it opens nothing
   get "/api/agents" -H "Cookie: $CK"; assert_eq "$CODE" 403 "the cookie without the token header"
   get "/api/agents" -H "Cookie: $CK" -H "X-Ade-Key: ${K%?}x"; assert_eq "$CODE" 403 "a wrong token header"
-  get "/api/agents" -H "X-Ade-Key: $K"; assert_eq "$CODE" 403 "the token header without the cookie"
+  get "/api/agents" -H "X-Ade-Key: $K"; assert_eq "$CODE" 401 "the token header without the cookie"
   get "/" -H "Cookie: $CK"; assert_eq "$CODE" 200 "the page itself (static) with the cookie"; assert_not_contains "$T/body" "$K" "the page does not carry the token"
   if grep -rqF -- "$K" "$T/web.out" "$T/web.err" "$HOME/.local/share/ade" 2> /dev/null; then fail "the token is in a log"; fi
   stop; [ ! -e "$HOME/.config/ade/web" ] || fail "the link file is left"
   # over SSH (or on Linux without a display) nothing is opened: the link is printed as before
-  : > "$CALLS"; SSH_CONNECTION="10.0.0.1 22 10.0.0.2 22" PATH="$WPATH" TMPDIR="$T/tmp" "$ADE" web > "$T/web.out" 2> "$T/web.err" & SRV=$!
+  : > "$CALLS"; : > "$T/tty.out"; SSH_CONNECTION="10.0.0.1 22 10.0.0.2 22" PATH="$WPATH" TMPDIR="$T/tmp" "${TTYRUN[@]}" "$ADE" web > "$T/web.out" 2> "$T/web.err" & SRV=$!
   i=0; until grep -q '^ade web: http://' "$T/web.out"; do i=$((i + 1)); [ "$i" -lt 100 ] || fail "over SSH no link was printed"; sleep 0.1; done
   if grep -qE '^(open|xdg-open) ' "$CALLS"; then fail "a browser was opened over SSH"; fi
   stop
   # a link file never used goes when the server stops
-  rm -f "$T/opened.html"; PATH="$WPATH" TMPDIR="$T/tmp" "$ADE" web > "$T/web.out" 2> "$T/web.err" & SRV=$!
+  rm -f "$T/opened.html"; : > "$T/tty.out"; PATH="$WPATH" TMPDIR="$T/tmp" "${TTYRUN[@]}" "$ADE" web > "$T/web.out" 2> "$T/web.err" & SRV=$!
   i=0; until [ -s "$T/opened.html" ] && grep -qE '^(open|xdg-open) ' "$CALLS"; do i=$((i + 1)); [ "$i" -lt 100 ] || fail "nothing opened"; sleep 0.1; done
   stop; [ -z "$(ls -A "$T/tmp")" ] || fail "a link file is left in TMPDIR after the stop: $(ls -A "$T/tmp")"
   snapshot > "$T/after"; cmp -s "$T/before" "$T/after" || fail "the hub changed"
@@ -649,8 +689,10 @@ web_read_only() {
   for m in POST PUT DELETE PATCH OPTIONS CONNECT PROPFIND; do for p in "/api/agents" "/api/events?since=" "/api/log?agent=main"; do
     api "$p" -X "$m" -d 'x=1'; assert_eq "$CODE" 405 "$m $p"; assert_not_contains "$T/body" "projects/api" "$m $p carries no data"; done; done
   for p in "/" "/api/agents" "/api/events" "/api/events?since=0-0" "/api/log?agent=main" "/api/log?agent=api" "/api/log?agent=new"; do api "$p"; assert_eq "$CODE" 200 "GET $p"; done
-  # the page asks with GET only and never posts a form
-  api "/"; if grep -Eqi "method *: *['\"](post|put|delete|patch)|<form|sendBeacon|WebSocket|EventSource" "$T/body"; then fail "the page can send something other than a GET"; fi
+  # the page asks with GET only and never posts a form; its one POST is the code, to /login (story M2)
+  api "/"; if grep -Eqi "<form|sendBeacon|WebSocket|EventSource" "$T/body"; then fail "the page can send something other than a GET"; fi
+  assert_eq "$(grep -Eoi "method *: *['\"](post|put|delete|patch)" "$T/body" | wc -l | tr -d ' ')" 1 "the page has one request that is not a GET"
+  assert_contains "$T/body" 'fetch("/login", {method: "POST"' "and it is the code, to /login"
   stop; snapshot > "$T/after"
   cmp -s "$T/before" "$T/after" || { diff "$T/before" "$T/after" >&2; fail "the hub or its state folder changed"; }
   assert_eq "$(sort -u "$CALLS" | tr '\n' ';')" "inbox --count main;sessions ;" "the only hub commands are bin/sessions and bin/inbox --count main"
@@ -766,8 +808,9 @@ web_page_renders() {
   done
   kill "$warm" 2> /dev/null; wait "$warm" 2> /dev/null
   local png; png="$(find "$T/shotrepo/.ade/evidence" -name '*-web-wide.png' | head -1)"; [ -f "$png" ] && [ -n "$(find "$T/shotrepo/.ade/evidence" -name '*-web-phone.png')" ] || fail "no shot saved"
-  # the cards are on it: pixels of the busy, idle and orchestrator colours (ade ui's tokens), and the theme's ground
-  python3 - "$png" <<'PY' || fail "the shot does not show the agent list"
+  # story M2: the link alone shows the code prompt, never the cards: the theme's ground, and no pixel of the busy or idle
+  # colours (ade ui's tokens; the dashboard behind the code is checked in a browser by web_premium_checks)
+  python3 - "$png" <<'PY' || fail "the shot does not show the code prompt alone"
 import struct, sys, zlib
 raw = open(sys.argv[1], "rb").read(); assert raw[:8] == b"\x89PNG\r\n\x1a\n"
 i = 8; idat = b""; w = h = 0
@@ -795,7 +838,7 @@ def near(rgb, d=40):
     return n
 counts = {k: near(v) for k, v in {"bg": (0x1e, 0x1e, 0x2e), "busy": (0xf9, 0xe2, 0xaf), "idle": (0xa6, 0xe3, 0xa1), "orch": (0xcb, 0xa6, 0xf7)}.items()}
 assert counts["bg"] > w * h // 4, counts
-assert all(counts[k] > 5 for k in ("busy", "idle", "orch")), counts
+assert all(counts[k] < 50 for k in ("busy", "idle")), counts
 PY
   stop
 }
@@ -812,7 +855,7 @@ web_stops_cleanly() {
   kill -0 "$pid" 2> /dev/null && fail "the server still runs after --stop"; wait "$SRV" 2> /dev/null; SRV=""
   [ ! -e "$L" ] || fail "the link file is left after --stop"; refused 127.0.0.1 "$port" || fail "the port still answers"
   # started again on the same port: nothing stale is reused; the old cookie and link are refused
-  start; CK="$old"; api "/api/agents"; assert_eq "$CODE" 403 "the old cookie after a restart"
+  start; CK="$old"; api "/api/agents"; assert_eq "$CODE" 401 "the old cookie after a restart (story M2: 401, no session)"
   [ "$(PATH="$WPATH" "$ADE" web --print-link)" = "$URL" ] || fail "--print-link after the restart"
   # --stop never signals a process that is not this user's ade web (a link file naming another pid)
   stop; sleep 30 & local other=$!
@@ -865,11 +908,10 @@ web_no_hub_writes() {
 }
 real_conf() { ls -A "$REAL_HOME/.config/ade" 2> /dev/null | grep -v '^ui-'; cksum "$REAL_HOME/.config/ade/web" 2> /dev/null; }
 
-web_premium_checks() {
-  acme; start --port "$(free_port)"
-  browser_ok web_premium_checks || { stop; return 0; }
-  python3 - "$CHROME" "$URL" "$T" "${ADE_WEB_SHOTS:-$T/shots}" <<'PY' || fail "the design checks"
-import base64, json, os, select, subprocess, sys, tempfile, time
+# cdp_lib: the Python the browser checks start with: a headless Chromium on a DevTools pipe (argv: the browser, the
+# page's address, this test's folder, the folder for screenshots); call, js, settle, key and the contrast check
+cdp_lib() { cat <<'PY'
+import base64, json, os, re, select, subprocess, sys, tempfile, time
 exe, url, tmp, shots = sys.argv[1:5]; origin = url.split("/?", 1)[0]; os.makedirs(shots, exist_ok=True)
 r_in, w_in = os.pipe(); r_out, w_out = os.pipe()
 args = [exe, "--headless", "--remote-debugging-pipe", "--user-data-dir=" + tempfile.mkdtemp(dir=tmp), "--no-first-run", "--disable-gpu",
@@ -922,10 +964,36 @@ CONTRAST = r"""(function(){
   var f=rgb(s.color),b=bg(e),a=lum(f),c=lum(b),k=(Math.max(a,c)+0.05)/(Math.min(a,c)+0.05);n++;
   if(k<4.5)bad.push(k.toFixed(2)+" "+s.color+" on "+getComputedStyle(e).backgroundColor+": "+t.nodeValue.trim().slice(0,30))}
  return JSON.stringify({n:n,bad:bad.slice(0,12)})})()"""
+def key(k, code):
+    vk = ord(k.upper()) if len(k) == 1 else {"Enter": 13, "Escape": 27}[k]
+    for ty in ("keyDown", "keyUp"): call("Input.dispatchKeyEvent", {"type": ty, "key": k, "code": code, "text": (k if len(k) == 1 else "\r" if k == "Enter" else "") if ty == "keyDown" else "", "windowsVirtualKeyCode": vk})
+def type_text(t): call("Input.insertText", {"text": t})
+# story M2: ade web's terminal (the test's pseudo-terminal): the last code it showed, and Enter typed into it
+def tty_code(old=None):
+    end = time.time() + 10
+    while time.time() < end:
+        found = re.findall(r"ade web: the code for the page: ([A-Za-z0-9]+)", open(os.path.join(tmp, "tty.out"), "rb").read().decode("utf-8", "replace"))
+        if found and found[-1] != old: return found[-1]
+        time.sleep(0.1)
+    raise SystemExit("no code on ade web's terminal")
+def tty_enter(): open(os.path.join(tmp, "tty.in"), "ab").write(b"\n")
+def close():
+    try: send("Browser.close")
+    except OSError: pass
+    try: p.wait(5)
+    except subprocess.TimeoutExpired: p.kill()
+PY
+}
+web_premium_checks() {
+  acme; start --port "$(free_port)"
+  browser_ok web_premium_checks || { stop; return 0; }
+  { cdp_lib; cat <<'PY'; } | python3 - "$CHROME" "$URL" "$T" "${ADE_WEB_SHOTS:-$T/shots}" || fail "the design checks"
 try:
     t = call("Target.createTarget", {"url": "about:blank"})["targetId"]
     sess[0] = call("Target.attachToTarget", {"targetId": t, "flatten": True})["sessionId"]
     call("Page.enable"); call("Network.enable"); call("Runtime.enable")
+    # story M2: the link opens on the code prompt; the code from ade web's terminal opens the dashboard in this browser
+    call("Page.navigate", {"url": url}); settle(2); type_text(tty_code()); key("Enter", "Enter"); settle(1)
     errs = []
     for name, w, h, scheme in (("dark", 1440, 900, "dark"), ("light", 1440, 900, "light"), ("phone", 375, 812, "dark")):
         call("Emulation.setDeviceMetricsOverride", {"width": w, "height": h, "deviceScaleFactor": 2, "mobile": name == "phone"})
@@ -947,8 +1015,6 @@ try:
     left = js("document.getAnimations().length")
     if left: errs.append("reduced motion: %d animations still run" % left)
     # the keyboard: j moves the selection, / opens the filter, ? the help, Esc closes it
-    def key(k, code):
-        for ty in ("keyDown", "keyUp"): call("Input.dispatchKeyEvent", {"type": ty, "key": k, "code": code, "text": k if ty == "keyDown" and len(k) == 1 else "", "windowsVirtualKeyCode": ord(k.upper()) if len(k) == 1 else 27})
     call("Emulation.setDeviceMetricsOverride", {"width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False})
     sel0 = js("(document.querySelector('#rows [aria-selected=true]')||{}).textContent||''")
     key("j", "KeyJ"); settle(0.3); sel1 = js("(document.querySelector('#rows [aria-selected=true]')||{}).textContent||''")
@@ -961,15 +1027,252 @@ try:
     if out: errs.append("requests that leave the page's origin: %s" % out[:5])
     if errs: raise SystemExit("; ".join(errs))
 finally:
-    try: send("Browser.close")
-    except OSError: pass
-    try: p.wait(5)
-    except subprocess.TimeoutExpired: p.kill()
+    close()
 PY
   local s; for s in dark light phone; do [ -s "${ADE_WEB_SHOTS:-$T/shots}/ade-web-$s.png" ] || fail "no $s screenshot"; done
   stop
 }
 
+# --- story M2: the link alone is not enough; the page asks for the code ade web shows in its own terminal ---
+
+# tty_has <text>: wait (up to 10 s) until ade web's terminal shows the text
+tty_has() { local i=0; until tr -d '\r' < "$T/tty.out" | grep -qF -- "$1"; do i=$((i + 1)); [ "$i" -lt 100 ] || fail "ade web's terminal never showed: $1"; sleep 0.1; done; }
+# login_post <json> [curl args]: POST /login with each header given (none added), so each refusal shows what it alone lacks
+login_post() { local b="$1"; shift; get "/login" -X POST "$@" --data-binary "$b"; }
+WRONG='{"code": "WRONGXYZ"}'   # never a code: O is not in the alphabet
+
+code_required() {
+  acme; snapshot > "$T/before"; start
+  get "/?k=$K"; assert_eq "$CODE" 200 "the link"
+  assert_contains "$T/body" 'data-gate="code"' "the link alone shows the code prompt"
+  assert_contains "$T/body" "enter the code shown in your terminal" "the prompt asks for the code"
+  [ -z "$(set_cookie)" ] || fail "the link alone set a cookie"
+  local p; for p in "/api/agents" "/api/events" "/api/events?since=" "/api/log?agent=api" "/api/journal" "/api/chat" "/api/nope"; do
+    get "$p" -H "X-Ade-Key: $K"; assert_eq "$CODE" 401 "$p with the token header but no code"
+    assert_not_contains "$T/body" "projects/" "$p: 401 carries no data"; assert_not_contains "$T/body" "chat line" "$p: 401 carries no log"
+    get "$p" -H "X-Ade-Key: $K" -H "Cookie: ade_web_$PORT=$K"; assert_eq "$CODE" 401 "$p with the token as the cookie"
+    get "$p"; assert_eq "$CODE" 403 "$p without the token header"; done
+  get "/"; assert_eq "$CODE" 403 "/ with neither the link nor a session"
+  get "/" -H "Cookie: ade_web_$PORT=$K"; assert_eq "$CODE" 403 "/ with the token as the cookie"
+  if grep -q '^sessions\|^inbox' "$CALLS"; then fail "a hub command ran before the code"; fi
+  stop; snapshot > "$T/after"; cmp -s "$T/before" "$T/after" || fail "the hub changed"
+}
+
+code_unlocks() {
+  acme; start; get "/?k=$K"
+  local c; c="$(tty_code)"; local good="{\"code\": \"$c\"}" o="Origin: $BASE" k="X-Ade-Key: $K" j="Content-Type: application/json"
+  # refused before the code is looked at: none of these counts as a wrong try
+  login_post "$good" -H "$k" -H "$j"; assert_eq "$CODE" 403 "/login without an Origin"
+  login_post "$good" -H "Origin: http://evil.example:$PORT" -H "$k" -H "$j"; assert_eq "$CODE" 403 "/login from another Origin"
+  login_post "$good" -H "$o" -H "$o" -H "$k" -H "$j"; assert_eq "$CODE" 403 "/login with two Origins"
+  login_post "$good" -H "$o" -H "$j"; assert_eq "$CODE" 403 "/login without the token header"
+  login_post "$good" -H "$o" -H "X-Ade-Key: ${K%?}x" -H "$j"; assert_eq "$CODE" 403 "/login with a wrong token header"
+  login_post "$good" -H "Host: evil.example:$PORT" -H "$o" -H "$k" -H "$j"; assert_eq "$CODE" 403 "/login to another Host"
+  login_post "$good" -H "$o" -H "$k" -H "$j" -H "Sec-Fetch-Site: cross-site"; assert_eq "$CODE" 403 "/login from another site"
+  login_post "code=$c" -H "$o" -H "$k"; assert_eq "$CODE" 415 "/login as a form"
+  login_post "{\"code\": \"$(rep x 2000)\"}" -H "$o" -H "$k" -H "$j"; assert_eq "$CODE" 413 "/login with a long body"
+  login_post "not json" -H "$o" -H "$k" -H "$j"; assert_eq "$CODE" 400 "/login with a body that is not JSON"
+  login_post '["x"]' -H "$o" -H "$k" -H "$j"; assert_eq "$CODE" 400 "/login with JSON that is not an object"
+  [ -z "$(set_cookie)" ] || fail "a refused /login set a cookie"
+  post "$WRONG"; assert_eq "$CODE" 401 "a wrong code"; assert_eq "$(json 'd["left"]')" 4 "the refusals before were not wrong tries"
+  [ -z "$(set_cookie)" ] || fail "a wrong code set a cookie"
+  # the right code: a session; the dashboard and the API as in M1
+  post "$good"; assert_eq "$CODE" 200 "the right code"; assert_eq "$(json 'd["ok"]')" True "says ok"; CK="$(set_cookie)"
+  [ -n "$CK" ] || fail "the right code set no cookie"
+  # review fix: a code opens one page only (a screen share that showed it opens nothing later); ade web says a page
+  # signed in and shows the next code. The code is read without case, spaces or dashes.
+  tty_has "a page signed in"; local c2; c2="$(tty_code "$c")"
+  post "$good"; assert_eq "$CODE" 401 "a code already used"
+  post "{\"code\": \" $(printf '%s' "$c2" | tr 'A-Z' 'a-z' | sed 's/..../&-/')\"}"; assert_eq "$CODE" 200 "the next code, in lower case with a dash"
+  api "/api/agents"; assert_eq "$CODE" 200 "the API with the session"; api "/api/chat"; assert_eq "$CODE" 200 "the chat with the session"
+  api "/"; assert_eq "$CODE" 200 "the page with the session"; assert_contains "$T/body" 'data-gate="open"' "the page opens on the dashboard"
+  get "/" -H "Cookie: $CK"; assert_eq "$CODE" 200 "the page with the session alone"; assert_contains "$T/body" 'data-gate="open"' "open again"
+  # M1's checks still hold with a session
+  api "/api/agents" -H "Origin: http://evil.example:$PORT"; assert_eq "$CODE" 403 "another Origin with a session"
+  api "/api/agents" -H "Host: evil.example:$PORT"; assert_eq "$CODE" 403 "another Host with a session"
+  get "/api/agents" -H "Cookie: $CK"; assert_eq "$CODE" 403 "the session without the token header"
+  get "/api/agents" -H "Cookie: $CK" -H "X-Ade-Key: ${K%?}x"; assert_eq "$CODE" 403 "the session with a wrong token header"
+  api "/api/agents" -H "Sec-Fetch-Site: cross-site"; assert_eq "$CODE" 403 "another site with a session"
+  # /login is the only route that is not GET, and it takes POST only
+  local m; for m in GET PUT DELETE PATCH; do
+    api "/login" -X "$m"; [ "$m" = GET ] && { assert_eq "$CODE" 404 "GET /login"; continue; }
+    assert_eq "$CODE" 405 "$m /login"; grep -qi '^allow: POST' "$T/head" || fail "$m /login: Allow is not POST"; done
+  api "/api/agents" -X POST -d 'x=1'; assert_eq "$CODE" 405 "POST on the API"; grep -qi '^allow: GET' "$T/head" || fail "the API's Allow is not GET"
+  stop
+}
+
+code_shown_on_terminal_only() {
+  acme; start; local c; c="$(tty_code)"
+  [[ "$c" =~ ^[ABCDEFGHJKMNPQRSTUVWXYZ23456789]{8}$ ]] || fail "the code is not 8 characters without look-alikes: $c"
+  if grep -qF -- "$c" "$T/web.out" "$T/web.err"; then fail "the code is on stdout or stderr"; fi
+  if token_in_ps "$c"; then fail "the code is in a process's command line"; fi
+  get "/?k=$K"; assert_not_contains "$T/body" "$c" "the page does not carry the code"
+  login; api "/"; assert_not_contains "$T/body" "$c" "nor does the open page"
+  api "/api/agents"; assert_not_contains "$T/body" "$c" "nor the API"; assert_not_contains "$T/head" "$c" "nor a header"
+  stop
+  if grep -rlF --exclude=tty.out -- "$c" "$T" "$HOME" 2> /dev/null; then fail "the code is in a file"; fi
+  # made by secrets from the alphabet, compared with hmac.compare_digest
+  grep -qF 'ALPHA = "ABCDEFGHJKMNPQRSTUVWXYZ23456789"' "$ADE" || fail "the alphabet"
+  grep -qF 'secrets.choice(ALPHA)' "$ADE" || fail "the code is not from secrets"
+  grep -qF 'hmac.compare_digest(typed' "$ADE" || fail "the code is not compared in constant time"
+  # no terminal (a new session, as in an agent's shell or a pipe): refused, exit 2, nothing listens
+  local p; p="$(free_port)"
+  PATH="$WPATH" TMPDIR="$T/tmp" python3 -I -c 'import subprocess, sys; sys.exit(subprocess.call(sys.argv[1:], start_new_session=True, stdin=subprocess.DEVNULL))' \
+    "$ADE" web --no-open --port "$p" > "$T/out" 2> "$T/err" & local nt=$!
+  ( sleep 10; kill "$nt" 2> /dev/null ) & local guard=$!
+  wait "$nt"; assert_eq "$?" 2 "ade web with no terminal"; { kill "$guard"; wait "$guard"; } 2> /dev/null
+  assert_contains "$T/err" "terminal" "says it needs a terminal"; assert_not_contains "$T/out" "http://" "no link printed"
+  [ ! -e "$HOME/.config/ade/web" ] || fail "a link file without a terminal"; refused 127.0.0.1 "$p" || fail "something listens without a terminal"
+}
+
+code_new_each_start() {
+  # the earlier run's session is sent under this run's cookie name (a port is not always free again at once after a
+  # stop, so a restart may get another; the name carries the port)
+  acme
+  start; local c1 k1="$K"; c1="$(tty_code)"; login; local sid1="${CK#*=}"
+  stop; start; local c2; c2="$(tty_code)"
+  [ "$c2" != "$c1" ] || fail "the same code after a restart"; [ "$K" != "$k1" ] || fail "the same link after a restart"
+  CK="ade_web_$PORT=$sid1"; api "/api/agents"; assert_eq "$CODE" 401 "a session from the earlier run"
+  get "/" -H "Cookie: $CK"; assert_eq "$CODE" 403 "the page with a session from the earlier run"
+  post "{\"code\": \"$c1\"}"; assert_eq "$CODE" 401 "the earlier run's code"
+  stop; start; local c3; c3="$(tty_code)"
+  [ "$c3" != "$c1" ] && [ "$c3" != "$c2" ] || fail "a code came back"
+  stop
+}
+
+code_lockout() {
+  acme; start; local c; c="$(tty_code)"
+  local n; for n in 4 3 2 1; do
+    post "$WRONG" -A "client-$n"; assert_eq "$CODE" 401 "wrong code ($n left)"; assert_eq "$(json 'd["left"]')" "$n" "the tries left"; done
+  post '{"code": "wrong-zz"}' -A "another-client"; assert_eq "$CODE" 401 "the fifth wrong code, from another client"
+  assert_eq "$(json 'd.get("locked")')" True "locked: wrong tries are counted per run, not per client"; assert_eq "$(json 'd["left"]')" 0 "none left"
+  post "{\"code\": \"$c\"}"; assert_eq "$CODE" 401 "the right code after the lockout"; assert_eq "$(json 'd.get("locked")')" True "still locked"
+  [ -z "$(set_cookie)" ] || fail "a session after the lockout"
+  tty_has "used up"
+  # Enter in ade's terminal: a fresh code, and five tries again
+  printf '\n' >> "$T/tty.in"; local c2; c2="$(tty_code "$c")"
+  post "{\"code\": \"$c\"}"; assert_eq "$CODE" 401 "the used-up code"; assert_eq "$(json 'd["left"]')" 4 "five tries for the new code"
+  post "{\"code\": \"$c2\"}"; assert_eq "$CODE" 200 "the new code"; CK="$(set_cookie)"
+  api "/api/agents"; assert_eq "$CODE" 200 "the API after the new code"
+  stop
+}
+
+code_session_ends() {
+  acme; start; login
+  grep -i '^set-cookie:' "$T/head" > "$T/cookie" || fail "no cookie"
+  assert_contains "$T/cookie" "ade_web_$PORT=" "the cookie is named for the port"
+  local a; for a in "HttpOnly" "SameSite=Strict" "Path=/;" "Max-Age=43200"; do grep -qiF -- "$a" "$T/cookie" || fail "the cookie has no $a"; done
+  assert_not_contains "$T/cookie" "$K" "the cookie is not the link's token"
+  api "/api/agents"; assert_eq "$CODE" 200 "the session"
+  # the lock key: the page sends {"lock": true}; the session is dropped
+  get "/?k=$K"; assert_contains "$T/body" "lock: true" "the page can lock"; assert_contains "$T/body" "lock the page" "the help names the lock key"
+  post '{"lock": true}' -H "Cookie: $CK"; assert_eq "$CODE" 200 "lock"
+  grep -i '^set-cookie:' "$T/head" | grep -qi 'Max-Age=0' || fail "lock does not clear the cookie"
+  api "/api/agents"; assert_eq "$CODE" 401 "the API after lock"; get "/" -H "Cookie: $CK"; assert_eq "$CODE" 403 "the page after lock"
+  stop
+  # 12 hours, shortened for the test (ADE_WEB_TEST_SESSION_SECONDS only ever shortens it)
+  ADE_WEB_TEST_SESSION_SECONDS=2 start; login
+  grep -i '^set-cookie:' "$T/head" | grep -qi 'Max-Age=2;' || fail "the test switch did not shorten the cookie"
+  api "/api/agents"; assert_eq "$CODE" 200 "a fresh session"; sleep 3; api "/api/agents"; assert_eq "$CODE" 401 "an expired session"
+  stop
+  local v; for v in 99999 0 x; do
+    ADE_WEB_TEST_SESSION_SECONDS="$v" start; login
+    grep -i '^set-cookie:' "$T/head" | grep -qi 'Max-Age=43200' || fail "ADE_WEB_TEST_SESSION_SECONDS=$v changed the session"; stop; done
+}
+
+code_tailnet_too() {
+  fixture; ts_fake; export TS_IP TS_JSON
+  TS_IP=127.0.0.2; python3 -c 'import socket; socket.socket().bind(("127.0.0.2", 0))' 2> /dev/null || TS_IP=127.0.0.1
+  TS_JSON="$(ts_json Running "mac.tail1234.ts.net.")"
+  ADE_WEB_TEST_TAILNET_LOOPBACK=1 start --tailnet
+  assert_contains "$T/web.out" "the link alone is not enough" "the start message says the link alone is not enough"
+  assert_contains "$T/web.out" "the code (shown in this terminal)" "and that the code is needed"
+  get "/?k=$K"; assert_eq "$CODE" 200 "the link"; assert_contains "$T/body" 'data-gate="code"' "the code prompt on the tailnet"
+  get "/api/agents" -H "X-Ade-Key: $K"; assert_eq "$CODE" 401 "the API without the code on the tailnet"
+  local c; c="$(tty_code)"; login; api "/api/agents"; assert_eq "$CODE" 200 "the code opens it on the tailnet"
+  if grep -qF -- "$c" "$T/web.out" "$T/web.err"; then fail "the code is printed on the tailnet"; fi
+  stop; unset TS_IP TS_JSON
+}
+
+code_page_premium() {
+  acme; start --port "$(free_port)"
+  browser_ok code_page_premium || { stop; return 0; }
+  { cdp_lib; cat <<'PY'; } | python3 - "$CHROME" "$URL" "$T" "${ADE_WEB_SHOTS:-$T/shots}" || fail "the code prompt in a browser"
+def shot(kind, name): open(os.path.join(shots, "ade-web-code-%s-%s.png" % (kind, name)), "wb").write(base64.b64decode(call("Page.captureScreenshot", {"format": "png"})["data"]))
+def status(): return js("document.getElementById('gs').textContent") or ""
+def wait_for(text, s=5):
+    end = time.time() + s
+    while time.time() < end:
+        if text in status(): return True
+        settle(0.2)
+    return False
+PROMPT = "ade web · enter the code shown in your terminal:"
+try:
+    t = call("Target.createTarget", {"url": "about:blank"})["targetId"]
+    sess[0] = call("Target.attachToTarget", {"targetId": t, "flatten": True})["sessionId"]
+    call("Page.enable"); call("Network.enable"); call("Runtime.enable")
+    errs = []; code = tty_code()
+    for name, w, h, scheme in (("dark", 1440, 900, "dark"), ("light", 1440, 900, "light"), ("phone", 375, 812, "dark")):
+        call("Emulation.setDeviceMetricsOverride", {"width": w, "height": h, "deviceScaleFactor": 2, "mobile": name == "phone"})
+        call("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": scheme}, {"name": "prefers-reduced-motion", "value": "no-preference"}]})
+        call("Page.navigate", {"url": url}); settle(2)
+        if js("document.body.dataset.gate") != "code": errs.append("%s: the link alone did not show the code prompt" % name)
+        if js("getComputedStyle(document.getElementById('app')).display") != "none": errs.append("%s: the dashboard shows behind the prompt" % name)
+        if PROMPT not in (js("document.getElementById('gate').innerText") or "").replace("\n", " "): errs.append("%s: no prompt line" % name)
+        if js("document.activeElement && document.activeElement.id") != "gi": errs.append("%s: the code input has no focus (keyboard first)" % name)
+        sw = js("Math.max(document.documentElement.scrollWidth, document.body.scrollWidth)")
+        if sw > w: errs.append("%s: scrolls sideways (%s > %s)" % (name, sw, w))
+        if not js("document.getAnimations().length"): errs.append("%s: no blinking cursor" % name)
+        for when in ("prompt",):
+            c = json.loads(js(CONTRAST))
+            if c["n"] < 1 or c["bad"]: errs.append("%s %s: contrast below 4.5:1 (%d texts): %s" % (name, when, c["n"], c["bad"]))
+        shot("prompt", name)
+        type_text("WRONGXYZ"); key("Enter", "Enter")
+        if not wait_for("✖ wrong code (4 of 5 left)"): errs.append("%s: no wrong-code line: %r" % (name, status()))
+        c = json.loads(js(CONTRAST))
+        if c["bad"]: errs.append("%s wrong: contrast below 4.5:1: %s" % (name, c["bad"]))
+        shot("wrong", name)
+        for i in range(4): type_text("WRONGXYZ"); key("Enter", "Enter"); settle(0.4)
+        if not wait_for("locked: press Enter in ade's terminal for a new code"): errs.append("%s: no lockout line: %r" % (name, status()))
+        c = json.loads(js(CONTRAST))
+        if c["bad"]: errs.append("%s locked: contrast below 4.5:1: %s" % (name, c["bad"]))
+        shot("locked", name)
+        if js("document.body.dataset.gate") != "code": errs.append("%s: a wrong code opened something" % name)
+        tty_enter(); code = tty_code(code)
+    # the right code opens the dashboard in place; q locks it again
+    call("Emulation.setDeviceMetricsOverride", {"width": 1440, "height": 900, "deviceScaleFactor": 1, "mobile": False})
+    call("Page.navigate", {"url": url}); settle(2); type_text(code); key("Enter", "Enter"); settle(4)
+    if js("document.body.dataset.gate") != "open": errs.append("the right code did not open the dashboard: %r" % status())
+    rows = js("document.querySelectorAll('#rows > *').length")
+    if not rows or rows < 8: errs.append("%s agent rows after the code" % rows)
+    key("q", "KeyQ"); settle(1)
+    if js("document.body.dataset.gate") != "code": errs.append("q did not lock the page")
+    if js("document.querySelectorAll('#rows > *').length"): errs.append("the agent rows stay after q")
+    out = [u for u in reqs if not (u.startswith(origin + "/") or u.startswith("data:"))]
+    if out: errs.append("requests that leave the page's origin: %s" % out[:5])
+    if errs: raise SystemExit("; ".join(errs))
+finally:
+    close()
+PY
+  local s k; for s in dark light phone; do for k in prompt wrong locked; do
+    [ -s "${ADE_WEB_SHOTS:-$T/shots}/ade-web-code-$k-$s.png" ] || fail "no $k screenshot ($s)"; done; done
+  stop
+}
+
+code_no_hub_writes() {
+  acme; snapshot > "$T/before"; start
+  get "/?k=$K"; local p; for p in "/api/agents" "/api/chat"; do get "$p" -H "X-Ade-Key: $K"; assert_eq "$CODE" 401 "$p before the code"; done
+  local c i; c="$(tty_code)"; for i in 1 2 3 4 5; do post "$WRONG"; done; tty_has "used up"
+  printf '\n' >> "$T/tty.in"; c="$(tty_code "$c")"
+  post "{\"code\": \"$c\"}"; assert_eq "$CODE" 200 "the new code"; CK="$(set_cookie)"
+  for p in "/" "/api/agents" "/api/events" "/api/events?since=1-1" "/api/log?agent=main" "/api/log?agent=api" "/api/journal" "/api/chat"; do api "$p"; done
+  post '{"lock": true}' -H "Cookie: $CK"; assert_eq "$CODE" 200 "lock"
+  stop; snapshot > "$T/after"
+  cmp -s "$T/before" "$T/after" || { diff "$T/before" "$T/after" >&2; fail "the hub or its state folder changed"; }
+  [ -z "$(ls -A "$HOME/.config/ade" 2> /dev/null)" ] || fail "something is left in ~/.config/ade: $(ls -A "$HOME/.config/ade")"
+  assert_eq "$(real_conf)" "$REAL_CONF" "the real ~/.config/ade"
+  assert_eq "$(sort -u "$CALLS" | tr '\n' ';')" "inbox --count main;sessions ;" "the only hub commands are bin/sessions and bin/inbox --count main"
+}
 REAL_CONF="$(real_conf)"
 # bash tests/test_web.sh [test ...]: those tests only (each name a function above)
 if [ "$#" -gt 0 ]; then for t in "$@"; do "$t"; done; echo ok; exit 0; fi
@@ -994,4 +1297,13 @@ web_page_renders
 web_stops_cleanly
 web_no_hub_writes
 web_premium_checks
+code_required
+code_unlocks
+code_shown_on_terminal_only
+code_new_each_start
+code_lockout
+code_session_ends
+code_tailnet_too
+code_page_premium
+code_no_hub_writes
 echo ok
