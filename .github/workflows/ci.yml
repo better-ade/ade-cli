@@ -28,7 +28,7 @@ jobs:
           curl -fsSL https://github.com/koalaman/shellcheck/releases/download/v0.10.0/shellcheck-v0.10.0.linux.x86_64.tar.xz | tar xJ
           sudo install shellcheck-v0.10.0/shellcheck /usr/local/bin/shellcheck
           bash tests/lint.sh
-  # layers 4-7 on a fresh ubuntu:24.04 container: clean machine, hub commands on a real hub, upgrade, interactive, ade ui snapshots
+  # layers 4-7 on a fresh ubuntu:24.04 container: clean machine, hub commands and check-ins with ade web on a real hub, upgrade, interactive, ade ui snapshots
   e2e-linux:
     runs-on: ubuntu-latest
     container: ubuntu:24.04
@@ -40,6 +40,7 @@ jobs:
       - run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - run: bash tests/e2e/clean.sh
       - run: bash tests/e2e/hub_commands.sh
+      - run: bash tests/e2e/web.sh
       - run: bash tests/e2e/upgrade.sh
       - run: bash tests/e2e/import.sh
       - run: bash tests/e2e/interactive.sh
@@ -56,6 +57,7 @@ jobs:
       - run: brew install tmux > /dev/null
       - run: /bin/bash tests/e2e/clean.sh
       - run: /bin/bash tests/e2e/hub_commands.sh
+      - run: /bin/bash tests/e2e/web.sh
       - run: /bin/bash tests/e2e/upgrade.sh
       - run: /bin/bash tests/e2e/import.sh
       - run: /bin/bash tests/e2e/interactive.sh
