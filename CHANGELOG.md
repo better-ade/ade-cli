@@ -1,6 +1,12 @@
 # Changelog
 
 ## Unreleased
+- `ade web` reads right on a fresh hub (M3): a template's placeholder line in `STATE.md` is not shown as its state
+  (`no state yet`; `no STATE.md yet` when there is none); main with no session reads `not running`; the quiet alert
+  says how long since the last sign of life (`no check-in for 25m (since 13:45Z)`) and a quiet row's check-in is dim;
+  every top-bar count, `sync`, `monitors`, `inbox` and a row's `!` explain themselves on hover; whole folder names in
+  the events on a wide screen; a start message of short lines and one hint line on the code page (`?` shows the rest).
+  `/api/agents`: `line` is null when there is no `STATE.md`; new `running`.
 
 ## 0.2.13
 - `ade web` asks for a code before it shows anything (M2): each start prints a code of 8 characters on its own

@@ -455,7 +455,7 @@ t_tailnet() {
   assert_eq "$(listeners "$PORT")" "$TS_IP:$PORT" "listens on the Tailscale address only"
   [ "$TS_IP" = 127.0.0.1 ] || refused 127.0.0.1 "$PORT" || fail "--tailnet also answers on 127.0.0.1"
   assert_contains "$T/web.out" "http://mac.tail1234.ts.net:$PORT/?k=$K" "the MagicDNS address is printed"
-  assert_contains "$T/web.out" "anyone on your tailnet with the link and the code (shown in this terminal) can read these logs" "the plain warning"
+  assert_contains "$T/web.out" "anyone on your tailnet with the link and the code (shown here) can read these logs" "the plain warning"
   assert_contains "$T/web.out" "the link alone is not enough" "says the link alone is not enough"
   assert_eq "$(sort -u "$CALLS" | tr '\n' ';')" "tailscale ip -4;tailscale status --json;" "tailscale is only asked, never changed"
   login
@@ -759,7 +759,7 @@ web_alerts() {
   acme; start; login; api "/api/agents"
   assert_eq "$(json 'sorted(set(a["kind"] for a in d["alerts"]))')" "['monitor', 'prompt', 'quiet', 'unread']" "the four kinds"
   assert_eq "$(json '[a["agent"] for a in d["alerts"] if a["kind"] == "prompt"]')" "['mobile', 'new']" "busy with an old time, and not started"
-  assert_eq "$(json '[a["text"] for a in d["alerts"] if a["kind"] == "quiet"]')" "['billing is quiet (for 9m)']" "the quiet agent"
+  assert_eq "$(json '[__import__("re").sub(r"[0-9]{2}:[0-9]{2}Z", "HH:MMZ", a["text"]) for a in d["alerts"] if a["kind"] == "quiet"]')" "['billing is quiet: no check-in for 25m (since HH:MMZ)']" "the quiet agent (story M3: counted from its last event)"
   assert_eq "$(json '[a["text"] for a in d["alerts"] if a["kind"] == "monitor"]')" "['monitor projects-api / uptime-sh: ALERT api returns 502 on /health']" "the monitor ALERT"
   assert_eq "$(json '[a["text"] for a in d["alerts"] if a["kind"] == "unread"]')" "['2 unread notes to main']" "unread notes to main"
   stop
@@ -1188,7 +1188,7 @@ code_tailnet_too() {
   TS_JSON="$(ts_json Running "mac.tail1234.ts.net.")"
   ADE_WEB_TEST_TAILNET_LOOPBACK=1 start --tailnet
   assert_contains "$T/web.out" "the link alone is not enough" "the start message says the link alone is not enough"
-  assert_contains "$T/web.out" "the code (shown in this terminal)" "and that the code is needed"
+  assert_contains "$T/web.out" "the code (shown here)" "and that the code is needed"
   get "/?k=$K"; assert_eq "$CODE" 200 "the link"; assert_contains "$T/body" 'data-gate="code"' "the code prompt on the tailnet"
   get "/api/agents" -H "X-Ade-Key: $K"; assert_eq "$CODE" 401 "the API without the code on the tailnet"
   local c; c="$(tty_code)"; login; api "/api/agents"; assert_eq "$CODE" 200 "the code opens it on the tailnet"
@@ -1275,6 +1275,241 @@ code_no_hub_writes() {
   assert_eq "$(real_conf)" "$REAL_CONF" "the real ~/.config/ade"
   assert_eq "$(sort -u "$CALLS" | tr '\n' ';')" "inbox --count main;sessions ;" "the only hub commands are bin/sessions and bin/inbox --count main"
 }
+
+# ---- story M3: ade web reads right on a fresh hub, and its quiet alert says how long ----
+# new_hub: a hub as bin/init leaves it: no session, no event, the hub template's STATE.md (headings and placeholders only)
+# at its root. quiet_hub: acme plus two more quiet agents, each with another last sign of life (billing: an event;
+# qlast: its LAST; qcheck: a check-in), and a sender whose folder name is 32 characters long; $T/signs: each quiet
+# agent's last sign of life (name, time)
+TEMPLATE_STATE='# State: acme\n\nUpdated: (UTC date and time, by whom)\n\n## Live\n\n## Staged\n\n## Open\n\n## Waiting on\n\n## Next session starts with\n'
+LONG_FOLDER="projects/customer-portal-backend"   # 32 characters
+new_hub() {
+  fixture; rm -rf "$H/journal" "$H/projects/link" "$S/events.jsonl" "$S/logs/chat.log"
+  printf '#!/bin/bash\necho "sessions $*" >> "$CALLS"\necho "NAME FOLDER PID PARENT STARTED ROLE STATUS LAST ENGINE"\n' > "$H/bin/sessions"
+  # shellcheck disable=SC2059  # the template's newlines, on purpose
+  printf "$TEMPLATE_STATE" > "$H/STATE.md"; : > "$CALLS"
+}
+quiet_hub() {
+  acme; python3 - "$H" "$S" "$T/signs" "$LONG_FOLDER" <<'PY'
+import json, os, sys, time
+H, S, signs, long = sys.argv[1:5]; now = time.time()
+def at(m): return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - m * 60))
+with open(os.path.join(H, "bin", "sessions"), "a") as f:
+    for i, (n, d, last) in enumerate((("qlast", "projects/qlast", at(5)), ("qcheck", "projects/qcheck", at(30)))):
+        f.write("printf '%%-10s %%-18s %%-6s %%-6s %%-21s %%-9s %%-6s %%-21s %%s\\n' %s %s %d - %s builder idle %s claude\n" % (n, d, 5200 + i, at(60), last))
+ev = [(2, "projects/qlast", "quiet", "no check-in for 2 rounds", False), (12, "projects/qcheck", "note", "check-in: still on it", True),
+      (3, "projects/qcheck", "quiet", "no check-in for 2 rounds", False), (1, long, "note", "a note from a folder with a long name", False)]
+with open(os.path.join(S, "events.jsonl"), "a") as f:
+    for m, a, k, x, c in ev:
+        e = {"time": at(m), "from": a, "to": "main", "kind": k, "text": x}
+        if c: e["checkin"] = True
+        f.write(json.dumps(e) + "\n")
+# billing's last sign of life is its idle event (25 min ago, as acme writes it)
+idle = [e["time"] for e in map(json.loads, open(os.path.join(S, "events.jsonl"))) if e["from"] == "projects/billing" and e["kind"] == "idle"][0]
+open(signs, "w").write("billing %s\nqlast %s\nqcheck %s\n" % (idle, at(5), at(12)))
+PY
+}
+# m3_lib: after cdp_lib, the Python the M3 browser checks share: opened (the dashboard after the code), view (a width
+# and a colour scheme), the colour of a theme token, one element's text, colour and title, and a screenshot
+m3_lib() { cat <<'PY'
+errs = []
+def view(w, h, scheme="dark", scale=1):
+    call("Emulation.setDeviceMetricsOverride", {"width": w, "height": h, "deviceScaleFactor": scale, "mobile": w < 500})
+    call("Emulation.setEmulatedMedia", {"features": [{"name": "prefers-color-scheme", "value": scheme}, {"name": "prefers-reduced-motion", "value": "no-preference"}]}); settle(0.5)
+def opened(w=1440, h=900, scheme="dark", code=True):
+    t = call("Target.createTarget", {"url": "about:blank"})["targetId"]
+    sess[0] = call("Target.attachToTarget", {"targetId": t, "flatten": True})["sessionId"]
+    call("Page.enable"); call("Network.enable"); call("Runtime.enable")
+    view(w, h, scheme); call("Page.navigate", {"url": url}); settle(2)
+    if code: type_text(tty_code()); key("Enter", "Enter"); settle(4)
+def token(name): return js("(function(){var s=document.createElement('span');s.style.color='var(--%s)';document.body.appendChild(s);var c=getComputedStyle(s).color;s.remove();return c})()" % name)
+def el(sel): return js("(function(){var e=document.querySelector(%s);return e?{t:e.textContent,c:getComputedStyle(e).color,title:e.title||'',h:e.getBoundingClientRect().height,sw:e.scrollWidth,cw:e.clientWidth,w:e.getBoundingClientRect().width,shown:e.getClientRects().length>0}:null})()" % json.dumps(sel))
+def cell(name, part): return el('#rows .row[data-name="%s"] .%s' % (name, part)) or {"t": None, "c": None, "title": ""}
+def shot(name): open(os.path.join(shots, name + ".png"), "wb").write(base64.b64decode(call("Page.captureScreenshot", {"format": "png"})["data"]))
+PY
+}
+# in_browser <test>: the Python on stdin, after cdp_lib and m3_lib, in a headless Chromium; what it adds to errs fails
+in_browser() {
+  { cdp_lib; m3_lib; echo "try:"; sed 's/^/    /'; printf 'finally:\n    close()\nif errs: raise SystemExit("; ".join(errs))\n'; } |
+    python3 - "$CHROME" "$URL" "$T" "${ADE_WEB_SHOTS:-$T/shots}" || fail "$1 in a browser"
+}
+
+web_state_placeholder() {   # AC1
+  acme
+  # shellcheck disable=SC2059  # the template's newlines, on purpose
+  printf "$TEMPLATE_STATE" > "$H/projects/docs/STATE.md"
+  printf '# STATE\n- waiting for the API change\nUpdated: (UTC date and time, by whom)\n- Owner: (a name)\n## Live\n' > "$H/projects/web/STATE.md"
+  printf '# STATE\n- rate limiter wired\nUpdated: 2026-11-27T10:00Z, by api\n## Live\n' > "$H/projects/api/STATE.md"
+  start; login; api "/api/agents"
+  assert_eq "$(json '[a["line"] for a in d["agents"] if a["name"] in ("docs", "web", "api")]')" "['Updated: 2026-11-27T10:00Z, by api', 'waiting for the API change', '']" \
+    "a placeholder line is skipped; a real value is kept; headings and placeholders only give no line"
+  browser_ok web_state_placeholder || { stop; return 0; }
+  in_browser web_state_placeholder <<'PY'
+opened()
+for who, want in (("docs", "no state yet"), ("web", "waiting for the API change")):
+    got = cell(who, "ln")["t"]
+    if got != want: errs.append("%s's row reads %r, not %r" % (who, got, want))
+PY
+  stop
+}
+
+web_main_not_running() {   # AC2
+  new_hub; rm -f "$H/STATE.md"; start; login; api "/api/agents"
+  assert_eq "$(json '[(a["name"], a["running"], a["line"]) for a in d["agents"]]')" "[('main', False, None)]" "main has no session and the hub root no STATE.md"
+  browser_ok web_main_not_running || { stop; return 0; }
+  in_browser web_main_not_running <<'PY'
+opened()
+ck, ln, dim = cell("main", "ck"), cell("main", "ln"), token("dim")
+if ck["t"] != "not running" or ck["c"] != dim: errs.append("main's row: %r in %s, not 'not running' in the dim %s" % (ck["t"], ck["c"], dim))
+if ln["t"] != "no STATE.md yet": errs.append("main's line reads %r, not 'no STATE.md yet'" % ln["t"])
+txt = js("document.getElementById('app').innerText")
+if "unknown" in txt: errs.append("the page still says unknown")
+head = el("#dbody .dh span:last-child")
+if not head or head["t"] != "not running" or head["c"] != dim: errs.append("main's detail heading: %r" % head)
+if "no STATE.md yet" not in (js("document.getElementById('dbody').innerText") or ""): errs.append("main's detail does not say no STATE.md yet")
+PY
+  stop
+  # the template's STATE.md at the root: a file with no state in it yet
+  # shellcheck disable=SC2059  # the template's newlines, on purpose
+  printf "$TEMPLATE_STATE" > "$H/STATE.md"; start; login; api "/api/agents"
+  assert_eq "$(json 'd["agents"][0]["line"]')" "" "the template's STATE.md gives no line"
+  in_browser web_main_not_running <<'PY'
+opened()
+if cell("main", "ln")["t"] != "no state yet": errs.append("main's line with the template's STATE.md: %r" % cell("main", "ln")["t"])
+PY
+  stop
+}
+
+web_quiet_for() {   # AC3
+  quiet_hub; start; login; api "/api/agents"
+  assert_eq "$(json '[a["name"] for a in d["agents"] if a["state"] == "quiet"]')" "['billing', 'qlast', 'qcheck']" "three quiet agents"
+  python3 - "$T/body" "$T/signs" <<'PY' || fail "the quiet alerts"
+import calendar, json, sys, time
+d = json.load(open(sys.argv[1])); got = {a["agent"]: a["text"] for a in d["alerts"] if a["kind"] == "quiet"}; bad = []
+for line in open(sys.argv[2]):
+    name, t = line.split(); s = calendar.timegm(time.strptime(t, "%Y-%m-%dT%H:%M:%SZ"))
+    want = "%s is quiet: no check-in for %dm (since %sZ)" % (name, (d["now"] - s) // 60, t[11:16])
+    if got.get(name) != want: bad.append("%r, not %r" % (got.get(name), want))
+if bad: raise SystemExit("; ".join(bad))
+PY
+  stop
+}
+
+web_quiet_row() {   # AC4
+  quiet_hub; start; login
+  browser_ok web_quiet_row || { stop; return 0; }
+  in_browser web_quiet_row <<'PY'
+opened()
+q, ok, dim, idle = cell("qcheck", "ck"), cell("api", "ck"), token("dim"), token("idle")
+if not re.fullmatch(r"last check-in [0-9]+m[0-9]{2}s ago", q["t"] or "") or q["c"] != dim: errs.append("a quiet row's check-in: %r in %s (dim is %s)" % (q["t"], q["c"], dim))
+if "✓" in (q["t"] or ""): errs.append("a quiet row is ticked")
+if not (ok["t"] or "").startswith("✓ checked in ") or ok["c"] != idle: errs.append("a busy row's check-in: %r in %s (idle is %s)" % (ok["t"], ok["c"], idle))
+PY
+  stop
+}
+
+web_legend() {   # AC5
+  acme; start; login
+  browser_ok web_legend || { stop; return 0; }
+  in_browser web_legend <<'PY'
+opened()
+for i, s in enumerate(("busy", "idle", "ready", "quiet", "blocked")):
+    c = el("#counts span:nth-child(%d)" % (i + 1))
+    if not c or s not in c["title"] or len(c["title"]) < len(s) + 10: errs.append("the %s count's title: %r" % (s, c and c["title"]))
+for i, w in (("sync", "sync"), ("mon", "monitor"), ("unread", "unread")):
+    c = el("#" + i)
+    if not c or w not in c["title"]: errs.append("#%s's title: %r" % (i, c and c["title"]))
+mk = cell("mobile", "mk")
+if mk["t"] != "!" or "mobile may be waiting at a prompt" not in mk["title"] or "alert" not in mk["title"]: errs.append("mobile's ! title: %r" % mk["title"])
+if cell("web", "mk")["title"]: errs.append("a row with no alert has a title on its mark")
+PY
+  stop
+  new_hub; start; login
+  in_browser web_legend <<'PY'
+opened()
+for i, want in (("sync", "sync none yet"), ("mon", "monitors none")):
+    c = el("#" + i)
+    if not c or c["t"] != want or not c["title"]: errs.append("#%s reads %r (title %r), not %r" % (i, c and c["t"], c and c["title"], want))
+PY
+  stop
+}
+
+web_wide_names() {   # AC6
+  quiet_hub; start; login
+  browser_ok web_wide_names || { stop; return 0; }
+  LONG_FOLDER="$LONG_FOLDER" in_browser web_wide_names <<'PY'
+long = os.environ["LONG_FOLDER"]
+opened(1280, 800)
+who = js("(function(){var r=[].filter.call(document.querySelectorAll('#feed .ev .who'),function(e){return e.textContent===%s})[0];return r?[r.scrollWidth,r.clientWidth]:null})()" % json.dumps(long))
+if not who or who[0] > who[1]: errs.append("at 1280 px the sender %s is cut: %r" % (long, who))
+view(375, 812)
+ch = js("(function(){var s=document.createElement('span');s.textContent='0000000000';s.style.position='absolute';document.getElementById('feed').appendChild(s);var w=s.getBoundingClientRect().width/10;s.remove();return w})()")
+w = el("#feed .ev .who")["w"]
+if abs(w - 13 * ch) > 1: errs.append("at phone width the sender column is %.1f px, not 13ch (%.1f px)" % (w, 13 * ch))
+PY
+  stop
+}
+
+web_short_text() {   # AC7
+  fixture; sed -i.bak 's/^HUB_NAME=.*/HUB_NAME=acme-customer-operations/' "$H/hub.conf"; rm -f "$H/hub.conf.bak"
+  long_lines() { tr -d '\r' < "$1" | grep -v 'http://' | awk 'length($0) > 100' || true; }
+  local p; p="$(free_port)"; start --port 65535 2> /dev/null || start --port "$p"; tty_code > /dev/null
+  [ -z "$(long_lines "$T/web.out")$(long_lines "$T/tty.out")" ] || fail "the start message (--no-open) has a line over 100 columns: $(long_lines "$T/web.out")$(long_lines "$T/tty.out")"
+  stop
+  # ade opens the page itself (the fake opener)
+  : > "$T/web.out"; : > "$T/tty.out"; PATH="$WPATH" TMPDIR="$T/tmp" "${TTYRUN[@]}" "$ADE" web > "$T/web.out" 2> "$T/web.err" & SRV=$!
+  local i=0; until grep -q 'Ctrl-C' "$T/web.out"; do i=$((i + 1)); [ "$i" -lt 100 ] || fail "ade web did not open the page"; sleep 0.1; done
+  [ -z "$(long_lines "$T/web.out")" ] || fail "the start message (opened) has a line over 100 columns: $(long_lines "$T/web.out")"
+  stop
+  # --tailnet: on a loopback address standing in for the Tailscale one
+  ts_fake; export TS_IP TS_JSON; TS_IP=127.0.0.2; python3 -c 'import socket; socket.socket().bind(("127.0.0.2", 0))' 2> /dev/null || TS_IP=127.0.0.1
+  TS_JSON="$(ts_json Running "mac.tail1234.ts.net.")"; ADE_WEB_TEST_TAILNET_LOOPBACK=1 start --tailnet
+  [ -z "$(long_lines "$T/web.out")" ] || fail "the start message (--tailnet) has a line over 100 columns: $(long_lines "$T/web.out")"
+  stop; unset TS_IP TS_JSON
+  # the code page: one hint line under the prompt; ? shows the rest (and types nothing into the code)
+  start
+  browser_ok web_short_text || { stop; return 0; }
+  in_browser web_short_text <<'PY'
+for w, h in ((1440, 900), (375, 812)):
+    if sess[0] is None: opened(w, h, code=False)
+    else: view(w, h); call("Page.navigate", {"url": url}); settle(2)
+    hints = js("[].filter.call(document.querySelectorAll('#gate .gh'),function(e){return e.getClientRects().length>0}).map(function(e){return [e.textContent,e.getBoundingClientRect().height]})")
+    if len(hints) != 1 or hints[0][1] > 21: errs.append("%d px: the hint under the prompt is not one line: %r" % (w, hints))
+    if "--print-link" in (js("document.getElementById('gate').innerText") or ""): errs.append("%d px: the long hint is still shown" % w)
+    key("?", "Slash"); settle(0.3)
+    if "--print-link" not in (js("document.getElementById('gate').innerText") or ""): errs.append("%d px: ? does not show the rest" % w)
+    if js("document.getElementById('gi').value"): errs.append("%d px: ? went into the code" % w)
+    key("?", "Slash"); settle(0.3)
+    if "--print-link" in (js("document.getElementById('gate').innerText") or ""): errs.append("%d px: ? again does not hide it" % w)
+    js("document.querySelector('#gate .gh').click()"); settle(0.3)   # a phone has no ? key: a tap on the hint does it
+    if "--print-link" not in (js("document.getElementById('gate').innerText") or ""): errs.append("%d px: a tap on the hint does not show the rest" % w)
+    js("document.querySelector('#gate .gh').click()"); settle(0.3)
+PY
+  stop
+}
+
+# shots_saved <kind> <folder>: the three screenshots of one hub are there
+shots_saved() { local s; for s in dark light phone; do [ -s "$2/ade-web-$1-$s.png" ] || fail "no $1 $s screenshot"; done; }
+web_devex_screens() {   # AC8: for the owner, in ADE_WEB_SHOTS (else this test's folder, which each new hub replaces:
+  local out                # so each hub's shots are checked before the next)
+  new_hub; start; login
+  browser_ok web_devex_screens || { stop; return 0; }
+  out="${ADE_WEB_SHOTS:-$T/shots}"
+  ADE_WEB_SHOTS="$out" in_browser web_devex_screens <<'PY'
+opened(1440, 900, "dark", 2)
+for name, w, h, scheme in (("dark", 1440, 900, "dark"), ("light", 1440, 900, "light"), ("phone", 375, 812, "dark")):
+    view(w, h, scheme, 2); settle(3.5); shot("ade-web-fresh-" + name)
+PY
+  stop; shots_saved fresh "$out"
+  quiet_hub; start; login; out="${ADE_WEB_SHOTS:-$T/shots}"
+  ADE_WEB_SHOTS="$out" in_browser web_devex_screens <<'PY'
+opened(1440, 900, "dark", 2)
+for name, w, h, scheme in (("dark", 1440, 900, "dark"), ("light", 1440, 900, "light"), ("phone", 375, 812, "dark")):
+    view(w, h, scheme, 2); settle(3.5); shot("ade-web-quiet-" + name)
+PY
+  stop; shots_saved quiet "$out"
+}
+
 REAL_CONF="$(real_conf)"
 # bash tests/test_web.sh [test ...]: those tests only (each name a function above)
 if [ "$#" -gt 0 ]; then for t in "$@"; do "$t"; done; echo ok; exit 0; fi
@@ -1308,4 +1543,12 @@ code_session_ends
 code_tailnet_too
 code_page_premium
 code_no_hub_writes
+web_state_placeholder
+web_main_not_running
+web_quiet_for
+web_quiet_row
+web_legend
+web_wide_names
+web_short_text
+web_devex_screens
 echo ok
