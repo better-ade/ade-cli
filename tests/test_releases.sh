@@ -196,7 +196,15 @@ ci_real_tools() {   # story C1 AC8: the suite installs the real tools its tests 
   [ -f "$REPO/tests/e2e/hub_commands.sh" ] || fail "tests/e2e/hub_commands.sh exists"
 }
 
+ci_e2e_web() {   # story C3 AC7: both e2e jobs run tests/e2e/web.sh (check-ins and ade web on a real hub)
+  local ci="$REPO/.github/workflows/ci.yml"
+  job() { awk -v j="  $1:" '$0==j{p=1;next} p&&/^  [a-z]/{p=0} p' "$ci"; }
+  job e2e-linux | grep -Eq 'run: bash tests/e2e/web\.sh$' || fail "e2e-linux runs tests/e2e/web.sh"
+  job e2e-macos | grep -Eq 'run: /bin/bash tests/e2e/web\.sh$' || fail "e2e-macos runs tests/e2e/web.sh (with the system bash 3.2)"
+  [ -f "$REPO/tests/e2e/web.sh" ] || fail "tests/e2e/web.sh exists"
+}
+
 ALL="once_a_day_once_per_version security_every_command badge_and_telegram sha_mismatch_refused manifest_fail_closed manifest_bound
-  offline_never_blocks never_delays_a_command no_check_no_request auto_update_policy auto_update_failure_says_why release_workflow_passes_assets ci_real_tools"
+  offline_never_blocks never_delays_a_command no_check_no_request auto_update_policy auto_update_failure_says_why release_workflow_passes_assets ci_real_tools ci_e2e_web"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
