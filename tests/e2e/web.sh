@@ -4,6 +4,19 @@
 # that fires the folder's real hooks, read from its .claude/settings.json, from inside the session. Time is faked
 # (a date that runs ahead, for the hook and bin/monitor only) rather than waited for. ade web runs under a pty, as at a
 # terminal, and is read over HTTP as the page does. No network after the template clone.
+
+# As root on Linux (the e2e-linux container) the hub's bin/work refuses to run (ade-brain story V1: a hub runs as a
+# normal user), so the test runs again as a throwaway user with its own copy of the checkout (lib.sh's REPO is that
+# copy), then both are removed. E2E_AS_USER_DRY=1 prints those steps instead of running them (no root needed).
+if { [ "$(uname -s)" = Linux ] && [ "$(id -u)" = 0 ]; } || [ -n "${E2E_AS_USER_DRY:-}" ]; then
+  u=ade-e2e-web; d="/home/$u/ade-cli"; src="$(cd "$(dirname "$0")/../.." && pwd)"
+  as() { if [ -n "${E2E_AS_USER_DRY:-}" ]; then printf '%q ' "$@"; echo; else "$@"; fi; }
+  as useradd -m -s /bin/bash "$u" || exit 1
+  as cp -a "$src" "$d" && as chown -R "$u:$u" "$d" || { as userdel -r "$u"; exit 1; }
+  as runuser -u "$u" -- env -i HOME="/home/$u" PATH="$PATH" LANG=C.UTF-8 ${TERM:+TERM="$TERM"} bash "$d/tests/e2e/web.sh"; rc=$?
+  as userdel -r "$u" 2> /dev/null
+  exit "$rc"
+fi
 . "$(dirname "$0")/lib.sh"
 export ADE_NO_UPDATE_CHECK=1; unset AGENT_STATE HUB_CHECKIN_MINUTES ADE_WEB_PORT
 step "install from this checkout"; bash "$REPO/install.sh" "$W/prefix" > /dev/null || fail "install"
