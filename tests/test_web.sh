@@ -1488,24 +1488,26 @@ PY
   stop
 }
 
-web_devex_screens() {   # AC8: for the owner, in ADE_WEB_SHOTS (else this test's folder)
-  local out="${ADE_WEB_SHOTS:-}" kind s
+# shots_saved <kind> <folder>: the three screenshots of one hub are there
+shots_saved() { local s; for s in dark light phone; do [ -s "$2/ade-web-$1-$s.png" ] || fail "no $1 $s screenshot"; done; }
+web_devex_screens() {   # AC8: for the owner, in ADE_WEB_SHOTS (else this test's folder, which each new hub replaces:
+  local out                # so each hub's shots are checked before the next)
   new_hub; start; login
   browser_ok web_devex_screens || { stop; return 0; }
-  [ -n "$out" ] || out="$T/shots"
+  out="${ADE_WEB_SHOTS:-$T/shots}"
   ADE_WEB_SHOTS="$out" in_browser web_devex_screens <<'PY'
 opened(1440, 900, "dark", 2)
 for name, w, h, scheme in (("dark", 1440, 900, "dark"), ("light", 1440, 900, "light"), ("phone", 375, 812, "dark")):
     view(w, h, scheme, 2); settle(3.5); shot("ade-web-fresh-" + name)
 PY
-  stop; quiet_hub; start; login
+  stop; shots_saved fresh "$out"
+  quiet_hub; start; login; out="${ADE_WEB_SHOTS:-$T/shots}"
   ADE_WEB_SHOTS="$out" in_browser web_devex_screens <<'PY'
 opened(1440, 900, "dark", 2)
 for name, w, h, scheme in (("dark", 1440, 900, "dark"), ("light", 1440, 900, "light"), ("phone", 375, 812, "dark")):
     view(w, h, scheme, 2); settle(3.5); shot("ade-web-quiet-" + name)
 PY
-  stop
-  for kind in fresh quiet; do for s in dark light phone; do [ -s "$out/ade-web-$kind-$s.png" ] || fail "no $kind $s screenshot"; done; done
+  stop; shots_saved quiet "$out"
 }
 
 REAL_CONF="$(real_conf)"
