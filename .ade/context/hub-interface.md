@@ -450,9 +450,12 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   sessionStorage: a cookie is not kept to one port); 404 for anything else. CSP `default-src 'none'`, scripts and styles by nonce, `font-src data:`,
   `connect-src 'self'`.
 - **`/api/agents` (M1):** `hub`, `time`, `now`, `note`, `agents` (main first: `name folder started role status last
-  engine`, plus `state` busy|idle|ready|starting|quiet|blocked|unknown, `since` epoch, `line` the first `STATE.md`
-  line, `checkin` the last check-in event or null, `orchestrator`), `counts` per state, `alerts` (`kind`
-  quiet|prompt|monitor|unread, `agent`, `text`), `sync` (the last sync.log line: `time text ok`), `monitor` (`checks
+  engine`, plus `state` busy|idle|ready|starting|quiet|blocked|unknown, `since` epoch, `line` the last `STATE.md`
+  line that is not a heading, a fence or a template's placeholder (`Name: (…)`), "" when there is none, null when the
+  folder has no `STATE.md` (M3), `checkin` the last check-in event or null, `orchestrator`, `running` false only for a
+  main with no session (M3)), `counts` per state, `alerts` (`kind` quiet|prompt|monitor|unread, `agent`, `text`; a
+  quiet alert reads `<name> is quiet: no check-in for <n> (since HH:MMZ)`, counted from the folder's last sign of
+  life: the latest of its last check-in, its last event but quiet and its LAST (M3)), `sync` (the last sync.log line: `time text ok`), `monitor` (`checks
   alerting time`), `unread` (a number or null). A blocked event newer than a row's LAST makes it blocked; a quiet event
   newer than that and every other event from the folder makes it quiet; busy with nothing new for 15 min, or listed
   with no status for 3 min, is a prompt alert.

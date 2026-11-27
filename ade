@@ -5056,13 +5056,18 @@ def journal_of(folder):
             if line.startswith("## "): mine = False; continue
             if mine and line.strip(): out.append(first + line); first = " " * len(first)
     return out[-80:]
+PLACEHOLDER = re.compile(r"[^:]{1,40}: \(.*\)")   # a template's line still to fill in: "Updated: (UTC date and time, by whom)"
 def state_line(folder):
-    """the last line of a folder's STATE.md that is not a heading, a fence or blank, hidden, its list mark gone"""
+    """the last line of a folder's STATE.md that is not a heading, a fence, blank or a template's placeholder, hidden,
+    its list mark gone; "" when there is none, None when the folder has no STATE.md (story M3)"""
     path = os.path.join(HUB, "STATE.md") if folder == "main" else os.path.join(HUB, folder, "STATE.md") if FOLDER.fullmatch(folder) else None
     if not path: return ""
+    if not os.path.lexists(path): return None
     for line in reversed(hide_lines(tail(path, HUB, 200))):
         t = line.strip()
-        if t and not t.startswith(("#", "```", "<!--", "---")): return t.lstrip("-*> ").strip()[:300]
+        if not t or t.startswith(("#", "```", "<!--", "---")): continue
+        t = t.lstrip("-*> ").strip()
+        if not PLACEHOLDER.fullmatch(t): return t[:300]
     return ""
 def event_rows(n):
     """the event log's last n entries that are JSON objects"""
@@ -5141,15 +5146,19 @@ def overview():
     """what /api/agents answers: main (the orchestrator) and every session, their state, the alerts, the hub's health"""
     rows, note = sessions(); now = time.time(); fx = facts(event_rows(4000)); agents = []; alerts = []
     if not any(r["name"] == "main" for r in rows):
-        rows = [{"name": "main", "folder": "main", "started": "-", "role": "orchestrator", "status": "?", "last": "-", "engine": "-"}] + rows
+        rows = [{"name": "main", "folder": "main", "started": "-", "role": "orchestrator", "status": "?", "last": "-", "engine": "-", "running": False}] + rows
     for r in rows:
         main = r["name"] == "main"; folder = "main" if main and r["folder"] == "main" else r["folder"]
         st, since = judge(r, fx.get(folder, {}))
         a = {k: r[k] for k in ("name", "folder", "started", "role", "status", "last", "engine")}
-        a.update(state=st, since=since, line=state_line(folder), checkin=fx.get(folder, {}).get("checkin") or None, orchestrator=main)
+        a.update(state=st, since=since, line=state_line(folder), checkin=fx.get(folder, {}).get("checkin") or None, orchestrator=main,
+                 running=r.get("running", True))
         agents.append(a)
         last, started = epoch(r["last"]), epoch(r["started"])
-        if st == "quiet": alerts.append({"kind": "quiet", "agent": r["name"], "text": "%s is quiet (for %s)" % (r["name"], ago(now - since))})
+        if st == "quiet":   # counted from its last sign of life: its last check-in, its last other event or its LAST (story M3)
+            f = fx.get(folder, {}); sign = max(f.get("checkin", 0), f.get("other", 0), last or 0) or since
+            alerts.append({"kind": "quiet", "agent": r["name"], "text": "%s is quiet: no check-in for %s (since %s)" % (
+                r["name"], ago(now - sign), time.strftime("%H:%MZ", time.gmtime(sign)))})
         if r["status"] == "busy" and last and now - last > PROMPT:
             alerts.append({"kind": "prompt", "agent": r["name"], "text": "%s may be waiting at a prompt (busy, nothing new for %s)" % (r["name"], ago(now - last))})
         if r["status"] == "-" and started and now - started > SLOW:
@@ -5485,7 +5494,7 @@ pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; 
 .tm { flex: 0 0 8ch; text-align: right; color: var(--fg); }
 .tr { flex: 0 0 4ch; padding-left: 2ch; color: var(--line); }
 .ln { flex: 1 1 0; min-width: 0; color: var(--dim); }
-.ck { flex: 0 0 auto; padding-left: 1ch; color: var(--idle); }
+.ck { flex: 0 0 auto; padding-left: 1ch; color: var(--idle); } .ck.dim { color: var(--dim); }
 .s-busy .g { color: var(--busy); } .s-idle .g { color: var(--idle); } .s-ready .g { color: var(--accent); }
 .s-quiet .g { color: var(--unread); } .s-blocked .g { color: var(--blocked); } .s-starting .g, .s-unknown .g { color: var(--dim); }
 .alerting .tm { color: var(--blocked); }
@@ -5516,6 +5525,7 @@ pre { margin: 0; font: inherit; white-space: pre-wrap; overflow-wrap: anywhere; 
 .ev .t { color: var(--dim); }
 .ev .who { width: 13ch; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
 .ev .to { width: 12ch; overflow: hidden; text-overflow: ellipsis; color: var(--dim); }
+@media (min-width: 1200px) { .ev .who { width: 33ch; } .ev .to { width: 35ch; } }   /* story M3: a whole folder name fits */
 .ev .k { width: 9ch; color: var(--accent); }
 .ev .x { flex: 1 1 0; min-width: 0; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--fg); padding: 0; }
 .k-idle .k, .k-checkin .k { color: var(--idle); } .k-pushed .k { color: var(--busy); } .k-contract .k { color: var(--orch); }
@@ -5566,7 +5576,8 @@ body[data-gate=code] #app, body[data-gate=code] #help { display: none; }
 <body data-gate="__GATE__">
 <div id="gate" role="dialog" aria-label="the code"><label id="gl"><span class="pr">ade web · enter the code shown in your terminal:</span> <span id="gm"></span><span class="cur"></span><input id="gi" type="text" maxlength="16" autocomplete="off" autocapitalize="characters" spellcheck="false" aria-label="the code shown in ade web's terminal"></label>
 <div id="gs" role="status" aria-live="polite"></div>
-<div class="gh">· ade web prints a new code each time it starts; Enter in its terminal makes a new one. After q, a reload needs the link again: ade web --print-link prints it.</div></div>
+<div class="gh" id="ghint">· Enter there makes a new code · ? more</div>
+<div class="gh" id="gmore" hidden>· ade web prints a new code each time it starts; Enter in its terminal makes a new one. After q, a reload needs the link again: ade web --print-link prints it.</div></div>
 <div id="app">
 <header id="bar"><span class="tag">ade</span><b id="hub">connecting</b><span id="counts"></span><span id="health"><span id="sync"></span><span id="mon"></span><span id="unread"></span></span><span id="clock"></span></header>
 <div id="alert" role="status" hidden></div>
@@ -5603,6 +5614,8 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
   "use strict";
   var STATES = ["busy", "idle", "ready", "quiet", "blocked"];
   var GLYPH = { busy: "●", idle: "○", ready: "◐", quiet: "▲", blocked: "✖", starting: "◌", unknown: "·" };
+  var MEAN = { busy: "working on a prompt", idle: "its turn ended", ready: "started, no prompt yet", quiet: "no check-in for a while",
+               blocked: "said it is blocked" };   // story M3: what each count means, on hover
   var SPIN = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
   var PANES = ["list", "detail", "events"];
   var S = { agents: [], rows: {}, picked: null, chose: false, filter: "", over: false, skew: 0, cursor: "", feed: [], syncs: [],
@@ -5645,12 +5658,14 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
   function bar(d) {
     put($("hub"), d.hub); document.title = "ade web · " + d.hub;
     var c = $("counts"); c.textContent = "";
-    STATES.forEach(function (s) { var n = d.counts[s] || 0, x = el("span", n ? "c-" + s : "c-none", GLYPH[s] + " " + n); x.title = s; c.appendChild(x); });
+    STATES.forEach(function (s) { var n = d.counts[s] || 0, x = el("span", n ? "c-" + s : "c-none", GLYPH[s] + " " + n); x.title = n + " " + s + ": " + MEAN[s]; c.appendChild(x); });
     var sy = $("sync");
-    if (d.sync) { sy.className = d.sync.ok ? "" : "bad"; put(sy, "sync " + (d.sync.ok ? "✓ " : "✗ ") + hhmm(d.sync.time)); } else { sy.className = ""; put(sy, "sync –"); }
+    sy.title = "the hub's last sync (ade sync): when, and whether it worked";
+    if (d.sync) { sy.className = d.sync.ok ? "" : "bad"; put(sy, "sync " + (d.sync.ok ? "✓ " : "✗ ") + hhmm(d.sync.time)); } else { sy.className = ""; put(sy, "sync none yet"); }
     var m = $("mon"), mo = d.monitor;
-    if (mo.checks) { m.className = mo.alerting ? "bad" : ""; put(m, "monitors " + (mo.alerting ? "✗ " + mo.alerting + "/" + mo.checks : "✓ " + mo.checks)); } else { m.className = ""; put(m, "monitors –"); }
-    var u = $("unread");
+    m.title = "the hub's monitors: how many checks, and how many are alerting";
+    if (mo.checks) { m.className = mo.alerting ? "bad" : ""; put(m, "monitors " + (mo.alerting ? "✗ " + mo.alerting + "/" + mo.checks : "✓ " + mo.checks)); } else { m.className = ""; put(m, "monitors none"); }
+    var u = $("unread"); u.title = "inbox: unread notes to main";
     if (typeof d.unread === "number") { u.className = d.unread ? "c-quiet" : ""; put(u, "inbox " + d.unread); } else { put(u, ""); }
   }
   // the agent list: one row per agent, kept and updated in place
@@ -5672,7 +5687,7 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
   }
   function list() {
     var box = $("rows"), seen = {}, order = [], alerting = {};
-    S.alerts.forEach(function (x) { if (x.agent) { alerting[x.agent] = true; } });
+    S.alerts.forEach(function (x) { if (x.agent) { (alerting[x.agent] = alerting[x.agent] || []).push(x.text); } });
     S.agents.forEach(function (a) {
       var r = S.rows[a.name] || (S.rows[a.name] = row(a));
       seen[a.name] = true;
@@ -5681,11 +5696,12 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
       var cls = "row s-" + a.state + (a.orchestrator ? " orch" : "") + (alerting[a.name] ? " alerting" : "") + (a.name === S.picked ? " sel" : "");
       if (r.box.className !== cls) { r.box.className = cls; }
       r.box.setAttribute("aria-selected", a.name === S.picked ? "true" : "false");
-      if (r.state !== a.state) { r.g.querySelector(".dot").textContent = GLYPH[a.state] || "·"; r.state = a.state; r.g.title = a.state; }
-      put(r.mk, alerting[a.name] ? "!" : " ");
+      if (r.state !== a.state) { r.g.querySelector(".dot").textContent = GLYPH[a.state] || "·"; r.state = a.state; r.g.title = a.running === false ? "not running" : a.state; }
+      put(r.mk, alerting[a.name] ? "!" : " "); r.mk.title = alerting[a.name] ? "alert: " + alerting[a.name].join("; ") : "";
       put(r.nm, a.name); put(r.fd, a.folder); put(r.rl, a.role === "-" ? "" : a.role); put(r.en, a.engine === "-" ? "" : a.engine);
-      put(r.ln, a.line || (a.state === "starting" ? "starting…" : "no STATE.md line yet"));
-      put(r.ck, a.checkin ? "✓ checked in " + dur(now() - a.checkin) + " ago" : "");
+      put(r.ln, a.line || (a.state === "starting" ? "starting…" : a.line === null ? "no STATE.md yet" : "no state yet"));
+      var ck = a.running === false ? "not running" : !a.checkin ? "" : a.state === "quiet" ? "last check-in " + dur(now() - a.checkin) + " ago" : "✓ checked in " + dur(now() - a.checkin) + " ago";
+      put(r.ck, ck); r.ck.className = a.running === false || a.state === "quiet" ? "ck dim" : "ck";
     });
     Object.keys(S.rows).forEach(function (n) { if (!seen[n]) { delete S.rows[n]; } });
     var extra = [];
@@ -5720,7 +5736,7 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
     S.logKey = key;
     var top = box.scrollTop; box.textContent = "";
     var h = el("div", "dh"); h.appendChild(el("span", "nm" + (a.orchestrator ? " orch" : ""), a.name)); h.appendChild(el("span", "fd", a.folder));
-    h.appendChild(el("span", "c-" + a.state, a.state)); box.appendChild(h);
+    h.appendChild(a.running === false ? el("span", "c-none", "not running") : el("span", "c-" + a.state, a.state)); box.appendChild(h);
     var who = [a.role, a.engine].filter(function (x) { return x && x !== "-"; }).join(" · ");
     if (who) { box.appendChild(el("div", "txt none", who)); }
     function block(title, lines, none) {
@@ -5728,7 +5744,7 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
       box.appendChild(el("pre", lines && lines.length ? "txt" : "txt none", lines && lines.length ? lines.join("\\n") : none));
     }
     if (!d) { block("STATE.md", [], "loading…"); return; }
-    block("STATE.md", d.state, "· this folder has no STATE.md");
+    block("STATE.md", d.state, "· no STATE.md yet");
     block("journal", d.journal, "· no journal entry today or yesterday");
     box.appendChild(el("div", "sec", "run"));
     (d.commands || []).forEach(function (c) { box.appendChild(el("div", "cmd", c)); });
@@ -5833,7 +5849,7 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
   }
   function shut(why) {
     G.gen += 1; $("alert").hidden = true; $("alert").textContent = "";
-    ["sync", "mon", "unread"].forEach(function (id) { put($(id), ""); });
+    ["sync", "mon", "unread"].forEach(function (id) { put($(id), ""); $(id).title = ""; });
     S.agents = []; S.alerts = []; S.note = ""; S.picked = null; S.chose = false; S.feed = []; S.cursor = ""; S.syncs = [];
     S.feedKey = ""; S.logFor = null; S.logKey = "";
     list(); $("dbody").textContent = ""; $("feed").textContent = ""; put($("hub"), "locked"); put($("counts"), "");
@@ -5871,12 +5887,13 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
   function scrollBy(i, dy) { var b = $(PANES[i]).querySelector(".body"); b.scrollTop += dy; }
   $("fi").addEventListener("input", function () { S.filter = $("fi").value.trim().toLowerCase(); put($("fm"), $("fi").value); list(); });
   $("gi").addEventListener("input", function () { put($("gm"), $("gi").value.toUpperCase()); });
-  $("gate").addEventListener("click", function () { $("gi").focus(); });
+  $("gate").addEventListener("click", function (e) { if (e.target === $("ghint")) { $("gmore").hidden = !$("gmore").hidden; } $("gi").focus(); });   // a tap on the hint: the rest (a phone has no ? key)
   document.addEventListener("keydown", function (e) {
     if (e.metaKey || e.ctrlKey || e.altKey) { return; }
     var k = e.key, inF = document.activeElement === $("fi");
     if (document.body.dataset.gate !== "open") {   // the prompt: every key goes to the code
       if (k === "Enter") { e.preventDefault(); if ($("gi").value.trim()) { unlock($("gi").value); } }
+      else if (k === "?") { e.preventDefault(); $("gmore").hidden = !$("gmore").hidden; }   // story M3: the rest of the hint (never in a code)
       else if (document.activeElement !== $("gi")) { $("gi").focus(); }
       return;
     }
@@ -6116,16 +6133,23 @@ except OSError as e:
 def stop(*_): raise KeyboardInterrupt
 signal.signal(signal.SIGTERM, stop); signal.signal(signal.SIGHUP, stop)
 try:
-    if OPEN and open_page():
-        say("the dashboard of the hub %s is open in your browser: read-only, this machine only (127.0.0.1:%d). It asks for the code shown in this terminal. ade web --print-link prints its address. Ctrl-C or ade web --stop stops it." % (hide(LABEL), PORT))
+    if OPEN and open_page():   # story M3: each line of the start message fits in 100 columns
+        say("the dashboard of the hub %s is open in your browser (read-only)." % hide(LABEL))
+        say("this machine only (127.0.0.1:%d); the page asks for the code shown in this terminal." % PORT)
+        say("ade web --print-link prints its address; Ctrl-C or ade web --stop stops it.")
     elif MODE == "local":
         say(URL)
-        say("a read-only view of the hub %s: its agents, their logs, the journal and the chat log. This machine only (127.0.0.1). The page asks for the code shown in this terminal. Ctrl-C or ade web --stop stops it." % hide(LABEL))
+        say("a read-only view of the hub %s: agents, logs, journal, chat." % hide(LABEL))
+        say("this machine only (127.0.0.1); the page asks for the code shown in this terminal.")
+        say("Ctrl-C or ade web --stop stops it.")
     else:
         say(URL)
         if NAME != "-": say("http://%s:%d/?k=%s" % (NAME, PORT, TOKEN))
-        say("a read-only view of the hub %s: its agents, their logs, the journal and the chat log. Open the address on a device that is signed in to your tailnet. Ctrl-C stops it." % hide(LABEL))
-        say("anyone on your tailnet with the link and the code (shown in this terminal) can read these logs: the link alone is not enough. Both change every start. It listens on this machine's Tailscale address only (%s), not on any other network." % BIND)
+        say("a read-only view of the hub %s: agents, logs, journal, chat." % hide(LABEL))
+        say("open it on a device signed in to your tailnet; Ctrl-C stops it.")
+        say("anyone on your tailnet with the link and the code (shown here) can read these logs.")
+        say("the link alone is not enough; both change every start.")
+        say("it listens on this machine's Tailscale address only (%s), on no other network." % BIND)
     new_code(); threading.Thread(target=tty_keys, daemon=True).start()
     server.serve_forever(poll_interval=0.5)
 except KeyboardInterrupt:

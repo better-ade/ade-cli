@@ -240,7 +240,9 @@ request but its own API.
 
 ```
 $ ade web
-the dashboard of the hub acme is open in your browser: read-only, this machine only (127.0.0.1:8765). ...
+the dashboard of the hub acme is open in your browser (read-only).
+this machine only (127.0.0.1:8765); the page asks for the code shown in this terminal.
+...
 ```
 
 | Command | What it does |
