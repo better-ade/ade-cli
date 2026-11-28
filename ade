@@ -41,9 +41,10 @@ Hubs:
   dash        ade dash [--once]: the fleet panel (agents, tickets, last events)
   web         ade web [--port N] [--tailnet] [--no-open] | --print-link | --stop: a live, read-only dashboard of the agents
               (state, alerts, events, logs, journal), keys hidden, on 127.0.0.1 behind a random link, opened in your
-              browser (--no-open: print the link instead); --tailnet: on this machine's Tailscale address instead, for
-              your phone (anyone on your tailnet with the link can read it); --print-link: the running page's address,
-              else nothing and exit 1; --stop: stops the running one (Ctrl-C does too)
+              browser (--no-open: print the link instead); the page asks for the code shown in this terminal before it
+              shows anything; --tailnet: on this machine's Tailscale address instead, for your phone (it asks for the
+              code too); --print-link: the running page's address, else nothing and exit 1; --stop: stops the running
+              one (Ctrl-C does too)
   setup       ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]: the guide, one step at a time (resumes where you are)
   claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root, as tab 0 of ade ui when tmux is
               there (ADE_UI=off: in this terminal); with a folder, ade work <folder>
@@ -464,6 +465,14 @@ claude_update() {
   return 0
 }
 
+# hub_claude_cmd [hub]: the Claude Code command the hub's bin/work runs, as its lib.sh claude_cmd picks it: AGENT_CLAUDE,
+# else HUB_CLAUDE (this machine's .local/hub.conf over hub.conf), else claude. ade work and ade setup --check both check
+# this one, so they agree
+hub_claude_cmd() {
+  local cl=""; [ -n "${1:-}" ] && cl="$(unset HUB_CLAUDE; . "$1/hub.conf" > /dev/null 2>&1
+    [ ! -f "$1/.local/hub.conf" ] || . "$1/.local/hub.conf" > /dev/null 2>&1; printf '%s' "${HUB_CLAUDE:-}")"
+  printf '%s' "${AGENT_CLAUDE:-${cl:-claude}}"
+}
 # conf_get <hub> <KEY>: a hub.conf value (sourced in a subshell, as the hub's own scripts read it)
 conf_get() {
   case "$2" in *[!A-Z0-9_]*|"") return 1 ;; esac
@@ -619,6 +628,9 @@ hub_first_save() {
     failed first-save "$why" "$FAIL_FILE"
     [ "$CHOICE" = retry ] || { echo "Going on; to save it later: $later"; return 0; }
   done
+  # bin/sync's PATHS leave hub.conf out on purpose; ade commits nothing more, it says so and how to do it by hand
+  git -C "$hub" ls-files --error-unmatch hub.conf > /dev/null 2>&1 || [ ! -f "$hub/hub.conf" ] ||
+    echo "hub.conf is not in the saved version (bin/sync leaves it out on purpose); to keep it in git by hand: cd $(tilde "$hub") && git add hub.conf && git commit -m \"Add hub.conf\"$([ "$2" = 1 ] && printf ' && git push')"
 }
 # repo_failure <name>: after a gh repo create that failed (run_logged), the kind of failure and the line to show
 repo_failure() {
@@ -679,7 +691,7 @@ hub_new() {
   elif [ -z "$persona" ]; then ask_text "The kind of teammate this hub's main agent acts as:"; persona="$ANSWER"; fi
   [ -n "$client" ] || { ask_text "Who this hub works for (a client or your team; shown in the hub):"; client="$ANSWER"; }
   [ -n "$owner" ] || { ask_text "Owner (your name, as it should appear in the hub):"; owner="$ANSWER"; }
-  until run_logged "$target" env HUB="$target" ./bin/init --persona "$persona" --client "$client" --owner "$owner" --name "$name" && is_hub "$target"; do
+  until RUN_HIDE='^next: ' run_logged "$target" env HUB="$target" ./bin/init --persona "$persona" --client "$client" --owner "$owner" --name "$name" && is_hub "$target"; do
     failed hub-init "The hub's set-up (bin/init) did not finish${FAIL_LINE:+: $FAIL_LINE}" "${FAIL_LINE:+$FAIL_FILE}"
   done
   rm -f "$target/.git/ade-hub-new"
@@ -765,25 +777,29 @@ cmd_home() {
   # tab view itself, and unless ADE_UI=off, ade alone is ade ui once the hub is set up; a hub whose guide has a step
   # left gets the step list and its offer. Everywhere else: the summary (ade home), as before.
   if [ "${ADE_UI:-}" != off ] && [ -t 0 ] && [ -t 1 ] && ! agent_context && ! in_app; then
-    if in_ui; then home_summary "$hub"; echo "You are in the tab view already; its keys: prefix ?"; return 0; fi
+    if in_ui; then home_summary "$hub" bare; echo "You are in the tab view already; its keys: prefix ?"; return 0; fi
     if ! home_ready "$hub"; then guide_header; guide_list; ASK_AGAIN="ade setup"
       ask_yn "Set up now?" y && { guide 1; exit $?; }
       echo "Later: run ade setup; it picks up where you are."; return 0; fi
     if command -v tmux > /dev/null 2>&1 && (sq "$hub"; sq "$(ade_self)") > /dev/null 2>&1; then conn_gate "$hub"; cmd_ui; exit $?; fi
-    home_summary "$hub"; command -v tmux > /dev/null 2>&1 || echo "The tab view needs tmux; ade setup --tools installs it."; return 0
+    home_summary "$hub" bare; command -v tmux > /dev/null 2>&1 || echo "The tab view needs tmux; ade setup --tools installs it."; return 0
   fi
-  home_summary "$hub"
+  home_summary "$hub" bare
 }
 # home_ready <hub>: nothing the guide still has to do here, read from this machine alone (Claude Code installed, the
 # hub's agents chosen, a first project); the sign-ins need the network and are not asked for on every ade
 home_ready() { command -v claude > /dev/null 2>&1 && [ -n "$(conf_get "$1" HUB_ROOT_PROVIDER)" ] && first_project "$1" > /dev/null; }
 # in_ui: inside ade's own tmux server (tab 0 carries ADE_UI_SESSION; every pane carries TMUX with its socket)
 in_ui() { [ -n "${ADE_UI_SESSION:-}" ] && return 0; case "${TMUX:-}" in */"$ADE_TMUX_SOCKET",*) return 0 ;; esac; return 1; }
-home_summary() {   # <hub>: the hub, its sessions and what to do next (ade home; ade alone where the tab view is not)
+home_summary() {   # <hub> [bare]: the hub, its sessions and what to do next (ade home; ade alone where the tab view is not:
+  # bare, and then the next steps do not offer ade, the command just run)
+  local out
   echo "hub: $(hub_label "$1") ($1)"; tg_line "$1"
-  [ -x "$1/bin/sessions" ] && (HUB="$1"; export HUB; "$1/bin/sessions")
+  if [ -x "$1/bin/sessions" ]; then   # a header alone: none running (a bin/sessions that failed is shown as it is)
+    if out="$(HUB="$1"; export HUB; "$1/bin/sessions")" && [ "$(printf '%s\n' "$out" | grep -c .)" -le 1 ]; then echo "agents: none running"
+    elif [ -n "$out" ]; then printf '%s\n' "$out"; fi; fi
   echo "next:"
-  echo "  ade                  open your workspace: a tab per agent (ade ui)"
+  [ "${2:-}" = bare ] || echo "  ade                  open your workspace: a tab per agent (ade ui)"
   echo "  ade work <folder>    start a focus agent on a folder"
   echo "  ade help             every command"
 }
@@ -992,13 +1008,14 @@ EOF
 }
 # run_logged <folder> <command...>: a tool that asks nothing, run in that folder with no input. Its lines are shown when
 # it works; when it fails they go to ~/.config/ade/last-failure (0600, key-shaped text hidden), FAIL_LINE is its last
-# line and FAIL_TEXT all of it in lower case, for the caller to tell one failure from another.
+# line and FAIL_TEXT all of it in lower case, for the caller to tell one failure from another. RUN_HIDE (an extended
+# regex, set by the caller) leaves matching lines out of what is shown; a failure's file keeps every line.
 # shellcheck disable=SC2088  # a literal ~ for the person to read
 FAIL_FILE="~/.config/ade/last-failure"; FAIL_LINE=""; FAIL_TEXT=""
 run_logged() {
   local d="$1" out rc; shift; FAIL_LINE=""; FAIL_TEXT=""
   out="$( (cd "$d" && "$@") 2>&1 < /dev/null)"; rc=$?
-  if [ "$rc" = 0 ]; then [ -z "$out" ] || printf '%s\n' "$out" | no_ctl; return 0; fi
+  if [ "$rc" = 0 ]; then [ -z "$out" ] || printf '%s\n' "$out" | no_ctl | { if [ -n "${RUN_HIDE:-}" ]; then grep -Ev -- "$RUN_HIDE" || :; else cat; fi; }; return 0; fi
   printf '%s\n' "$out" | no_ctl | LC_ALL=C redact | write_conf_file last-failure
   FAIL_LINE="$(printf '%s\n' "$out" | grep -v '^[[:space:]]*$' | tail -1)"; [ -n "$FAIL_LINE" ] || FAIL_LINE="exit $rc"
   FAIL_TEXT="$(printf '%s' "$out" | LC_ALL=C tr 'A-Z' 'a-z')"; return "$rc"
@@ -1480,9 +1497,9 @@ tg_finish() {
 }
 
 setup_check() {   # one line per step; reads only
-  local hub="" n=0 keys="" p ch d unt
-  if command -v claude > /dev/null 2>&1; then echo "claude code: installed ($(command -v claude))"; else echo "claude code: missing"; fi
-  hub="$(find_hub 2> /dev/null)" || hub=""
+  local hub="" n=0 keys="" p ch d unt cl
+  hub="$(find_hub 2> /dev/null)" || hub=""; cl="$(hub_claude_cmd "$hub")"   # the command ade work runs
+  if command -v "$cl" > /dev/null 2>&1; then echo "claude code: installed ($(command -v "$cl"))"; else echo "claude code: missing ($cl)"; fi
   if command -v claude > /dev/null 2>&1 && claude_signed_in; then echo "sign-in: signed in (account)"
   else
     [ -n "$hub" ] && for p in $KEY_PROVIDERS; do key_stored "$hub" "$p" && keys="${keys:+$keys, }$p"; done
@@ -1909,7 +1926,13 @@ ui_ensure() {
 # session name, so it opens a detached session of its own there: ade takes that session's window into the ade ui
 # session as a tab named after the folder. A hub that opens the tab itself leaves nothing to take in.
 cmd_work() {
-  local hub s sock before n a tab="" rc RUN_HUB_WAIT=0
+  local hub s sock before n a tab="" rc RUN_HUB_WAIT=0 cl
+  # the hub's Claude Code command first: without it nothing starts (no tab, no session; ade setup --check agrees)
+  # (--claude CMD is the one bin/work runs instead; a Gemini session runs no Claude Code and bin/work checks its CLI)
+  if [ $# -gt 0 ] && hub="$(find_hub 2> /dev/null)"; then cl="$(hub_claude_cmd "$hub")"; a=""
+    for n in "$@"; do case "$a" in --claude) cl="$n" ;; --provider) [ "$n" != gemini ] || cl="" ;; esac; a="$n"; done
+    { [ "$(conf_get "$hub" HUB_PROVIDER)" = gemini ] && ! printf ' %s ' "$@" | grep -q -- ' --provider '; } && cl=""
+    [ -z "$cl" ] || command -v "$cl" > /dev/null 2>&1 || die 2 "Claude Code ($cl) is not installed here, so nothing was started; to install it: ade setup"; fi
   ui_wanted || run_hub work "$@"
   hub="$(find_hub 2> /dev/null)" || run_hub work "$@"
   (sq "$hub"; sq "$(ade_self)") > /dev/null 2>&1 || run_hub work "$@"   # a path tmux cannot take: as before

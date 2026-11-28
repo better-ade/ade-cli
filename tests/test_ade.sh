@@ -3,7 +3,7 @@
 . "$(dirname "$0")/helpers.sh"
 
 finds_hub() {   # AC1: $ADE_HUB, then walking up, then ~/.config/ade/hub
-  fresh; make_hub "$T/envhub" envhub; make_hub "$T/walkhub" walkhub; make_hub "$T/cfghub" cfghub
+  fresh; stub_claude; make_hub "$T/envhub" envhub; make_hub "$T/walkhub" walkhub; make_hub "$T/cfghub" cfghub
   mkdir -p "$T/walkhub/repos/deep" "$T/elsewhere" "$HOME/.config/ade"; echo "$T/cfghub" > "$HOME/.config/ade/hub"
   out=$(cd "$T/walkhub/repos/deep" && ADE_HUB="$T/envhub" bash "$ADE" work | head -1); assert_eq "$out" "envhub work" "ADE_HUB first"
   out=$(cd "$T/walkhub/repos/deep" && bash "$ADE" work | head -1); assert_eq "$out" "walkhub work" "walk up second"
@@ -11,7 +11,7 @@ finds_hub() {   # AC1: $ADE_HUB, then walking up, then ~/.config/ade/hub
 }
 
 passes_args_to_hub() {   # AC2
-  fresh; make_hub "$T/hub" hub
+  fresh; stub_claude; make_hub "$T/hub" hub
   ADE_HUB="$T/hub" bash "$ADE" work x --role builder "two words" > "$T/out"
   assert_eq "$(cat "$T/out")" "hub work
 arg:x
@@ -97,7 +97,7 @@ install_and_version() {   # AC10
 }
 
 exports_hub() {   # review: a stale HUB in the caller's environment never points the hub's scripts at another hub
-  fresh; make_hub "$T/hub" hub; printf '#!/bin/bash\necho "HUB=$HUB"\n' > "$T/hub/bin/work"
+  fresh; stub_claude; make_hub "$T/hub" hub; printf '#!/bin/bash\necho "HUB=$HUB"\n' > "$T/hub/bin/work"
   out=$(HUB=/stale/hub ADE_HUB="$T/hub" bash "$ADE" work); assert_eq "$out" "HUB=$T/hub" "HUB exported"
 }
 
@@ -108,7 +108,7 @@ not_executable() {   # review: a script without the exec bit is named as such, n
 }
 
 config_file_hub() {   # review: ~/.config/ade/hub expands a leading ~, trims spaces and CR, and names a bad path
-  fresh; make_hub "$HOME/cfghub" cfghub; mkdir -p "$HOME/.config/ade" "$T/elsewhere"
+  fresh; stub_claude; make_hub "$HOME/cfghub" cfghub; mkdir -p "$HOME/.config/ade" "$T/elsewhere"
   printf '  ~/cfghub \r\n' > "$HOME/.config/ade/hub"
   out=$(cd "$T/elsewhere" && bash "$ADE" work | head -1); assert_eq "$out" "cfghub work" "expanded and trimmed"
   echo "$T/nothub" > "$HOME/.config/ade/hub"

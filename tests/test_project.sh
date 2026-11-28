@@ -93,7 +93,8 @@ case "$1 $2" in
 esac
 exit 1
 STUB
-  chmod +x "$H"/bin/new "$H"/bin/brain "$H"/bin/sessions "$H"/bin/work "$H"/bin/repos "$F"/git "$F"/gh
+  printf '#!/bin/bash\nexit 0\n' > "$F/claude"   # ade work checks the hub's Claude Code is there (F1)
+  chmod +x "$H"/bin/new "$H"/bin/brain "$H"/bin/sessions "$H"/bin/work "$H"/bin/repos "$F"/git "$F"/gh "$F"/claude
   export PATH="$F:$PATH" ADE_HUB="$H"; : > "$T/none"
 }
 # mkrepo <path> [remote]: a local repo on branch main with a README and docs/

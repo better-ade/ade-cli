@@ -1510,6 +1510,15 @@ PY
   stop; shots_saved quiet "$out"
 }
 
+help_web_code() {   # story F1 AC5: ade help's web entry says the page asks for the terminal's code, --tailnet too
+  fresh; bash "$ADE" help > "$T/out" 2>&1
+  awk '/^  web /{f=1; print; next} f && /^  [a-z]/{exit} f' "$T/out" > "$T/web"; [ -s "$T/web" ] || fail "help has a web entry"
+  tr -s ' \n' '  ' < "$T/web" > "$T/web1"   # one line: the entry wraps
+  assert_contains "$T/web1" "the page asks for the code shown in this terminal before it shows anything" "the code"
+  assert_contains "$T/web1" "--tailnet: on this machine's Tailscale address instead, for your phone (it asks for the code too)" "--tailnet too"
+  assert_not_contains "$T/web1" "with the link can read" "no line says the link alone is enough"
+}
+
 REAL_CONF="$(real_conf)"
 # bash tests/test_web.sh [test ...]: those tests only (each name a function above)
 if [ "$#" -gt 0 ]; then for t in "$@"; do "$t"; done; echo ok; exit 0; fi
@@ -1542,6 +1551,7 @@ code_lockout
 code_session_ends
 code_tailnet_too
 code_page_premium
+help_web_code
 code_no_hub_writes
 web_state_placeholder
 web_main_not_running

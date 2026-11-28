@@ -84,6 +84,15 @@ account_signin() {   # AC2
   bash "$ADE" setup --check > "$T/out" 2>&1; assert_contains "$T/out" "sign-in: signed in (account)" "check shows account"
 }
 
+check_matches_work() {   # story F1 AC2: --check checks the command ade work runs (the hub's HUB_CLAUDE, else claude)
+  fresh; setup_fakes; setup_hub; echo "HUB_CLAUDE=no-such-claude" >> "$T/hub/hub.conf"
+  bash "$ADE" setup --check > "$T/out" 2>&1; assert_contains "$T/out" "claude code: missing (no-such-claude)" "--check: missing"
+  bash "$ADE" work ops/x > "$T/w" 2>&1 && fail "ade work: missing too"; assert_contains "$T/w" "no-such-claude" "the same command"
+  cp "$T/fakebin/claude" "$T/fakebin/claude-alt"; sed -i.bak 's/^HUB_CLAUDE=.*/HUB_CLAUDE=claude-alt/' "$T/hub/hub.conf"
+  bash "$ADE" setup --check > "$T/out" 2>&1; assert_contains "$T/out" "claude code: installed ($T/fakebin/claude-alt)" "--check: installed"
+  bash "$ADE" work ops/x > "$T/w" 2>&1 || { cat "$T/w"; fail "ade work: found too"; }; assert_contains "$T/w" "hub work" "it ran"
+}
+
 key_only_on_stdin() {   # AC3
   fresh; setup_fakes; setup_hub
   setup 3 "S3CRET-deepseek-key" "" y "S3CRET-telegram-token" later || { cat "$T/out"; fail "setup exit"; }
@@ -391,6 +400,6 @@ telegram_fails() {   # A18b, step 6: a token the key store refuses; the steps af
   assert_eq "$(tail -1 "$T/out")" "ade: stopped; to come back, run ade setup --telegram" "how to come back"
 }
 
-ALL="live_limit live_not_signed_in live_other_error live_go_on live_hostile sign_in_fails key_store_fails telegram_fails live_test_temp_safety exported_names_cleared ready_whole_line top_keeps_allowed failed_asks_key_again guided_default_mode other_hub_errors_pass reasons_scrubbed gemini_account hidden_on_a_pty installer_asks_first account_signin key_only_on_stdin glm_needs_live_check hub_when_missing guided_session check_changes_nothing top_first_only_one focus_multi_live_tests no_gpt_or_codex telegram_step test_reruns"
+ALL="check_matches_work live_limit live_not_signed_in live_other_error live_go_on live_hostile sign_in_fails key_store_fails telegram_fails live_test_temp_safety exported_names_cleared ready_whole_line top_keeps_allowed failed_asks_key_again guided_default_mode other_hub_errors_pass reasons_scrubbed gemini_account hidden_on_a_pty installer_asks_first account_signin key_only_on_stdin glm_needs_live_check hub_when_missing guided_session check_changes_nothing top_first_only_one focus_multi_live_tests no_gpt_or_codex telegram_step test_reruns"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
