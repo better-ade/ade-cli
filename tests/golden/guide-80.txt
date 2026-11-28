@@ -11,6 +11,8 @@ Set up now? [Y/n]
 Step 2 of 7: Sign in to Claude
 Claude Code works with your Claude account or with an API key. The account
 sign-in is Claude Code's own, in your browser; ade stores nothing.
+Never paste a key into a chat; a current hub stops it and tells you
+where it goes.
   1) account  your Claude account (Pro, Max, Team or Enterprise)
   2) key      an API key, which you will be asked for at step 4
 How do you use Claude? [account]: 
@@ -79,6 +81,7 @@ checked: your first project is web
 Step 7 of 7: Telegram (optional)
 Optional: a Telegram bot of your own lets you reach your main agent. A yes asks
 for the bot's token (hidden), then goes one step at a time; no skips it.
+One hub, one bot: each hub gets its own Telegram bot.
 Do you want to reach your main agent from Telegram? [y/N] n
 Telegram skipped (later: ade setup --telegram)
 checked: Telegram is off
