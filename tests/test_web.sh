@@ -236,6 +236,8 @@ echo "<script>alert(1)</script>"
 MD
     secret_lines doc; } > "$H/_bmad-output/plan.md"
   printf '# Other doc\n\nback to [the plan](../../../_bmad-output/plan.md)\n\n## Section two\ntext\n' > "$H/projects/api/docs/other.md"
+  # the plan a minute older than the other doc: two quick writes can share an mtime (Linux's coarse clock tick)
+  python3 -c 'import os, sys, time; t = time.time() - 60; os.utime(sys.argv[1], (t, t))' "$H/_bmad-output/plan.md"
   { echo "# Long doc"; for i in $(seq 1 300); do echo "long line $i"; echo; done; } > "$H/projects/api/docs/long.md"
   printf '# Flow\n\n```mermaid\ngraph TD; A-->B\n```\n\n```mermaid\nbad diagram here\n```\n' > "$H/projects/api/docs/flow.md"
   echo "# CANARY-OUT" > "$T/outside/out.md"; ln -s "$T/outside/out.md" "$H/projects/api/docs/linked.md"
