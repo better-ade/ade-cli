@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.16
 - `ade ui` with the mouse (U5): the bar ends in `[+ agent] [tickets] [files] [approve] [dash] [? keys]`, each running
   what its key runs (one table drives both), or `[+] [≡ menu]` under 100 columns. `[≡ menu]` or a right click on the
   bar opens a menu of every action with its key. A right click on a tab opens its menu: go to it, preview its plan,
