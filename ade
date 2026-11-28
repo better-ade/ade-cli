@@ -1683,7 +1683,9 @@ guide_about() {   # <step>: what it is and what it changes, before it runs
     claude-code) echo "Claude Code is the agent ADE runs. This installs it with its official"
       echo "installer, after your yes." ;;
     claude-sign-in) echo "Claude Code works with your Claude account or with an API key. The account"
-      echo "sign-in is Claude Code's own, in your browser; ade stores nothing." ;;
+      echo "sign-in is Claude Code's own, in your browser; ade stores nothing."
+      echo "Never paste a key into a chat; a current hub stops it and tells you"
+      echo "where it goes." ;;
     hub) echo "Your hub is where ADE keeps its memory: a folder in ~/hubs, saved in a private"
       echo "repository on your GitHub. ADE sets it up, then you pick its agents." ;;
     tools) echo "Optional: the tools you use for this work. ade connects the ones it has a recipe"
@@ -1691,7 +1693,8 @@ guide_about() {   # <step>: what it is and what it changes, before it runs
     project) echo "ADE opens Claude Code at your hub: it asks about your work and sets up your"
       echo "first project with you, asking before each change. /exit comes back here." ;;
     telegram) echo "Optional: a Telegram bot of your own lets you reach your main agent. A yes asks"
-      echo "for the bot's token (hidden), then goes one step at a time; no skips it." ;;
+      echo "for the bot's token (hidden), then goes one step at a time; no skips it."
+      echo "One hub, one bot: each hub gets its own Telegram bot." ;;
   esac   # github: github_ready says what it is and what it runs
 }
 guide_install_claude() {

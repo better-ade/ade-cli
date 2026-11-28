@@ -628,6 +628,19 @@ tools_other_no_glob() {   # A23 fix round: an "other" answer is never glob-expan
   assert_not_contains "$T/out" "planted" "nothing from the folder is shown"
 }
 
-ALL="tools_other_no_glob tools_step_in_order tools_list_from_recipes tools_connect_picked tools_noted_names_only tools_skip tools_second_run tools_nothing_secret guide_asks_git_identity guide_tools_then_first_save guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path guide_hostile"
+tg_one_bot() {   # A28 AC1: the Telegram step says one hub, one bot
+  fresh; fakes; export MAKE_PROJECT=web; talk "\n\nacme\nstaff software engineer\nAcme\nSam\n1\n\nn\n"
+  sed -n '/^Step 7 of 7: Telegram/,/^Do you want/p' "$T/out" > "$T/step"
+  assert_contains "$T/step" "One hub, one bot: each hub gets its own Telegram bot." "the Telegram step says one hub, one bot"
+}
+
+key_no_paste() {   # A28 AC2: the key step says never to paste a key into a chat
+  fresh; fakes; export MAKE_PROJECT=web; talk "\n\nacme\nstaff software engineer\nAcme\nSam\n1\n\nn\n"
+  sed -n '/^Step 2 of 7: Sign in to Claude/,/^How do you use Claude/p' "$T/out" | tr '\n' ' ' > "$T/step"
+  assert_contains "$T/step" "Never paste a key into a chat; a current hub stops it and tells you where it goes." \
+    "the key step says never to paste a key into a chat"
+}
+
+ALL="tools_other_no_glob tools_step_in_order tools_list_from_recipes tools_connect_picked tools_noted_names_only tools_skip tools_second_run tools_nothing_secret guide_asks_git_identity guide_tools_then_first_save guide_first_save guide_install_fails guide_claude_sign_in_fails guide_gh_fails guide_repo_fails guide_init_fails guide_live_test_fails guide_empty_hint guide_session_fails hub_new_resume_flags guide_computer_relay guide_installs_claude guide_offers guide_resumes guide_choices_forgive guide_github_sign_in hub_new_forgives_and_resumes notice_one_line guide_in_computer guide_happy_path tg_one_bot key_no_paste guide_hostile"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
