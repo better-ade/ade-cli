@@ -350,7 +350,7 @@ ide_safe_keys() {   # AC4: ADE_UI_MOUSE=off, ADE_UI_ARROWS=off (or ~/.config/ade
 }
 u1_docs() {   # AC5
   fresh; local f
-  bash "$ADE" help > "$T/help" 2>&1; sed -n '/^## Unreleased/,/^## [0-9]/p' "$REPO/CHANGELOG.md" > "$T/changes"
+  bash "$ADE" help > "$T/help" 2>&1; cp "$REPO/CHANGELOG.md" "$T/changes"   # any section: a release renames Unreleased
   assert_contains "$REPO/README.md" "### Use it beside your IDE" "README section"
   for f in "$REPO/README.md" "$T/help" "$T/changes"; do
     for s in ADE_EDITOR ADE_UI_MOUSE=off ADE_UI_ARROWS=off "tmux 3.2" "{path}"; do assert_contains "$f" "$s" "$(basename "$f"): $s"; done; done
