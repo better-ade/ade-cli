@@ -91,7 +91,7 @@ ade skills add git               # install an ade-skills plugin for this project
 ade skills add notes             # meeting notes, summaries and action items into a folder
 
 # With a hub
-mkdir -p ~/.config/ade && echo ~/hubs/my-hub > ~/.config/ade/hub   # or export ADE_HUB, or run ade inside the hub
+ade hub use ~/hubs/my-hub        # the default hub (or export ADE_HUB, or run ade inside the hub)
 ade doctor                       # the hub's bin/doctor
 ade status                       # the hub's sessions (bin/sessions)
 ade work projects/api --role builder   # start or resume a focus agent (bin/work)
@@ -150,13 +150,14 @@ says "this hub has no bin/&lt;cmd&gt;; update it" and exits 2.
 
 ## `ade setup` (A5)
 
-One command from nothing to a working hub and a guided first session. Every step asks first. Since A18 the steps
-are listed with their state and run in this order: Claude Code, sign in to Claude, sign in to GitHub, your hub (with
-the providers below), your first project (the guided session), then Telegram (optional); a step already done is
-skipped. The chart shows the provider and Telegram steps. `ade setup` with no flags refuses inside an agent
-session (a person answers it); `--check`, `--test`, `--top`, `--telegram` and `--tools` keep their own rules.
+One command from nothing to a working hub and a guided first session. Every step asks first. Since A18 it lists seven
+steps with their state and runs them in this order: 1. Claude Code, 2. sign in to Claude, 3. sign in to GitHub, 4. your
+hub (with the providers below), 5. your tools (optional: `ade connect` for the ones it has a recipe for, the rest noted
+by name), 6. your first project (the guided session), 7. Telegram (optional); a step already done is skipped. The
+chart shows the provider and Telegram steps. `ade setup` with no flags refuses inside an agent session (a person
+answers it); `--check`, `--test`, `--top`, `--telegram` and `--tools` keep their own rules.
 
-Before step 1 comes the tools step: the required tools that are missing (git, python3, tmux, gh, gitleaks, bun), then
+Before step 1, `ade setup` offers the programs it needs that are missing (git, python3, tmux, gh, gitleaks, bun), then
 the viewer extras, each after a yes. bun, which the Telegram plugin runs on, needs neither Homebrew nor the Xcode
 Command Line Tools: `ade` downloads the pinned release (bun 1.4.4) for your OS and CPU from
 [bun's GitHub releases](https://github.com/oven-sh/bun/releases), checks the zip's sha256 against the release's
@@ -194,7 +195,8 @@ flowchart TD
   new --> guided["Guided session: ade claude (A4)<br/>asks about your projects, then with your yes:<br/>ade init · ade agent add · ade skills add · role models"]
 ```
 
-<sub>* GLM and Muse stay off until their live check passes. `ade setup --check` reports each step and changes nothing;
+<sub>* `ade setup` lists GLM and Muse, but neither can pass its live check yet (the hub has no confirmed GLM models
+and no Muse connection), so both stay out of every role. `ade setup --check` reports each step and changes nothing;
 `ade setup --test [provider|telegram]` re-runs the live tests.</sub>
 
 ## Files, viewer and links ([A15](docs/stories/A15-files-viewer-links.md))
@@ -421,7 +423,7 @@ Nothing is Done because an agent says so. The verification command, agreed in th
 | `ade` (no arguments) | Your workspace: at a terminal with tmux and a hub that is set up, the tab view (`ade ui`: the main agent as tab 0, a tab per agent). Set-up not finished: the guide's steps and its offer. Without a terminal or tmux, in an agent session, with `ADE_UI=off` or inside the tab view: the summary below (with no agents, `agents: none running`; its next steps never offer `ade` itself) | **built** (A3, A6, F1) |
 | `ade home` | The hub, its sessions and what to do next (what `ade` alone printed before; `ade status` is the hub's sessions only) | **built** (A3) |
 | `ade claude [<folder>] [-- args]` | Claude Code at the hub root as the orchestrator: at a terminal with tmux, as tab 0 of the hub's `ade ui` session, so focus work opens as tabs beside it (`ADE_UI=off`, or `ade claude -- <args>`: in this terminal); with a folder, `ade work <folder>` | **built** (A4, A6) |
-| `ade setup [--check\|--test [provider\|telegram]\|--top\|--telegram]` | The guide (A18): Claude Code, Claude and GitHub sign-in, the hub and its providers, the first project, Telegram; resumes where you are | **built** (A5, A18; needs the hub pieces in `.ade/context/hub-interface.md`) |
+| `ade setup [--check\|--test [provider\|telegram]\|--top\|--telegram]` | The guide (A18), seven steps: Claude Code, Claude and GitHub sign-in, the hub and its providers, your tools (optional), the first project, Telegram (optional); resumes where you are | **built** (A5, A18; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade ui [--detach]` · `ade dash [--once]` | One tmux window, a tab per agent with state icons; fleet sidebar; popups for new agent, approve, tickets, plan preview, help | **built** (A6; needs the hub pieces in `.ade/context/hub-interface.md`) |
 | `ade skills list\|enable\|disable\|search` | Skills and plugins on the fly, with a reload hint to running sessions | **built** (A7) |
 | `ade clean [--yes]` | Housekeeping: stale locks, old dispatch markers and event cursors, ade's old temp folders, dead `ade-*` tmux sessions, clean merged worktrees (`git worktree remove`); lists first | **built** (A9) |
@@ -464,11 +466,12 @@ part of `ade setup` (A5); the hub's `bin/keys`, `bin/models` and `bin/roles` do 
 |---|---|:---:|:---:|
 | Claude (account or Anthropic API key) | Claude Code | yes | yes |
 | DeepSeek | Claude Code | yes | yes |
-| GLM | Claude Code | yes* | yes* |
-| Muse | Claude Code | yes* | yes* |
+| GLM | Claude Code | not yet* | not yet* |
+| Muse | Claude Code | not yet* | not yet* |
 | Gemini | Gemini CLI | no | yes |
 
-<sub>* after its live check passes. GPT and Codex are not offered.</sub>
+<sub>* listed by `ade setup`, but a role gets one only after its live check passes, and neither can pass it yet: the
+hub has no confirmed GLM models and no Muse connection. GPT and Codex are not offered.</sub>
 
 ## Safety
 
