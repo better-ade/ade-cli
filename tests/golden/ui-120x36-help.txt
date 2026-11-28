@@ -6,7 +6,6 @@ orchestrator ready
 
 
 
-
                           ┌────────────────────────────────────────────────────────────────┐
                           │ade ui keys:                                                    │
                           │  prefix n   new agent: pick a folder, then a role              │
@@ -24,6 +23,7 @@ orchestrator ready
                           │                                                                │
                           │                                                                │
                           └────────────────────────────────────────────────────────────────┘
+
 
 
 
