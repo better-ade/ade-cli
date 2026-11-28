@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.15
 - `ade ui` beside a JetBrains IDE (U1): `ADE_EDITOR` picks the editor `c` opens in `ade files`, `ade view` and the
   link picker (and `ADE_VIEWER=code`): `code` (the default, as before), `idea` or another JetBrains launcher
   (`pycharm`, `webstorm`, `goland`, `rider`, `clion`, `phpstorm`, `rubymine`, `fleet`), run as `<launcher> --line N
