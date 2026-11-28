@@ -218,6 +218,13 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   the first launcher on PATH, else `code`, else none (the path and line are printed); elsewhere `code`. The command
   is held to the same rules as `<code>` below (absolute, outside the roots). `ade setup --check` prints `editor: ...`.
   `ade ui` refuses tmux older than 3.2 (exit 1); in a JetBrains terminal it writes `ui-jetbrains` to `hints` once.
+- `ade ui` with the mouse (U5): one table, `ui_actions` in `ade` (key, button, label, tmux command), drives the
+  prefix keys, the bar's buttons and both menus, so a click runs exactly its key's command. `ade ui --bar <session>
+  [width] [mouse] [ranges]` draws the bar: tabs as `range=window|<index>`, `[+ agent]` as `range=left`, `[≡ menu]` as
+  `range=right`, the other buttons as `range=user|k-<key>`. User ranges need tmux 3.4, so on 3.2 and 3.3 (`ranges` 0)
+  and under 100 columns the bar is `[+] [≡ menu]`. `ade ui --hint-off` hides the first-run hint for good. `hints`
+  lines: `ui-click` (one per `ade ui` start that drew the session, at most 3, the hint line shows while there are 1
+  to 3) and `ui-click-off` (clicked, never again). `ADE_UI_MOUSE=off`: no buttons, no hint, no counting.
 - Visual Studio Code: `ade files --act code <absolute path> [line [col]]` (the key `c`), `ade view --code`, and
   `ADE_VIEWER=code` (text files, at a terminal) run `<code> --goto <path>:<line>:<col>` (line and column default 1;
   always both, so a name ending in `:5` stays the name) or `<code> <folder>`. `<code>` is `command -v code`, an

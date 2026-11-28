@@ -27,7 +27,7 @@ echo "tmux $*" >> "$TMUX_LOG"
 case "$1" in
   has-session) [ -f "$TMUX_LOG.session" ]; exit $? ;;
   new-session) touch "$TMUX_LOG.session" ;;
-  list-windows) printf '0\torchestrator\t1\n1\tprojects/api:1.2\t0\n2\tops/db\t0\n3\tprojects/web:rev\t0\n' ;;
+  list-windows) if [ -n "${FAKE_WINDOWS:-}" ]; then printf "$FAKE_WINDOWS"; else printf '0\torchestrator\t1\n1\tprojects/api:1.2\t0\n2\tops/db\t0\n3\tprojects/web:rev\t0\n'; fi ;;
   list-panes) cat "$TMUX_LOG.panes" 2>/dev/null ;;
   list-sessions) cat "$TMUX_LOG.sessions" 2>/dev/null ;;
   display-message) echo "/tmp/fake-tmux/ade" ;;
@@ -141,7 +141,7 @@ claude_in_the_session() {   # ade claude at a terminal runs the main agent as ta
 tab_bar() {   # AC3
   fresh; ui_fixture; mkdir -p "$HOME/.config/ade"; printf 'busy=#ff8800\nblocked=red\n' > "$HOME/.config/ade/theme"
   out=$(bash "$ADE" ui --bar "$S"); echo "$out" > "$T/out"
-  for s in "● 0 orchestrator" "#[fg=#ff8800]⟳ 1 projects/api · builder · 1.2" "○ 2 ops/db" "#[fg=red]⚠ 3 projects/web · reviewer · rev" "[+ new]"; do
+  for s in "● 0 orchestrator" "#[fg=#ff8800]⟳ 1 projects/api · builder · 1.2" "○ 2 ops/db" "#[fg=red]⚠ 3 projects/web · reviewer · rev" "[+ agent]"; do
     assert_contains "$T/out" "$s" "bar: $s"; done
   printf 'busy=#ff8800;run-shell x\n' > "$HOME/.config/ade/theme"
   bash "$ADE" ui --bar "$S" > "$T/out" 2>&1; assert_not_contains "$T/out" "run-shell" "a bad colour is ignored"
@@ -356,6 +356,103 @@ u1_docs() {   # AC5
     for s in ADE_EDITOR ADE_UI_MOUSE=off ADE_UI_ARROWS=off "tmux 3.2" "{path}"; do assert_contains "$f" "$s" "$(basename "$f"): $s"; done; done
 }
 
-ALL="tmux_version ide_safe_keys u1_docs dash_tokens_and_events session_names menu_skips_bad_folders sq_refuses bar_cached creates_then_attaches work_opens_tab work_makes_the_session work_plain claude_in_the_session bare_ade_opens_the_tabs bare_no_agents work_real_tmux tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
+# story U5: ade ui with the mouse alone. tq: a tmux command quoted as one tmux argument, as ade quotes it
+tq() { local v="${1//\\/\\\\}"; printf '"%s"' "${v//\"/\\\"}"; }
+prefix_cmd() { sed -n "s/^bind-key -T prefix $(printf '%s' "$1" | sed 's/[?]/[?]/') //p" "$C"; }   # the command a prefix key runs
+ui_conf_made() { fresh; ui_fixture; bash "$ADE" ui --detach > /dev/null 2>&1 || fail "ui"; C="$HOME/.config/ade/ui-$S.tmux.conf"; }
+click_buttons() {   # AC1
+  ui_conf_made; local k cmd
+  assert_contains "$C" "set -g status-left \"#(ADE_HUB=" "the bar is ade's"; assert_contains "$C" "ui --bar $S #{client_width} #{mouse} 1)\"" "it gets the width, the mouse and the ranges (tmux 3.4: yes)"
+  bash "$ADE" ui --bar "$S" 120 1 1 > "$T/out"
+  assert_contains "$T/out" "rev#[norange]  #[bg=#1e1e2e]#[fg=#89b4fa]#[range=left][+ agent]#[norange] #[range=user|k-t][tickets]#[norange] #[range=user|k-e][files]#[norange] #[range=user|k-a][approve]#[norange] #[range=user|k-f][dash]#[norange] #[range=user|k-?][? keys]#[norange]" "the row of buttons, in order"
+  assert_contains "$T/out" "#[range=window|1]" "a tab is a window range: a click goes to it"
+  cmd="$(prefix_cmd n)"; [ -n "$cmd" ] || fail "prefix n"
+  grep -qxF "bind-key -T root MouseDown1StatusLeft $cmd" "$C" || fail "[+ agent] runs prefix n's command"
+  for k in t e a f "?"; do cmd="$(prefix_cmd "$k")"; [ -n "$cmd" ] || fail "prefix $k"
+    grep -qxF "    if-shell -F \"#{==:#{mouse_status_range},k-$k}\" { $cmd }" "$C" || { cat "$C"; fail "the $k button runs prefix $k's command"; }; done
+  grep -qxF "  } { select-window -t= }" "$C" || fail "a click on a tab still goes to it"
+  bash "$ADE" ui --bar "$S" 99 1 1 > "$T/out"; assert_contains "$T/out" "#[range=left][+]#[norange] #[range=right][≡ menu]#[norange]" "under 100 columns: [+] [≡ menu]"
+  assert_not_contains "$T/out" "[tickets]" "and no more"
+  bash "$ADE" ui --bar "$S" 120 1 0 > "$T/out"; assert_contains "$T/out" "[+]#[norange] #[range=right][≡ menu]" "tmux 3.2 or 3.3 (no user ranges): [+] [≡ menu] at any width"
+  assert_not_contains "$T/out" "range=user" "never a range tmux 3.2 cannot draw"
+  rm -f "$TMUX_LOG.session"; FAKE_TMUX_V=3.2 bash "$ADE" ui --detach > /dev/null 2>&1; assert_contains "$C" "#{mouse} 0)\"" "tmux 3.2: the bar is told"
+  FAKE_WINDOWS='0\torchestrator\t1\n1\tprojects/api:x#[range=left]\t0\n' bash "$ADE" ui --bar "$S" 120 1 1 > "$T/out"
+  assert_contains "$T/out" "x##[range=left]" "a # in a tab's name is shown, never drawn as a range"
+}
+click_menu() {   # AC2
+  ui_conf_made; local k cmd m
+  m="$(sed -n 's/^bind-key -T root MouseDown1StatusRight //p' "$C")"; [ -n "$m" ] || fail "[≡ menu] is bound"
+  case "$m" in "display-menu "*) ;; *) fail "[≡ menu] opens a menu: $m" ;; esac
+  for k in MouseDown3StatusLeft MouseDown3StatusRight MouseDown3StatusDefault; do grep -qxF "bind-key -T root $k $m" "$C" || fail "a right click ($k) opens the same menu"; done
+  printf '%s\n' "$m" > "$T/m"; assert_contains "$T/m" "prefix" "the title names the prefix"
+  bash "$ADE" ui --keys < /dev/null | sed -n 's/^  prefix \([^ 0]\) .*/\1/p' > "$T/keys"; [ "$(wc -l < "$T/keys")" -ge 9 ] || fail "the keys popup lists the actions"
+  while IFS= read -r k; do cmd="$(prefix_cmd "$k")"; [ -n "$cmd" ] || fail "prefix $k is bound"
+    assert_contains "$T/m" " $(tq "$k") $(tq "$cmd")" "the menu has prefix $k, with its key, running its command"; done < "$T/keys"
+}
+click_tab_menu() {   # AC3
+  ui_conf_made; local m
+  sed -n '/^bind-key -T root MouseDown3Status {/,/^}/p' "$C" > "$T/b"; grep -q "display-menu -t= -x W -y W" "$T/b" || { cat "$C"; fail "a right click on a tab: a menu for that tab"; }
+  for s in "$(tq "go to it") $(tq g) $(tq "select-window -t #{window_id}")" "$(tq "preview its plan") $(tq p) $(tq "$(prefix_cmd p)")" "$(tq "links in its pane") $(tq l) $(tq "$(prefix_cmd l)")" \
+    "$(tq "#{?#{==:#{window_index},0},,close it}") $(tq x) $(tq "confirm-before -p \"close ##{b:window_name}? y/n\" \"kill-window -t #{window_id}\"")"; do
+    assert_contains "$T/b" "$s" "tab menu: $s"; done
+  assert_not_contains "$T/b" "rename" "rename waits for U2"
+  [ "$(grep -o 'kill-window' "$C" | wc -l | tr -d ' ')" = 1 ] || fail "kill-window only behind the y/n"
+  ! grep -E 'run-shell[^"]*"[^"]*window_name' "$C" > /dev/null || fail "a tab's name never goes into a shell string"
+  ! grep -E 'window_name[^ ]*\\" \\"kill|kill-window -t #\{window_name' "$C" > /dev/null || fail "a tab is a target by id, never by name"
+}
+click_scroll_select() {   # AC4
+  ui_conf_made; local want=xclip c
+  for c in pbcopy xclip; do printf '#!/bin/bash\ncat > /dev/null\n' > "$T/fakebin/$c"; chmod +x "$T/fakebin/$c"; done
+  rm -f "$TMUX_LOG.session"; bash "$ADE" ui --detach > /dev/null 2>&1 || fail ui
+  [ "$(uname)" = Darwin ] && want=pbcopy; [ "$want" = xclip ] && want="xclip -selection clipboard"
+  grep -qxF "set -s copy-command \"$want\"" "$C" || { grep copy "$C"; fail "a drag copies to the system clipboard ($want)"; }
+  for t in copy-mode copy-mode-vi; do grep -qxF "bind-key -T $t MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel" "$C" || fail "$t: the drag's end copies"; done
+  grep -qxF "bind-key -T copy-mode-vi Escape send-keys -X cancel" "$C" || fail "Esc leaves scrolling (vi keys too)"
+  sed -n '/^bind-key -T root WheelUpPane/,/^}/p' "$C" > "$T/w"
+  assert_contains "$T/w" "bind-key -T root WheelUpPane if-shell -F \"#{||:#{pane_in_mode},#{mouse_any_flag}}\" { send-keys -M } {" "the wheel: the app's own, else history"
+  assert_contains "$T/w" "copy-mode -e" "the wheel scrolls the pane's history, no prefix"
+  assert_contains "$T/w" "if-shell -F \"#{?@ade-scrolled,0,1}\" {" "once a session"
+  assert_contains "$T/w" "set-option @ade-scrolled 1" "it is noted"; assert_contains "$T/w" "display-message \"scrolling: q or Esc to return\"" "the one line"
+}
+click_off() {   # AC5
+  fresh; ui_fixture; ADE_UI_MOUSE=off bash "$ADE" ui --detach > /dev/null 2>&1; C="$HOME/.config/ade/ui-$S.tmux.conf"
+  grep -qx "set -g mouse off" "$C" || fail "mouse off"; assert_not_contains "$C" "status-format[1]" "no first-run line either"
+  for m in 0 off; do bash "$ADE" ui --bar "$S" 120 "$m" 1 > "$T/out"
+    for s in "[+" "[≡" "[tickets]" "range=left" "range=right" "range=user"; do assert_not_contains "$T/out" "$s" "mouse $m: no $s"; done
+    assert_contains "$T/out" "○ 2 ops/db" "the tabs stay"; done
+  ADE_UI_MOUSE=off bash "$ADE" ui --bar "$S" > "$T/out"; assert_not_contains "$T/out" "[+" "no mouse word given: ADE_UI_MOUSE decides"
+}
+click_first_run() {   # AC6
+  fresh; ui_fixture; local i H="$HOME/.config/ade/hints" line="Click a tab or a button; right click for every action. Keys: ? keys"
+  for i in 1 2 3; do rm -f "$TMUX_LOG.session"; bash "$ADE" ui --detach > /dev/null 2>&1; C="$HOME/.config/ade/ui-$S.tmux.conf"
+    grep -qx "set -g status 2" "$C" || fail "session $i: a second line"; assert_contains "$C" "$line" "session $i: the hint, under the bar"; done
+  bash "$ADE" ui --detach > /dev/null 2>&1; assert_eq "$(grep -cx ui-click "$H")" 3 "a running session is not a new one"
+  rm -f "$TMUX_LOG.session"; bash "$ADE" ui --detach > /dev/null 2>&1
+  grep -qx "set -g status on" "$C" || fail "after 3 sessions: one line"; assert_not_contains "$C" "$line" "and no hint"
+  fresh; ui_fixture; bash "$ADE" ui --detach > /dev/null 2>&1; C="$HOME/.config/ade/ui-$S.tmux.conf"
+  grep -q "^bind-key -T root MouseDown1StatusDefault if-shell -F \"#{==:#{status},2}\" { set-option -g status on ; run-shell -b \".* ui --hint-off\" }$" "$C" || fail "a click on the line hides it (only while it shows)"
+  bash "$ADE" ui --hint-off > /dev/null 2>&1 || fail "hint-off"; rm -f "$TMUX_LOG.session"; bash "$ADE" ui --detach > /dev/null 2>&1
+  assert_not_contains "$C" "$line" "dismissed: never again"; grep -qx ui-click-off "$HOME/.config/ade/hints" || fail "remembered in hints"
+}
+click_real_tmux() {   # the config ade ui writes loads on a real tmux (a private socket), with the mouse bindings in it
+  command -v tmux > /dev/null 2>&1 || { echo "skip: no tmux"; return 0; }
+  fresh; make_hub "$T/hub" hub; printf 'HUB_NAME=real\n' > "$T/hub/hub.conf"; export ADE_HUB="$T/hub" TMUX_TMPDIR="$T" ADE_TMUX_SOCKET="ade-test-$$"; unset TMUX
+  mkdir -p "$T/fakebin"; printf '#!/bin/bash\nsleep 30\n' > "$T/fakebin/claude"; chmod +x "$T/fakebin/claude"; export PATH="$T/fakebin:$PATH"
+  bash "$ADE" ui --detach > "$T/out" 2>&1 || { cat "$T/out"; tmux -L "$ADE_TMUX_SOCKET" kill-server 2> /dev/null; fail "real ui"; }
+  tmux -L "$ADE_TMUX_SOCKET" list-keys -T root > "$T/keys" 2>&1; tmux -L "$ADE_TMUX_SOCKET" show-options -g status-format > "$T/opts" 2>&1
+  tmux -L "$ADE_TMUX_SOCKET" kill-server 2> /dev/null
+  for k in MouseDown1StatusLeft MouseDown1StatusRight MouseDown1Status MouseDown3Status MouseDown3StatusLeft MouseDown1StatusDefault WheelUpPane; do
+    assert_contains "$T/keys" " $k " "real tmux: $k bound"; done
+  assert_contains "$T/keys" "close #" "the close asks first"; assert_contains "$T/opts" "Click a tab or a button" "the first-run line"
+}
+u5_docs() {   # AC7
+  fresh; local f
+  bash "$ADE" help > "$T/help" 2>&1; cp "$REPO/CHANGELOG.md" "$T/changes"   # any section: a release renames Unreleased
+  assert_contains "$REPO/README.md" "### Use it with the mouse" "README section"
+  for f in "$REPO/README.md" "$T/help" "$T/changes"; do
+    for s in "[≡ menu]" "right click" "ADE_UI_MOUSE=off"; do assert_contains "$f" "$s" "$(basename "$f"): $s"; done; done
+}
+
+ALL="click_buttons click_menu click_tab_menu click_scroll_select click_off click_first_run click_real_tmux u5_docs tmux_version ide_safe_keys u1_docs dash_tokens_and_events session_names menu_skips_bad_folders sq_refuses bar_cached creates_then_attaches work_opens_tab work_makes_the_session work_plain claude_in_the_session bare_ade_opens_the_tabs bare_no_agents work_real_tmux tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

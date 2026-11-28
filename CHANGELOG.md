@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+- `ade ui` with the mouse (U5): the bar ends in `[+ agent] [tickets] [files] [approve] [dash] [? keys]`, each running
+  what its key runs (one table drives both), or `[+] [≡ menu]` under 100 columns. `[≡ menu]` or a right click on the
+  bar opens a menu of every action with its key. A right click on a tab opens its menu: go to it, preview its plan,
+  links in its pane, close it (asks `close <tab>? y/n` first). The wheel scrolls (the first time in a session says
+  `scrolling: q or Esc to return`); a drag copies to the clipboard. A hint line under the bar shows for the first 3
+  sessions until clicked. The full button row needs tmux 3.4 (its named click ranges); tmux 3.2 and 3.3 get
+  `[+] [≡ menu]`. `ADE_UI_MOUSE=off` hides the buttons and the hint.
+
 ## 0.2.15
 - `ade ui` beside a JetBrains IDE (U1): `ADE_EDITOR` picks the editor `c` opens in `ade files`, `ade view` and the
   link picker (and `ADE_VIEWER=code`): `code` (the default, as before), `idea` or another JetBrains launcher

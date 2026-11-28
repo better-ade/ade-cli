@@ -38,6 +38,7 @@ Orchestrators (one per hub, run by the hub's bin/chat):
 
 Hubs:
   ui          ade ui [--detach]: one tmux window, a tab per agent (keys: prefix ? in it); needs tmux 3.2 or newer.
+              Click a tab or a button; [≡ menu] or a right click shows every action. ADE_UI_MOUSE=off hides them.
               Beside an IDE: ADE_UI_MOUSE=off (tmux's mouse off), ADE_UI_ARROWS=off (no prefix Left/Right; prefix 0-9
               still switch tabs), or those lines in ~/.config/ade/ui
   dash        ade dash [--once]: the fleet panel (agents, tickets, last events)
@@ -1894,10 +1895,14 @@ need_tmux() {
 }
 # need_tmux_32: ade ui's popups (display-popup) need tmux 3.2 or newer; an older one stops here, before anything
 # starts. A version tmux -V does not give as numbers (master) is let through.
+tmux_v() { local v; v="$(tmux -V 2> /dev/null < /dev/null | head -1 | no_ctl | cut -c1-40)"; echo "${v#tmux }"; }
+# tmux_at_least <major> <minor>: the tmux here is that version or newer (one tmux -V does not give as numbers: yes)
+tmux_at_least() {
+  local v; v="$(tmux_v)"; [[ $v =~ ([0-9]+)\.([0-9]+) ]] || return 0
+  [ "${BASH_REMATCH[1]}" -gt "$1" ] || { [ "${BASH_REMATCH[1]}" = "$1" ] && [ "${BASH_REMATCH[2]}" -ge "$2" ]; }
+}
 need_tmux_32() {
-  local v; v="$(tmux -V 2> /dev/null < /dev/null | head -1 | no_ctl | cut -c1-40)"; v="${v#tmux }"
-  [[ $v =~ ([0-9]+)\.([0-9]+) ]] || return 0
-  [ "${BASH_REMATCH[1]}" -gt 3 ] || { [ "${BASH_REMATCH[1]}" = 3 ] && [ "${BASH_REMATCH[2]}" -ge 2 ]; } && return 0
+  local v; tmux_at_least 3 2 && return 0; v="$(tmux_v)"
   local how="use your package manager, or build a newer one (https://github.com/tmux/tmux/wiki/Installing)"
   [ "$(uname)" = Darwin ] && how="brew upgrade tmux"
   die 1 "ade ui needs tmux 3.2 or newer (found $v) for its popups; to update tmux: $how"
@@ -1942,7 +1947,7 @@ ui_ensure() {
   local hub="$1" s="$2" conf run=claude; UI_MADE=0
   ui_tmux has-session -t "=$s" 2> /dev/null && return 0
   [ "${3:-}" != place ] || run="ui --place"
-  claude_update "$hub"
+  claude_update "$hub"; ui_hint_count
   conf="$CONF_DIR/ui-$s.tmux.conf"; ui_conf "$hub" "$s" | write_conf_file "ui-$s.tmux.conf"
   ui_tmux new-session -d -s "$s" -n orchestrator -c "$hub" \
     "exec env AGENT_TERMINAL=tmux ADE_UI_SESSION=$s ADE_HUB=$(sq "$hub") $(sq "$(ade_self)") $run" || die 1 "tmux could not start $s"
@@ -2019,20 +2024,26 @@ ui_data() {
 
 # ui_bar <hub> <session>: the tab bar, from data cached for 2 s in ~/.config/ade/ui-cache/<session> (every attached
 # client redraws every 2 s; the hub's scripts run once per period, not once per client)
+# U5: [width] (#{client_width}), [mouse] (#{mouse}; none: ADE_UI_MOUSE) and [ranges] (1: tmux 3.4's user ranges)
+# choose the buttons
 ui_bar() {
-  local c="$CONF_DIR/ui-cache/$2" now t=0; now="$(date +%s)"
+  local c="$CONF_DIR/ui-cache/$2" now t=0 w="${3:-}" m="${4:-}" r="${5:-1}"; now="$(date +%s)"
+  [[ $w =~ ^[0-9]{1,5}$ ]] || w=""; case "$m" in 1|on) m=1 ;; 0|off) m=0 ;; *) [ "$(ui_opt ADE_UI_MOUSE)" = on ] && m=1 || m=0 ;; esac
+  [ "$r" = 1 ] || r=0
   [ -f "$c/at" ] && t="$(cat "$c/at" 2> /dev/null)"; [[ $t =~ ^[0-9]+$ ]] || t=0
   local keep="${ADE_UI_CACHE_SECONDS:-2}"; [[ $keep =~ ^[0-9]+$ ]] || keep=2
   if [ $((now - t)) -ge "$keep" ] || [ ! -f "$c/sessions" ]; then
     ( umask 077; mkdir -p "$c" ) || return 1; ui_data "$1" "$c" "$2"; echo "$now" > "$c/at"
   else ui_tmux list-windows -t "=$2" -F "#{window_index}	#{window_name}	#{window_active}" > "$c/windows" 2> /dev/null; fi
-  ui_render bar "$c"
+  ui_actions "" | awk -F '\t' '$2 != "-" { print $1 "\t" $2 }' > "$c/buttons"
+  ui_render bar "$c" "$w" "$m" "$r"
 }
 
-ui_render() {   # ui_render bar|dash <dir>
-  PYTHONIOENCODING=utf-8 python3 - "$1" "$2" "${ADE_NOW:-}" <<'PY'
+ui_render() {   # ui_render bar|dash <dir> [width mouse(1/0) ranges(1/0)]
+  PYTHONIOENCODING=utf-8 python3 - "$1" "$2" "${ADE_NOW:-}" "${3:-}" "${4:-0}" "${5:-0}" <<'PY'
 import datetime, json, os, sys
 mode, d, now = sys.argv[1], sys.argv[2], sys.argv[3]
+BAR_WIDTH, BAR_MOUSE, BAR_RANGES = int(sys.argv[4] or 999), sys.argv[5] == "1", sys.argv[6] == "1"
 def read(n):
     try: return open(os.path.join(d, n), encoding="utf-8").read().splitlines()
     except OSError: return []
@@ -2085,10 +2096,14 @@ if mode == "bar":
             folder, _, ticket = win.partition(":")
             parts = [folder] + ([r["role"]] if r and r["role"] else []) + ([ticket] if ticket else [])
             label, col, n = "%s %s %s" % (ICON[st], idx, " · ".join(parts)), theme[st], unread.get(r["name"], 0) if r else 0
-        tab = "#[bg=%s]#[fg=%s]%s" % (bg, col, label)
+        tab = "#[range=window|%s]#[bg=%s]#[fg=%s]%s" % (idx, bg, col, label.replace("#", "##"))
         if n > 0: tab += " #[fg=%s]✉%d" % (theme["unread"], n)
-        out.append(tab + " ")
-    out.append("#[bg=%s]#[fg=%s][+ new]" % (theme["bg"], theme["accent"]))
+        out.append(tab + "#[norange] ")
+    if BAR_MOUSE:   # U5: the buttons, only with the mouse on; [+ ...] is range=left, [≡ menu] range=right (tmux 3.2)
+        btn = lambda rng, text: "#[range=%s][%s]#[norange]" % (rng, text)
+        if BAR_WIDTH < 100 or not BAR_RANGES: row = [btn("left", "+"), btn("right", "≡ menu")]
+        else: row = [btn("left" if k == "n" else "user|k-" + k, b) for k, b in (l.split("\t", 1) for l in read("buttons") if "\t" in l)]
+        out.append("#[bg=%s]#[fg=%s]" % (theme["bg"], theme["accent"]) + " ".join(row))
     ups = (read("updates") or ["0"])[0].strip()
     if ups.isdigit() and int(ups) > 0: out.append("#[fg=%s]⬆ %s update%s (ade update)" % (theme["accent"], ups, "" if ups == "1" else "s"))
     print(" ".join(out))
@@ -2152,33 +2167,99 @@ UI_KEYS="  prefix n   new agent: pick a folder, then a role
   prefix 0-9, Left, Right   switch tabs
   prefix d   detach (agents keep running)"
 
+# ui_actions <run>: the one table of ade ui's actions (U5), a line each: key, button (- for none), menu label, the tmux
+# command. The prefix key, the bar's button and the menu item are all made from it, so a click runs what its key runs.
+ui_actions() {
+  local run="$1"
+  printf '%s\t%s\t%s\t%s\n' \
+    n "+ agent" "new agent" "run-shell \"$run ui --menu new\"" \
+    t tickets "tickets" "display-popup -E -w 80% -h 60% \"$run ui --tickets\"" \
+    e files "files" "display-popup -E -w 90% -h 90% \"$run files\"" \
+    a approve "approve a ticket" "run-shell \"$run ui --menu approve\"" \
+    f dash "fleet sidebar (dash)" "run-shell \"$run ui --sidebar\"" \
+    p - "preview this agent's plan" "run-shell \"$run ui --menu preview #{window_index}\"" \
+    l - "links in this pane" "run-shell \"$run ui --menu links #{pane_id}\"" \
+    "?" "? keys" "keys" "display-popup -E -w 66 -h 16 \"$run ui --keys\"" \
+    d - "detach (agents keep running)" "detach-client"
+}
+tq() { local v="${1//\\/\\\\}"; printf '"%s"' "${v//\"/\\\"}"; }   # one tmux argument, double-quoted
+UI_HINT="Click a tab or a button; right click for every action. Keys: ? keys"
+# ui_hint_due: the first-run line (U5) shows in the first 3 sessions ade makes, until a click hides it (ui-click lines,
+# one per session, and ui-click-off in ~/.config/ade/hints); never with the mouse off
+ui_hint_due() {
+  local n=0; [ "$(ui_opt ADE_UI_MOUSE)" = on ] || return 1
+  [ -f "$CONF_DIR/hints" ] || return 1; grep -qxF ui-click-off "$CONF_DIR/hints" && return 1
+  n="$(grep -cxF ui-click "$CONF_DIR/hints")"; [ "$n" -ge 1 ] && [ "$n" -le 3 ]
+}
+ui_hint_count() {   # a new session: one more ui-click line (up to 4, the one that ends it)
+  local n=0; [ "$(ui_opt ADE_UI_MOUSE)" = on ] || return 0
+  [ -f "$CONF_DIR/hints" ] && { grep -qxF ui-click-off "$CONF_DIR/hints" && return 0; n="$(grep -cxF ui-click "$CONF_DIR/hints")"; }
+  [ "$n" -le 3 ] || return 0
+  { [ -f "$CONF_DIR/hints" ] && cat "$CONF_DIR/hints"; echo ui-click; } | write_conf_file hints
+}
+ui_hint_off() {
+  [ -f "$CONF_DIR/hints" ] && grep -qxF ui-click-off "$CONF_DIR/hints" && return 0
+  { [ -f "$CONF_DIR/hints" ] && cat "$CONF_DIR/hints"; echo ui-click-off; } | write_conf_file hints
+}
+
 ui_conf() {   # ui_conf <hub> <session>: the tmux config ade ui loads
-  local hub="$1" s="$2" run
+  local hub="$1" s="$2" run k b l c menu tab ranges=0 clip lines=on
   run="ADE_HUB=$(sq "$hub") $(sq "$(ade_self)")"
+  tmux_at_least 3 4 && ranges=1   # user ranges (one per button) came in tmux 3.4; 3.2 and 3.3 get [+] [≡ menu]
+  ui_hint_due && lines=2
+  menu="display-menu -x M -y S -T $(tq "#[align=centre]ade: prefix + the key")"
+  while IFS="$(printf '\t')" read -r k b l c; do menu="$menu $(tq "$l") $(tq "$k") $(tq "$c")"; done <<EOF
+$(ui_actions "$run")
+EOF
+  # a tab's menu: its window by id; its name only in the title and the y/n prompt, both formats tmux expands itself
+  tab="display-menu -t= -x W -y W -T $(tq "#[align=centre]#{window_index}:#{window_name}") $(tq "go to it") $(tq g) $(tq "select-window -t #{window_id}")"
+  tab="$tab $(tq "preview its plan") $(tq p) $(tq "$(ui_actions "$run" | awk -F '\t' '$1 == "p" { print $4 }')")"
+  tab="$tab $(tq "links in its pane") $(tq l) $(tq "$(ui_actions "$run" | awk -F '\t' '$1 == "l" { print $4 }')") \"\""
+  tab="$tab $(tq "#{?#{==:#{window_index},0},,close it}") $(tq x) $(tq "confirm-before -p \"close ##{b:window_name}? y/n\" \"kill-window -t #{window_id}\"")"
   cat <<CONF
 # written by ade ui for $s; ade's own tmux server (tmux -L $ADE_TMUX_SOCKET)
-set -g status on
+set -g status $lines
 set -g status-interval 2
 set -g status-style "bg=$(theme_get bg),fg=$(theme_get fg)"
 set -g status-left-length 600
 set -g status-right ""
 set -g window-status-format ""
 set -g window-status-current-format ""
-set -g status-left "#($run ui --bar $s)"
+set -g status-left "#($run ui --bar $s #{client_width} #{mouse} $ranges)"
 set -g destroy-unattached off
 set -g mouse $(ui_opt ADE_UI_MOUSE)
 set -g set-titles on
-bind-key -T prefix n run-shell "$run ui --menu new"
-bind-key -T prefix a run-shell "$run ui --menu approve"
-bind-key -T prefix t display-popup -E -w 80% -h 60% "$run ui --tickets"
-bind-key -T prefix p run-shell "$run ui --menu preview #{window_index}"
-bind-key -T prefix f run-shell "$run ui --sidebar"
-bind-key -T prefix ? display-popup -E -w 66 -h 16 "$run ui --keys"
-bind-key -T prefix e display-popup -E -w 90% -h 90% "$run files"
-bind-key -T prefix l run-shell "$run ui --menu links #{pane_id}"
-$(if [ "$(ui_opt ADE_UI_ARROWS)" = on ]; then printf '%s\n' "bind-key -T prefix Left previous-window" "bind-key -T prefix Right next-window"
-  else printf '%s\n' "bind-key -r -T prefix Left select-pane -L" "bind-key -r -T prefix Right select-pane -R"; fi)
 CONF
+  [ "$lines" = 2 ] && echo "set -g status-format[1] $(tq "#[align=centre]$UI_HINT  (a click here hides this line)")"
+  while IFS="$(printf '\t')" read -r k b l c; do echo "bind-key -T prefix $k $c"; done <<EOF
+$(ui_actions "$run")
+EOF
+  if [ "$(ui_opt ADE_UI_ARROWS)" = on ]; then printf '%s\n' "bind-key -T prefix Left previous-window" "bind-key -T prefix Right next-window"
+  else printf '%s\n' "bind-key -r -T prefix Left select-pane -L" "bind-key -r -T prefix Right select-pane -R"; fi
+  # U5, the mouse: [+ ...] and [≡ menu] are the bar's left and right ranges; the other buttons user ranges k-<key>
+  echo "bind-key -T root MouseDown1StatusLeft $(ui_actions "$run" | awk -F '\t' '$1 == "n" { print $4 }')"
+  for k in MouseDown1StatusRight MouseDown3StatusLeft MouseDown3StatusRight MouseDown3StatusDefault; do echo "bind-key -T root $k $menu"; done
+  echo "bind-key -T root MouseDown1Status if-shell -F \"#{m:k-*,#{mouse_status_range}}\" {"
+  while IFS="$(printf '\t')" read -r k b l c; do [ "$b" = - ] || [ "$k" = n ] || echo "    if-shell -F \"#{==:#{mouse_status_range},k-$k}\" { $c }"; done <<EOF
+$(ui_actions "$run")
+EOF
+  printf '%s\n' "  } { select-window -t= }" "bind-key -T root MouseDown3Status {" "  if-shell -F \"#{m:k-*,#{mouse_status_range}}\" { $menu } { $tab }" "}"
+  echo "bind-key -T root MouseDown1StatusDefault if-shell -F \"#{==:#{status},2}\" { set-option -g status on ; run-shell -b \"$run ui --hint-off\" }"
+  # the wheel scrolls a pane's history (once a session: how to get back), a drag selects and copies
+  cat <<'CONF'
+bind-key -T root WheelUpPane if-shell -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" { send-keys -M } {
+  copy-mode -e
+  if-shell -F "#{?@ade-scrolled,0,1}" {
+    set-option @ade-scrolled 1
+    display-message "scrolling: q or Esc to return"
+  }
+}
+bind-key -T copy-mode MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel
+bind-key -T copy-mode-vi MouseDragEnd1Pane send-keys -X copy-pipe-and-cancel
+bind-key -T copy-mode-vi Escape send-keys -X cancel
+CONF
+  clip="$(clip_cmd)" && echo "set -s copy-command $(tq "$clip")"
+  return 0
 }
 
 ui_menu() {   # ui_menu new|role <folder>|approve|preview <index>
@@ -2251,8 +2332,9 @@ ui_sidebar() {
 cmd_ui() {
   local hub s d detach=0
   case "${1:-}" in
-    --bar) [ -n "${2:-}" ] || die 2 "usage: ade ui --bar <session>"; hub="$(find_hub)" || exit $?
-      ui_bar "$hub" "$2"; return 0 ;;
+    --bar) [ -n "${2:-}" ] || die 2 "usage: ade ui --bar <session> [width] [mouse] [ranges]"; hub="$(find_hub)" || exit $?
+      ui_bar "$hub" "$2" "${3:-}" "${4:-}" "${5:-}"; return 0 ;;
+    --hint-off) ui_hint_off; return 0 ;;
     --tab-name) matches "${2:-}" '^(projects|ops)/[A-Za-z0-9_-][A-Za-z0-9._-]*$' || die 2 "usage: ade ui --tab-name <folder> [ticket]"
       echo "$2${3:+:$3}"; return 0 ;;
     --menu) shift; ui_menu "$@"; return ;;
@@ -4308,15 +4390,18 @@ files_act() {
       fi ;;
   esac
 }
-clip_copy() {   # <path>: onto the clipboard on stdin (pbcopy, wl-copy, xclip, xsel), shell-quoted unless it is plain; none: say so
+clip_cmd() {   # the clipboard command here (pbcopy, wl-copy, xclip, xsel), or none (exit 1); ade ui's drag copies with it too
+  if on_macos && command -v pbcopy > /dev/null 2>&1; then echo pbcopy
+  elif [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-copy > /dev/null 2>&1; then echo wl-copy
+  elif command -v xclip > /dev/null 2>&1; then echo "xclip -selection clipboard"
+  elif command -v xsel > /dev/null 2>&1; then echo "xsel --clipboard --input"
+  else return 1; fi
+}
+clip_copy() {   # <path>: onto the clipboard on stdin (clip_cmd), shell-quoted unless it is plain; none: say so
   local c v="$1"
   [ -z "$(printf '%s' "$v" | LC_ALL=C tr -d 'A-Za-z0-9_./@%+=:,-')" ] || v="$(shq "$v")"
-  if on_macos && command -v pbcopy > /dev/null 2>&1; then c=pbcopy
-  elif [ -n "${WAYLAND_DISPLAY:-}" ] && command -v wl-copy > /dev/null 2>&1; then c=wl-copy
-  elif command -v xclip > /dev/null 2>&1; then c="xclip -selection clipboard"
-  elif command -v xsel > /dev/null 2>&1; then c="xsel --clipboard --input"
-  else echo "no clipboard tool here (pbcopy, wl-copy, xclip or xsel); the path: ${FT_SHOWN:-$1}"; return 1; fi
-  printf '%s' "$v" | $c   # c: one of the commands above, split into its words on purpose
+  c="$(clip_cmd)" || { echo "no clipboard tool here (pbcopy, wl-copy, xclip or xsel); the path: ${FT_SHOWN:-$1}"; return 1; }
+  printf '%s' "$v" | $c   # c: one of clip_cmd's commands, split into its words on purpose
 }
 
 # the tools ade uses: the required ones (checked by install.sh and ade setup) and the viewer extras (one step in ade

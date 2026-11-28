@@ -21,4 +21,4 @@ orc┌────────────────────────�
    └──────────────────────────────────────────────────────────────────────┘
 
 
-● 0 orchestrator  ⟳ 1 projects/api · builder · 1.2 ✉2  ○ 2 ops/db  [+ new]
+● 0 orchestrator  ⟳ 1 projects/api · builder · 1.2 ✉2  ○ 2 ops/db  [+] [≡ menu]

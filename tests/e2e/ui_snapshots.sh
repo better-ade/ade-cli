@@ -31,6 +31,7 @@ shot() {   # shot <name> <text to wait for>: capture the outer screen once the t
 key() { o send-keys -t o C-b "$@"; }
 for SIZE in 120x36 80x24; do
   step "ade ui at $SIZE"
+  mkdir -p "$HOME/.config/ade"; echo ui-click-off >> "$HOME/.config/ade/hints"   # no first-run hint line (U5)
   ade ui --detach > /dev/null || fail "ade ui --detach"
   S="$(ade ui --session)"   # two agent tabs as bin/work's tmux mode opens them, so the bar shows their state icons
   tmux -L snap new-window -d -t "=$S:" -n "projects/api:1.2" "sleep 600"; tmux -L snap new-window -d -t "=$S:" -n "ops/db" "sleep 600"

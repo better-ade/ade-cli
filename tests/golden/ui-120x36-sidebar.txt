@@ -33,4 +33,4 @@ orchestrator ready                                                         │AD
                                                                            │
                                                                            │
                                                                            │
-● 0 orchestrator  ⟳ 1 projects/api · builder · 1.2 ✉2  ○ 2 ops/db  [+ new]
+● 0 orchestrator  ⟳ 1 projects/api · builder · 1.2 ✉2  ○ 2 ops/db  [+ agent] [tickets] [files] [approve] [dash] [? keys]

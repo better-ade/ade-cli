@@ -254,6 +254,24 @@ ADE_UI_ARROWS=off
 
 `ade ui` in a JetBrains terminal says once how to set them.
 
+### Use it with the mouse
+
+`ade ui` works by clicking too ([U5](docs/stories/U5-clickable-ade-ui.md)). The bar ends in buttons:
+`[+ agent] [tickets] [files] [approve] [dash] [? keys]`. Each runs exactly what its key runs (`prefix n`, `t`, `e`,
+`a`, `f`, `?`). In a window under 100 columns the bar shows `[+] [≡ menu]` instead. Click a tab to go to it.
+
+- `[≡ menu]`, or a right click on the bar, opens a menu of every action with its key beside it.
+- A right click on a tab opens that tab's menu: go to it, preview its plan, the links in its pane, and close it.
+  Closing asks `close <tab>? y/n` first; the orchestrator tab has no close item.
+- The wheel scrolls a pane's history. The first scroll in a session says `scrolling: q or Esc to return`.
+- A drag selects text and copies it to the clipboard (`pbcopy`, `wl-copy`, `xclip` or `xsel`, whichever is there).
+- Under the bar, a hint line says `Click a tab or a button; right click for every action. Keys: ? keys` for your
+  first 3 sessions. Click it to hide it for good.
+
+The full button row needs tmux 3.4 or newer, because it uses tmux's named click ranges. On tmux 3.2 and 3.3 the bar
+shows `[+] [≡ menu]` at any width, and every action is still in the menu. `ADE_UI_MOUSE=off` hides the buttons and
+the hint, and leaves tmux's mouse off.
+
 ## The web view ([A19](docs/stories/A19-web-view.md))
 
 `ade web` opens a live, read-only dashboard of the hub's agents in your browser (M1): a terminal UI in the browser,
@@ -405,7 +423,7 @@ or tool. A hub command exits with whatever the hub's script returns.
 | `ADE_NO_UPDATE_CHECK` | unset | `1`: no daily release check (no request) |
 | `ADE_NO_AUTO_UPDATE` | unset | `1`: a new ade-cli release is announced, never installed by itself |
 | `ADE_EDITOR` | unset (`code`; a JetBrains launcher in a JetBrains terminal) | The editor `c` opens: `code`, a JetBrains launcher, or a command with `{path}` ([Use it beside your IDE](#use-it-beside-your-ide)) |
-| `ADE_UI_MOUSE`, `ADE_UI_ARROWS` | `on` | `off`: `ade ui` leaves tmux's mouse off, or drops `prefix Left/Right` (also read from `~/.config/ade/ui`) |
+| `ADE_UI_MOUSE`, `ADE_UI_ARROWS` | `on` | `off`: `ade ui` leaves tmux's mouse off and hides its buttons ([Use it with the mouse](#use-it-with-the-mouse)), or drops `prefix Left/Right` (also read from `~/.config/ade/ui`) |
 
 ## Providers
 
