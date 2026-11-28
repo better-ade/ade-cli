@@ -48,7 +48,7 @@ Hubs:
               shows anything; --tailnet: on this machine's Tailscale address instead, for your phone (it asks for the
               code too); --print-link: the running page's address, else nothing and exit 1; --stop: stops the running
               one (Ctrl-C does too)
-  setup       ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]: the guide, one step at a time (resumes where you are)
+  setup       ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools | --diagrams]: the guide, one step at a time (resumes where you are)
   claude      ade claude [<folder>] [-- claude args]: the orchestrator at the hub root, as tab 0 of ade ui when tmux is
               there (ADE_UI=off: in this terminal); with a folder, ade work <folder>
   hub         ade hub new <name> [--private|--public] [--dir <folder>] [--persona P --client C --owner O]
@@ -68,6 +68,9 @@ Files (read-only; a path outside the hub and its projects asks first):
               the editor by default; images, PDFs and Markdown keep the built-in viewer. ADE_EDITOR picks the editor:
               code (Visual Studio Code, the default), idea or another JetBrains launcher (--line N --column C <path>),
               or a command with {path} {line} {col} (no shell runs it); in a JetBrains terminal, its launcher on PATH
+  docs        ade docs [<folder>] | --follow <doc> | --web <doc>: the plans and specs as written (BMAD output, docs/,
+              PLAN.md, STATE.md), newest first; Enter views one, ctrl-f follows it (shown again on each save), ctrl-o
+              opens it in ade web's Docs page (started on 127.0.0.1 if it is not running); diagrams: ade setup --diagrams
 
 Proof (screenshots as evidence, in <project>/.ade/evidence/; a page or screen shot cannot be redacted):
   shot        ade shot url <address> [--full-page] [--width W] | screen [--yes-screen] | agent <name>, each with [--name N]
@@ -1866,10 +1869,11 @@ cmd_setup() {
     --test) [ $# -le 2 ] && { [ $# -eq 1 ] || [ -n "$2" ]; } || die 2 "usage: ade setup --test [provider|telegram]"; setup_test "${2:-}"; exit $? ;;
     --tools) { [ $# -eq 1 ] || { [ $# -eq 2 ] && { [ "$2" = required ] || [ "$2" = extras ]; }; }; } || die 2 "usage: ade setup --tools [required|extras]"
       setup_tools "${2:-}"; return ;;
+    --diagrams) [ $# -eq 1 ] || die 2 "usage: ade setup --diagrams"; setup_diagrams; return ;;
     --top|--telegram) [ $# -eq 1 ] || die 2 "usage: ade setup $mode"; hub="$(find_hub)" || exit $?
       if [ "$mode" = --top ]; then setup_top "$hub"; else setup_telegram "$hub"; fi; return ;;
     "") ;;
-    *) die 2 "usage: ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools]" ;;
+    *) die 2 "usage: ade setup [--check | --test [provider|telegram] | --top | --telegram | --tools | --diagrams]" ;;
   esac
   guide
 }
@@ -2161,6 +2165,7 @@ UI_KEYS="  prefix n   new agent: pick a folder, then a role
   prefix p   preview the current agent's plan
   prefix f   show or hide the fleet sidebar (ade dash)
   prefix e   files: explore and view the hub and its projects
+  prefix v   docs: the plans and specs as written (live)
   prefix l   links: open a file path or URL shown in this pane
              in files and links, c: open in your editor
   prefix ?   this help
@@ -2179,7 +2184,8 @@ ui_actions() {
     f dash "fleet sidebar (dash)" "run-shell \"$run ui --sidebar\"" \
     p - "preview this agent's plan" "run-shell \"$run ui --menu preview #{window_index}\"" \
     l - "links in this pane" "run-shell \"$run ui --menu links #{pane_id}\"" \
-    "?" "? keys" "keys" "display-popup -E -w 66 -h 16 \"$run ui --keys\"" \
+    v - "docs" "display-popup -E -w 90% -h 90% \"$run docs\"" \
+    "?" "? keys" "keys" "display-popup -E -w 66 -h 17 \"$run ui --keys\"" \
     d - "detach (agents keep running)" "detach-client"
 }
 tq() { local v="${1//\\/\\\\}"; printf '"%s"' "${v//\"/\\\"}"; }   # one tmux argument, double-quoted
@@ -4252,6 +4258,12 @@ view_text() {
     view_traps; VIEW_TMP="$(mk_tmp)" || die 1 "could not make a temp folder"; src="$VIEW_TMP/$(basename "$FT_PATH")"; no_ctl < "$FT_PATH" > "$src"
     echo "ade: this file holds control characters; they are not shown" >&2
   fi
+  # story U6: a diagram stays its code here, with a line under it that says the browser draws it
+  if [ "$FT_KIND" = markdown ] && grep -Eq '^ {0,3}(```|~~~)[ ]*mermaid' -- "$src" 2> /dev/null; then
+    if [ -z "${VIEW_TMP:-}" ]; then view_traps; VIEW_TMP="$(mk_tmp)" || die 1 "could not make a temp folder"; fi
+    b="$VIEW_TMP/diagram-$(basename "$FT_PATH")"
+    awk '{ print } /^ *(```|~~~) *mermaid/ && !in_m { in_m = 1; next } in_m && /^ *(```|~~~) *$/ { in_m = 0; print "diagram: w draws it in the browser (ade docs --web)" }' "$src" > "$b" && src="$b"
+  fi
   LESSSECURE=1; LESSOPEN=""; LESSCLOSE=""; export LESSSECURE LESSOPEN LESSCLOSE
   if [ "$FT_KIND" = markdown ] && [ "$l" = 0 ] && command -v glow > /dev/null 2>&1; then PAGER="less -r" glow -p -- "$src"; rc=$?
   elif b="$(tool_bin bat)"; then
@@ -4435,6 +4447,9 @@ tools_report() {   # ade doctor: each tool, installed or missing
   # Playwright's Chromium (ade shot): the hub's browser, found where the hub finds it; ade setup --tools does not install it
   if shot_py chromium > /dev/null 2>&1; then printf '  %-8s installed\n' chromium
   else printf '  %-8s missing (%s)\n' chromium "extra: ade shot url and ade shot agent; npx -y @playwright/mcp install-browser chromium"; fi
+  # story U6: the diagram drawer (mermaid), pinned by its sha256; ade setup --diagrams fetches it
+  if mermaid_present; then printf '  %-8s installed\n' mermaid
+  else printf '  %-8s missing (%s)\n' mermaid "extra: diagrams in ade web's Docs page; ade setup --diagrams adds it"; fi
   [ -z "$(tools_missing $REQUIRED_TOOLS $EXTRA_TOOLS)" ] || echo "  ade setup --tools installs what is missing"
 }
 # install_why <file> <packages>: a failed install in one plain line, from the installer's own message; nothing when
@@ -4998,6 +5013,542 @@ PY
   ADE_ROOTS="$ROOTS" ADE_SELF="$(ade_self)" ADE_BASH="$BASH" ADE_TMP_ROOT="$TMP_ROOT" python3 -I -c "$src" "$@"
 }
 
+# ade docs (story U6): the plans and specs as they are written. A doc is a .md under _bmad-output/ or docs/ in the hub
+# root, in each folder (projects/*, ops/*) and in each checkout a folder's ACCESS.md lists, plus each folder's PLAN.md and
+# STATE.md; never a link, never anything outside those roots. docs_lib is the Python ade docs and ade web share: the
+# list, a doc's id (the first 16 hex of sha256("ade-doc-v1:" + its real path)), the read (re-checked when it is read:
+# no link, a regular file of 2 MB or less, still inside the roots) and the Markdown renderer (every character escaped;
+# raw HTML is text; only http(s) and links to another doc become links). Contracts: .ade/context/docs.md
+DOCS_USAGE="usage: ade docs [<folder>] | ade docs --follow <doc> | ade docs --web <doc>"
+MERMAID_VERSION=11.17.2
+MERMAID_URL="https://cdn.jsdelivr.net/npm/mermaid@$MERMAID_VERSION/dist/mermaid.min.js"
+MERMAID_SHA256=581ed7d74bd9048d0e3a91363927d72ef22942d7722546b27f7cc29e35390eb8
+# docs_roots <hub>: "<label>\t<physical path>": the hub (label hub), then each checkout a folder's ACCESS.md lists
+# (label: that folder); ade docs and ade web pass them as ADE_DOC_ROOTS
+docs_roots() {
+  local hub f c b
+  printf 'hub\t%s\n' "$(cd "$1" && pwd -P)"
+  for f in "$1"/projects/*/ACCESS.md "$1"/ops/*/ACCESS.md; do
+    [ -f "$f" ] && [ ! -L "${f%/ACCESS.md}" ] || continue
+    while IFS="$TAB" read -r c b; do
+      # shellcheck disable=SC2088  # a literal ~ in ACCESS.md is expanded here on purpose
+      case "$c" in "~/"*) c="$HOME/${c#\~/}" ;; esac
+      [ -n "$c" ] && [ -d "$c" ] && printf '%s\t%s\n' "$(f="${f%/ACCESS.md}"; printf '%s' "${f#"$1"/}")" "$(cd "$c" && pwd -P)"
+    done <<EOF
+$(access_rows "$f")
+EOF
+  done
+  return 0
+}
+docs_lib() { cat <<'PY'
+import hashlib as _dh, html as _dhtml, os as _dos, re as _dre, stat as _dst, urllib.parse as _durl
+DOC_MAX = 2 * 1024 * 1024; DOC_MANY = 2000; DOC_DEEP = 8; DOC_TEXT = 20000
+def doc_roots():
+    """[(label, physical path)] from ADE_DOC_ROOTS, the hub first; a wide root (/, the home, a system folder) is never one"""
+    home = _dos.path.realpath(_dos.path.expanduser("~")); out = []; seen = set()
+    wide = {"/", home} | {_dos.path.realpath(p) for p in ("/usr", "/etc", "/var", "/tmp", "/private", "/opt", "/bin", "/sbin", "/home", "/Users", "/System", "/Library", "/Volumes")}
+    for line in _dos.environ.get("ADE_DOC_ROOTS", "").split("\n"):
+        label, _, p = line.partition("\t"); label = doc_plain(label)[:120]
+        if not label or not p.startswith("/"): continue
+        r = _dos.path.realpath(p)
+        if r in wide or r in seen or r != p or not _dos.path.isdir(r): continue
+        seen.add(r); out.append((label, r))
+    return out
+def doc_in(real, roots):
+    for _, r in roots:
+        try:
+            if real != r and _dos.path.commonpath([real, r]) == r: return True
+        except ValueError: pass
+    return False
+def doc_id(real): return _dh.sha256(("ade-doc-v1:" + real).encode("utf-8", "surrogateescape")).hexdigest()[:16]
+def doc_name_ok(p):
+    try: p.encode("utf-8")
+    except UnicodeError: return False
+    return p.isprintable()
+def doc_kind(rel):
+    n = _dos.path.basename(rel); low = n.lower()[:-3]
+    if n == "PLAN.md": return "plan"
+    if n == "STATE.md": return "doc"
+    if "/stories/" in "/" + rel.lower() or low.startswith("story"): return "story"
+    words = set(_dre.split(r"[^a-z]+", low))
+    for k, ws in (("prd", {"prd"}), ("architecture", {"architecture", "arch"}), ("ux", {"ux"}), ("spec", {"spec", "specs", "specification"}), ("plan", {"plan", "plans"})):
+        if words & ws: return k
+    return "doc"
+def doc_plain(t): return "".join(c for c in t if c.isprintable()).strip()
+def doc_atx(t):
+    """a heading's text without its closing #s (a run of # after a space, or the whole text); never a backtracking match"""
+    t = (t or "").rstrip(" \t"); u = t.rstrip("#")
+    if u != t and (not u or u[-1] in " \t"): t = u.rstrip(" \t")
+    return t
+DOC_LINE = 1024   # a raw line is cut to this before any pattern meets it on the list's path
+def doc_title(real):
+    """the first '# ' line in the first 64 KiB, else the file name"""
+    got = doc_read(real, None, 65536)
+    if got:
+        for line in got[0].decode("utf-8", "replace").split("\n"):
+            m = _dre.match(r" {0,3}# +(.*)$", line[:DOC_LINE])
+            t = doc_plain(doc_atx(m.group(1))) if m else ""
+            if t: return t[:200]
+    return _dos.path.basename(real)
+_D_TITLES = {}   # real -> ((dev, inode, mtime_ns, size), title): a relist reads only the docs that changed
+def doc_walk(top):
+    """the .md files under top, never through a link; dot folders and node_modules skipped, DOC_DEEP levels at most"""
+    if _dos.path.islink(top) or not _dos.path.isdir(top): return
+    base = top.count("/")
+    for d, dirs, files in _dos.walk(top, followlinks=False):
+        dirs[:] = [] if d.count("/") - base >= DOC_DEEP else sorted(x for x in dirs if not x.startswith(".") and x != "node_modules")
+        for f in sorted(files):
+            if f.endswith(".md"): yield _dos.path.join(d, f)
+def doc_list(roots):
+    """every doc, newest first: dicts of id, real, folder, kind, title, mtime, size, rel"""
+    global _D_TITLES
+    out = {}; titles = _D_TITLES; kept = {}
+    class Full(Exception): pass
+    def add(p, label, base):
+        if len(out) >= DOC_MANY: raise Full()
+        try: st = _dos.lstat(p)
+        except OSError: return
+        if not _dst.S_ISREG(st.st_mode) or st.st_size > DOC_MAX or st.st_nlink != 1: return
+        real = _dos.path.realpath(p)
+        if real != _dos.path.abspath(p) or real in out or not doc_in(real, roots) or not doc_name_ok(real): return
+        rel = _dos.path.relpath(real, base); key = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+        old = titles.get(real); title = old[1] if old and old[0] == key else doc_title(real); kept[real] = (key, title)
+        out[real] = {"id": doc_id(real), "real": real, "folder": label, "kind": doc_kind(rel), "title": title,
+                     "mtime": st.st_mtime, "size": st.st_size, "rel": rel}
+    if not roots: return []
+    try: doc_walk_all(roots, add)
+    except Full: pass
+    _D_TITLES = kept
+    return sorted(out.values(), key=lambda d: (-d["mtime"], d["rel"]))
+def doc_walk_all(roots, add):
+    hub = roots[0][1]
+    for sub in ("_bmad-output", "docs"):
+        for p in doc_walk(_dos.path.join(hub, sub)): add(p, "hub", hub)
+    for group in ("projects", "ops"):
+        g = _dos.path.join(hub, group)
+        try: names = sorted(_dos.listdir(g)) if not _dos.path.islink(g) else []
+        except OSError: names = []
+        for n in names:
+            f = _dos.path.join(g, n)
+            if n.startswith(".") or _dos.path.islink(f) or not _dos.path.isdir(f): continue
+            for top in ("PLAN.md", "STATE.md"): add(_dos.path.join(f, top), group + "/" + n, hub)
+            for sub in ("_bmad-output", "docs"):
+                for p in doc_walk(_dos.path.join(f, sub)): add(p, group + "/" + n, hub)
+    for label, r in roots[1:]:
+        for sub in ("_bmad-output", "docs"):
+            for p in doc_walk(_dos.path.join(r, sub)): add(p, label, r)
+def doc_read(real, roots, cap=DOC_MAX):
+    """(bytes, stat) of a doc, checked again as it is read: opened without following a link, a regular file of DOC_MAX
+    or less, its path still its real path inside the roots, and that path still this file; None for anything else"""
+    if roots is not None and not doc_in(real, roots): return None
+    flags = _dos.O_RDONLY | getattr(_dos, "O_NOFOLLOW", 0) | getattr(_dos, "O_NONBLOCK", 0) | getattr(_dos, "O_CLOEXEC", 0)
+    try: fd = _dos.open(real, flags)
+    except (OSError, ValueError): return None
+    try:
+        st = _dos.fstat(fd)
+        if not _dst.S_ISREG(st.st_mode) or st.st_size > DOC_MAX or st.st_nlink != 1 or _dos.path.realpath(real) != real: return None
+        now = _dos.stat(real, follow_symlinks=False)
+        if (now.st_dev, now.st_ino) != (st.st_dev, st.st_ino): return None
+        parts = []; n = 0
+        while n <= cap:
+            b = _dos.read(fd, min(1 << 16, cap + 1 - n))
+            if not b: break
+            parts.append(b); n += len(b)
+        if n > DOC_MAX: return None
+        return b"".join(parts)[:cap], st
+    except OSError: return None
+    finally: _dos.close(fd)
+def doc_slug(t):
+    t = _dre.sub(r"[`*_~\[\]()<>]", "", t).strip().lower()
+    return _dre.sub(r"\s+", "-", _dre.sub(r"[^\w\- ]", "", t))[:80].strip("-")
+_D_FENCE = _dre.compile(r" {0,3}(`{3,}(?!`)|~{3,}(?!~))([^`]*)$")   # the info word: the first of group 2
+_D_ATX = _dre.compile(r" {0,3}(#{1,6})(?:[ \t]+(.*))?$")   # the closing #s: doc_atx (no pattern backtracks on a long line)
+_D_HR = _dre.compile(r" {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
+_D_QUOTE = _dre.compile(r" {0,3}> ?(.*)$")
+_D_LIST = _dre.compile(r"( {0,12})([-*+]|[0-9]{1,9}[.)])(?:[ \t]+(.*))?$")
+_D_TSEP = _dre.compile(r"\s*\|?\s*:?-+:?\s*(?:\|\s*:?-+:?\s*)*\|?\s*$")
+_D_SETEXT = _dre.compile(r" {0,3}(=+|-+)[ \t]*$")
+_D_EXT = _dre.compile(r"(?i)https?://[!-~]{1,2000}")
+_D_CODE = _dre.compile(r"(`{1,8})(?!`)(.{0,2000}?[^`])\1(?!`)", _dre.S)
+_D_ESC = _dre.compile(r"\\([!-/:-@\[-`{-~])")
+_D_AUTO = _dre.compile(r"<(https?://[^\s<>\"'`]{1,2000})>", _dre.I)
+_D_IMG = _dre.compile(r"!\[([^\[\]\n]{0,500})\]\([^()\s]{0,2000}(?:\s+\"[^\"\n]{0,300}\")?\)")
+_D_LINK = _dre.compile(r"\[([^\[\]]{0,500})\]\((<[^<>\n]{0,2000}>|(?:[^()\s]|\([^()\s]{0,200}\)){0,1000})(?:\s+\"[^\"\n]{0,300}\")?\)")
+_D_EMPH = [(_dre.compile(r"\*\*(?=\S)(.{0,500}?\S)\*\*", _dre.S), "strong"), (_dre.compile(r"(?<![\w])__(?=\S)(.{0,500}?\S)__(?![\w])", _dre.S), "strong"),
+           (_dre.compile(r"~~(?=\S)(.{0,500}?\S)~~", _dre.S), "del"), (_dre.compile(r"\*(?=[^\s*])([^*]{0,500}?[^\s*])\*", _dre.S), "em"),
+           (_dre.compile(r"(?<![\w])_(?=[^\s_])([^_]{0,500}?[^\s_])_(?![\w])", _dre.S), "em")]
+def _d_esc(t): return _dhtml.escape(t, True)
+def _d_ind(l): return len(l) - len(l.lstrip(" "))
+class DocR:
+    """Markdown to HTML: ATX and setext headings (each with an id, doc-<slug>), paragraphs, lists (nested, task boxes),
+    block quotes, GFM tables, fenced code (```mermaid: a diagram), rules, emphasis, code spans, links. Every character
+    of the text is escaped; raw HTML is shown as text; an image is its alt text"""
+    def __init__(self, here, ids, drawer, note):
+        self.here = here; self.ids = ids; self.drawer = drawer; self.note = note; self.used = set(); self.mermaid = False; self.keep = []
+    def render(self, text):
+        lines = text.replace("\r\n", "\n").replace("\r", "\n").replace("\t", "    ").split("\n")
+        return self.blocks([_dre.sub(r"[\x00-\x08\x0b-\x1f\x7f]", "", l) for l in lines])
+    def heading(self, n, raw):
+        s = doc_slug(raw) or "section"; base = s; k = 1
+        while s in self.used: s = "%s-%d" % (base, k); k += 1
+        self.used.add(s)
+        return '<h%d id="doc-%s">%s</h%d>' % (n, _d_esc(s), self.inline(raw.strip()), n)
+    def starts(self, l):
+        return bool(_D_FENCE.match(l) or _D_ATX.match(l) or _D_HR.match(l) or _D_QUOTE.match(l) or (_D_LIST.match(l) and _D_LIST.match(l).group(3)))
+    def blocks(self, lines, depth=0):
+        out = []; i = 0; n = len(lines)
+        if depth > 12: return "<p>%s</p>" % _d_esc("\n".join(lines))
+        while i < n:
+            l = lines[i]
+            if not l.strip(): i += 1; continue
+            m = _D_FENCE.match(l)
+            if m:
+                fence = m.group(1); info = (m.group(2).split() or [""])[0].lower(); body = []; i += 1
+                while i < n:
+                    c = lines[i].strip()
+                    if len(c) >= len(fence) and set(c) == {fence[0]}: i += 1; break
+                    body.append(lines[i]); i += 1
+                code = _d_esc("\n".join(body))
+                if info == "mermaid":
+                    self.mermaid = True; out.append('<div class="mmd"><pre><code>%s</code></pre></div>' % code)
+                    if self.note: out.append('<p class="note">%s</p>' % _d_esc(self.note))
+                else:
+                    cls = ' class="lang-%s"' % info if _dre.fullmatch(r"[a-z0-9+#-]{1,20}", info) else ""
+                    out.append("<pre><code%s>%s</code></pre>" % (cls, code))
+                continue
+            m = _D_ATX.match(l)
+            if m: out.append(self.heading(len(m.group(1)), doc_atx(m.group(2)))); i += 1; continue
+            if _D_HR.match(l): out.append("<hr>"); i += 1; continue
+            if _D_QUOTE.match(l):
+                body = []
+                while i < n and lines[i].strip():
+                    q = _D_QUOTE.match(lines[i]); body.append(q.group(1) if q else lines[i]); i += 1
+                out.append("<blockquote>%s</blockquote>" % self.blocks(body, depth + 1)); continue
+            if "|" in l and i + 1 < n and "|" in lines[i + 1] and "-" in lines[i + 1] and _D_TSEP.match(lines[i + 1]):
+                i = self.table(lines, i, out); continue
+            m = _D_LIST.match(l)
+            if m and m.group(3): i = self.lst(lines, i, out, depth); continue
+            body = [l.strip()]; i += 1
+            while i < n and lines[i].strip() and not self.starts(lines[i]):
+                s = _D_SETEXT.match(lines[i])
+                if s: break
+                body.append(lines[i].strip()); i += 1
+            if i < n and _D_SETEXT.match(lines[i]) and lines[i].strip():
+                out.append(self.heading(1 if lines[i].strip()[0] == "=" else 2, " ".join(body))); i += 1; continue
+            out.append("<p>%s</p>" % self.para(body))
+        return "\n".join(out)
+    def para(self, body):
+        parts = []
+        for k, line in enumerate(body):
+            hard = k < len(body) - 1 and (line.endswith("\\") or body[k].endswith("  "))
+            parts.append(self.inline(line[:-1] if hard and line.endswith("\\") else line) + ("<br>" if hard else ""))
+        return "\n".join(parts)
+    def cells(self, l):
+        l = l.strip()
+        if l.startswith("|"): l = l[1:]
+        if l.endswith("|") and not l.endswith("\\|"): l = l[:-1]
+        return [c.strip().replace("\\|", "|") for c in _dre.split(r"(?<!\\)\|", l)][:64]
+    def table(self, lines, i, out):
+        head = self.cells(lines[i]); al = []
+        for c in self.cells(lines[i + 1]):
+            al.append(' class="al-c"' if c.startswith(":") and c.endswith(":") else ' class="al-r"' if c.endswith(":") else ' class="al-l"' if c.startswith(":") else "")
+        al = (al + [""] * len(head))[:len(head)]
+        rows = []; i += 2
+        while i < len(lines) and lines[i].strip() and "|" in lines[i] and len(rows) < 5000:
+            r = self.cells(lines[i]); rows.append((r + [""] * len(head))[:len(head)]); i += 1
+        h = "".join("<th%s>%s</th>" % (a, self.inline(c)) for a, c in zip(al, head))
+        b = "".join("<tr>%s</tr>" % "".join("<td%s>%s</td>" % (a, self.inline(c)) for a, c in zip(al, r)) for r in rows)
+        out.append("<table><thead><tr>%s</tr></thead><tbody>%s</tbody></table>" % (h, b))
+        return i
+    def lst(self, lines, i, out, depth):
+        n = len(lines); m = _D_LIST.match(lines[i]); base = len(m.group(1)); ordered = m.group(2)[0].isdigit()
+        start = int(m.group(2)[:-1]) if ordered else 1; items = []; loose = False
+        while i < n:
+            m = _D_LIST.match(lines[i])
+            if not m or not m.group(3) or abs(len(m.group(1)) - base) > 1 or m.group(2)[0].isdigit() != ordered: break
+            w = len(m.group(1)) + len(m.group(2)) + 1; body = [m.group(3)]; i += 1
+            while i < n:
+                l = lines[i]
+                if not l.strip():
+                    j = i
+                    while j < n and not lines[j].strip(): j += 1
+                    if j < n and _d_ind(lines[j]) > base + 1 and not (_D_LIST.match(lines[j]) and abs(_d_ind(lines[j]) - base) <= 1):
+                        body.extend([""] * (j - i)); i = j; loose = True; continue
+                    break
+                if _d_ind(l) > base + 1: body.append(l[min(w, _d_ind(l)):]); i += 1; continue
+                if self.starts(l): break
+                body.append(l.strip()); i += 1
+            items.append(body)
+            j = i
+            while j < n and not lines[j].strip(): j += 1
+            if j > i and j < n:
+                m2 = _D_LIST.match(lines[j])
+                if m2 and m2.group(3) and abs(len(m2.group(1)) - base) <= 1 and m2.group(2)[0].isdigit() == ordered: loose = True; i = j
+        html = []
+        for body in items[:5000]:
+            box = ""; t = _dre.match(r"\[([ xX])\][ \t]+(.*)$", body[0])
+            if t: box = "☑ " if t.group(1) in "xX" else "☐ "; body = [t.group(2)] + body[1:]
+            inner = self.blocks(body, depth + 1)
+            if not loose and inner.startswith("<p>"):
+                e = inner.index("</p>"); inner = inner[3:e] + inner[e + 4:]
+            html.append("<li>%s%s</li>" % (box, inner))
+        tag = "ol" if ordered else "ul"
+        out.append("<%s>%s</%s>" % (tag, "".join(html), tag) if not (ordered and start != 1) else "<ol>%s</ol>" % "".join(html))
+        return i
+    def keep_(self, h): self.keep.append(h); return "\x02%d\x03" % (len(self.keep) - 1)
+    def link(self, label, url):
+        url = url.strip()
+        if url.startswith("<") and url.endswith(">"): url = url[1:-1].strip()
+        if _D_EXT.fullmatch(url) and not _dre.search(r"[<>\"'`\\]", url):
+            return '<a href="%s" target="_blank" rel="noopener noreferrer">%s</a>' % (_d_esc(url), label)
+        if url.startswith("#"):
+            s = doc_slug(_durl.unquote(url[1:]))
+            if s: return '<a href="#doc-%s" data-anchor="doc-%s">%s</a>' % (_d_esc(s), _d_esc(s), label)
+        m = _dre.fullmatch(r"([^#?:\\]{1,1000})(?:#([^#]{0,300}))?", url)
+        if m and not url.startswith("/") and self.here:
+            target = _dos.path.normpath(_dos.path.join(self.here, _durl.unquote(m.group(1))))
+            i = self.ids.get(target)
+            if i:
+                s = doc_slug(_durl.unquote(m.group(2) or ""))
+                return '<a href="#doc=%s" data-doc="%s"%s>%s</a>' % (i, i, ' data-anchor="doc-%s"' % _d_esc(s) if s else "", label)
+        return '<span class="nolink">%s</span>' % label
+    def inline(self, t, links=True):
+        if len(t) > DOC_TEXT: return _d_esc(t)
+        if links: t = t.replace("\x02", "").replace("\x03", "")   # a link's label (links=False) holds this call's own marks
+        t = _D_ESC.sub(lambda m: self.keep_(_d_esc(m.group(1))), t)
+        t = _D_CODE.sub(lambda m: self.keep_("<code>%s</code>" % _d_esc(m.group(2).strip(" ") if m.group(2).strip(" ") else m.group(2))), t)
+        if links:
+            t = _D_AUTO.sub(lambda m: self.keep_(self.link(_d_esc(m.group(1)), m.group(1))), t)
+            t = _D_IMG.sub(lambda m: self.keep_(_d_esc(m.group(1))), t)
+            t = _D_LINK.sub(lambda m: self.keep_(self.link(self.inline(m.group(1), False), m.group(2))), t)
+        t = _d_esc(t)
+        for rx, tag in _D_EMPH: t = rx.sub(lambda m: "<%s>%s</%s>" % (tag, m.group(1), tag), t)
+        for _ in range(8):
+            if "\x02" not in t: break
+            t = _dre.sub(r"\x02([0-9]+)\x03", lambda m: self.keep[int(m.group(1))], t)
+        return t
+PY
+}
+# docs_cli: ade docs' own steps, after docs_lib: rows [<folder>] (real, id, the line shown; 3 = no doc in that folder),
+# find <path|id> (id, real; 1 = not a doc), follow <real> (the doc, shown again when it is saved; 10 = w was typed)
+docs_cli() { cat <<'PY'
+import os, re, select, sys, time
+def say(msg): sys.stderr.write("ade: %s\n" % msg)
+def age(t):
+    m = int(max(0, time.time() - t) // 60)
+    if m < 1: return "now"
+    if m < 60: return "%dm" % m
+    if m < 24 * 60: return "%dh" % (m // 60)
+    return "%dd" % (m // (24 * 60))
+def rows(folder):
+    docs = doc_list(doc_roots())
+    if folder: docs = [d for d in docs if d["folder"] == folder or d["folder"].split("/")[-1] == folder]
+    if not docs: return 3 if folder else 0
+    for d in docs:
+        line = "%-4s %-12s %-16s %-40s %s" % (age(d["mtime"]), d["kind"], d["folder"], d["title"][:60], d["rel"])
+        print("%s\t%s\t%s" % (d["real"], d["id"], line.replace("\t", " ")))
+    return 0
+def find(arg):
+    docs = doc_list(doc_roots())
+    if re.fullmatch(r"[0-9a-f]{16}", arg): hit = [d for d in docs if d["id"] == arg]
+    else:
+        p = os.path.abspath(arg); real = os.path.join(os.path.realpath(os.path.dirname(p)), os.path.basename(p))
+        hit = [d for d in docs if d["real"] == real]
+    if not hit:
+        say("not a doc: %s (ade docs lists them: .md files under _bmad-output/ and docs/, and each folder's PLAN.md and STATE.md)" % doc_plain(arg)[:300]); return 1
+    print("%s\t%s" % (hit[0]["id"], hit[0]["real"])); return 0
+FENCE = re.compile(r" {0,3}(`{3,}|~{3,})[ \t]*([^`\s]*)")
+def lines_of(real, roots):
+    """the doc's lines as the terminal shows them: no control characters; a diagram's code, then the note"""
+    got = doc_read(real, roots)
+    if not got: return None
+    b, st = got; out = []; fence = None
+    for l in b.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        l = "".join(c for c in l.replace("\t", "    ") if c.isprintable())
+        out.append(l)
+        if fence is None:
+            m = FENCE.match(l)
+            if m: fence = (m.group(1), m.group(2).lower() == "mermaid")
+        elif l.strip() and set(l.strip()) == {fence[0][0]} and len(l.strip()) >= len(fence[0]):
+            if fence[1]: out.append("diagram: w draws it in the browser")
+            fence = None
+    if out and out[-1] == "": out.pop()
+    return out, (st.st_mtime_ns, st.st_size, st.st_ino)
+def follow(real):
+    import termios, tty
+    roots = doc_roots()
+    if not (os.isatty(0) and os.isatty(1)): say("ade docs --follow shows a doc at a terminal"); return 2
+    got = lines_of(real, roots)
+    if not got: say("not a doc: it can no longer be read"); return 1
+    lines, sig = got; title = doc_title(real)
+    trace = os.environ.get("ADE_TEST_DOCS_TRACE", "") if os.environ.get("ADE_TEST_SUITE") == "1" else ""
+    def tr(s):
+        if trace:
+            with open(trace, "a") as f: f.write(s + "\n")
+    def out(s):
+        os.write(1, s.encode("utf-8", "replace"))
+    stamp = "updated " + time.strftime("%H:%M:%S"); top = 0; rc = 0; due = time.time() + 1.0
+    old = termios.tcgetattr(0); tty.setcbreak(0); out("\x1b[?1049h\x1b[?25l")
+    try:
+        while True:
+            try: cols, rows_ = os.get_terminal_size(1)
+            except OSError: cols, rows_ = 80, 24
+            h = max(1, rows_ - 1); top = max(0, min(top, max(0, len(lines) - h)))
+            screen = ["\x1b[H"] + [l[:cols] + "\x1b[K\r\n" for l in lines[top:top + h]] + ["\x1b[K\r\n"] * (h - len(lines[top:top + h]))
+            bar = " %s  ·  %s  ·  %d/%d  ·  j k space b g G  ·  w browser  ·  q quit" % (title, stamp, min(len(lines), top + h), len(lines))
+            out("".join(screen) + "\x1b[7m" + bar[:cols].ljust(cols) + "\x1b[0m")
+            if select.select([0], [], [], max(0, due - time.time()))[0]:
+                b = os.read(0, 64)
+                if not b: break
+                k = b.decode("latin-1")
+                if k in ("\x1b[A", "\x1bOA"): top -= 1
+                elif k in ("\x1b[B", "\x1bOB"): top += 1
+                elif k == "\x1b[5~": top -= h
+                elif k == "\x1b[6~": top += h
+                else:
+                    for c in k:
+                        if c == "q": return 0
+                        if c == "w": return 10
+                        if c == "j": top += 1
+                        elif c == "k": top -= 1
+                        elif c in " f": top += h
+                        elif c == "b": top -= h
+                        elif c == "g": top = 0
+                        elif c == "G": top = len(lines)
+            now = time.time()
+            if now >= due:   # the file is looked at once a second at most
+                due = now + 1.0; tr("check %.6f" % now)
+                try: st = os.stat(real, follow_symlinks=False); now_sig = (st.st_mtime_ns, st.st_size, st.st_ino)
+                except OSError: now_sig = None
+                if now_sig != sig:
+                    sig = now_sig; got = lines_of(real, roots) if now_sig else None
+                    if got: lines, sig = got; stamp = "updated " + time.strftime("%H:%M:%S"); tr("reload %.6f top=%d" % (now, top))
+                    else: stamp = "it can no longer be read (moved, a link, or over 2 MB); q quits"
+    finally:
+        out("\x1b[?25h\x1b[?1049l"); termios.tcsetattr(0, termios.TCSADRAIN, old)
+    return rc
+mode = sys.argv[1]
+if mode == "rows": sys.exit(rows(sys.argv[2] if len(sys.argv) > 2 else ""))
+if mode == "find": sys.exit(find(sys.argv[2]))
+if mode == "follow": sys.exit(follow(sys.argv[2]))
+sys.exit(2)
+PY
+}
+docs_py() { python3 -I -c "$(docs_lib)
+$(docs_cli)" "$@"; }
+DOCS_HUB=""
+docs_env() {   # the hub and its doc roots, for ade docs' Python
+  command -v python3 > /dev/null 2>&1 || die 1 "ade docs needs python3 (ade setup --tools installs it)"
+  DOCS_HUB="$(find_hub)" || exit $?; ADE_DOC_ROOTS="$(docs_roots "$DOCS_HUB")"; export ADE_DOC_ROOTS
+}
+DOC_ID=""; DOC_REAL=""
+docs_find() { local r; r="$(docs_py find "$1")" || exit 1; DOC_ID="${r%%"$TAB"*}"; DOC_REAL="${r#*"$TAB"}"; }
+docs_view() { ( cmd_view --cwd "$DOCS_HUB" -- "$1" ); }
+docs_follow() {   # <real> <id>: w there opens it in the browser
+  local rc=0; docs_py follow "$1" || rc=$?
+  if [ "$rc" = 10 ]; then docs_web "$2"; return; fi
+  return "$rc"
+}
+cmd_docs() {
+  local rows rc=0 key line n pick act
+  case "${1:-}" in
+    --id) [ $# -eq 2 ] || die 2 "$DOCS_USAGE"; docs_env; docs_find "$2"; printf '%s\n' "$DOC_ID"; return ;;
+    --follow) [ $# -eq 2 ] && [ -n "$2" ] || die 2 "$DOCS_USAGE"; docs_env; docs_find "$2"; docs_follow "$DOC_REAL" "$DOC_ID"; return ;;
+    --web) [ $# -eq 2 ] && [ -n "$2" ] || die 2 "$DOCS_USAGE"; docs_env; docs_find "$2"; docs_web "$DOC_ID"; return ;;
+    -*) die 2 "$DOCS_USAGE" ;;
+  esac
+  [ $# -le 1 ] || die 2 "$DOCS_USAGE"
+  docs_env; rows="$(docs_py rows "${1:-}")" || rc=$?
+  [ "$rc" != 3 ] || die 1 "no docs in $(printf '%s' "$1" | no_ctl) (ade docs lists every folder's)"
+  [ "$rc" = 0 ] || exit 1
+  [ -n "$rows" ] || { echo "ade: no docs yet: .md files under _bmad-output/ and docs/, and each folder's PLAN.md and STATE.md" >&2; return 0; }
+  if [ ! -t 1 ] || [ ! -t 0 ]; then printf '%s\n' "$rows" | cut -f3; return 0; fi
+  if command -v fzf > /dev/null 2>&1; then   # Enter views it, ctrl-f follows it, ctrl-o opens it in the browser
+    pick="$(printf '%s\n' "$rows" | fzf --delimiter "$TAB" --with-nth 3 --no-multi --expect ctrl-f,ctrl-o --prompt "docs> " \
+      --header "Enter view · ctrl-f follow (shown again on save) · ctrl-o open in the browser")" || return 0
+    key="$(printf '%s\n' "$pick" | sed -n 1p)"; line="$(printf '%s\n' "$pick" | sed -n 2p)"
+    [ -n "$line" ] || return 0
+    case "$key" in ctrl-f) act=follow ;; ctrl-o) act=web ;; *) act=view ;; esac
+  else
+    n=0; while IFS= read -r line; do n=$((n + 1)); printf '%3d) %s\n' "$n" "${line##*"$TAB"}"; done <<< "$rows"
+    while :; do
+      printf 'a number views it; nF follows it, nw opens it in the browser (Enter: none): '
+      IFS= read -r pick || return 0
+      [ -n "$pick" ] || return 0
+      case "$pick" in *[Ff]) act=follow; pick="${pick%?}" ;; *[Ww]) act=web; pick="${pick%?}" ;; *) act=view ;; esac
+      if matches "$pick" '^[0-9]{1,5}$' && [ "$pick" -ge 1 ] && [ "$pick" -le "$n" ]; then line="$(printf '%s\n' "$rows" | sed -n "${pick}p")"; break; fi
+      echo "not one of the numbers"
+    done
+  fi
+  DOC_REAL="${line%%"$TAB"*}"; line="${line#*"$TAB"}"; DOC_ID="${line%%"$TAB"*}"
+  case "$act" in follow) docs_follow "$DOC_REAL" "$DOC_ID" ;; web) docs_web "$DOC_ID" ;; *) docs_view "$DOC_REAL" ;; esac
+}
+# docs_browser: the command that opens a file in the browser, as ade web's own: never over SSH, never on Linux without
+# a display
+docs_browser() {
+  [ -z "${SSH_CONNECTION:-}${SSH_TTY:-}" ] || return 1
+  case "$OSTYPE" in darwin*) command -v open > /dev/null 2>&1 && echo open ;; linux*) [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && command -v xdg-open > /dev/null 2>&1 && echo xdg-open ;; *) return 1 ;; esac
+}
+# docs_web <id>: the doc in ade web's Docs page. ade web is started when it is not running (this machine only,
+# 127.0.0.1, its code on this terminal). The link is the page's own plus the doc's id; it reaches the browser through a
+# file only this user can read, never a command line (over SSH, or with no browser, it is printed instead)
+docs_web() {
+  local id="$1" url="" pid tmp i=0 exe started=0
+  if ! url="$(web_link)"; then
+    tmp="$(mk_tmp)" || die 1 "could not make a temp folder"
+    cmd_web --no-open < /dev/null > /dev/null 2> "$tmp/err" & pid=$!
+    until url="$(web_link)"; do
+      i=$((i + 1))
+      if ! kill -0 "$pid" 2> /dev/null || [ "$i" -ge 150 ]; then
+        echo "ade: ade web did not start: $(tail -1 "$tmp/err" 2> /dev/null | no_ctl)" >&2; rm_tmp "$tmp"; exit 1
+      fi
+      sleep 0.1
+    done
+    rm_tmp "$tmp"; started=1
+    echo "ade docs: started ade web on this machine only (127.0.0.1); the code for the page is on this terminal (ade web --stop stops it)"
+  fi
+  url="$url&doc=$id"
+  if exe="$(docs_browser)" && tmp="$(mk_tmp)"; then
+    if ( umask 077; printf '<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><meta http-equiv="refresh" content="0;url=%s"><title>ade docs</title><a href="%s">open the doc</a>\n' "${url//&/&amp;}" "${url//&/&amp;}" > "$tmp/open.html" ) \
+      && "$exe" "$tmp/open.html" < /dev/null > /dev/null 2>&1; then
+      ( sleep 60; rm_tmp "$tmp" ) < /dev/null > /dev/null 2>&1 &
+      [ "$started" = 1 ] || echo "ade docs: the doc is open in your browser (the page asks for the code shown in ade web's terminal)"
+      return 0
+    fi
+    rm_tmp "$tmp"
+  fi
+  printf '%s\n' "$url"
+  echo "ade docs: open that address in a browser on this machine; it carries the page's key, so keep it to yourself" >&2
+}
+# ade setup --diagrams: the diagram drawer (mermaid.min.js, the one pinned above) for ade web's Docs page, under
+# ~/.local/share/ade; kept only when its sha256 is the pinned one. ade web serves it from there, behind its gate.
+MERMAID_FILE="$HOME/.local/share/ade/mermaid-$MERMAID_VERSION.min.js"
+# mermaid_sha: the sha256 the drawer must have; the test switch ADE_TEST_MERMAID_SHA256 counts only in the test suite
+mermaid_sha() { if file_urls_ok && matches "${ADE_TEST_MERMAID_SHA256:-}" '^[0-9a-f]{64}$'; then printf '%s' "$ADE_TEST_MERMAID_SHA256"; else printf '%s' "$MERMAID_SHA256"; fi; }
+mermaid_present() { [ -f "$MERMAID_FILE" ] && [ ! -L "$MERMAID_FILE" ] && [ "$(sha256_of "$MERMAID_FILE" 2> /dev/null)" = "$(mermaid_sha)" ]; }
+setup_diagrams() {
+  local tmp url="$MERMAID_URL" dir="${MERMAID_FILE%/*}"
+  tty_ready "setup --diagrams"
+  if mermaid_present; then echo "ade: the diagram drawer (mermaid $MERMAID_VERSION) is already there: ~/.local/share/ade/${MERMAID_FILE##*/}"; return 0; fi
+  echo "ade web's Docs page draws \`\`\`mermaid diagrams with mermaid $MERMAID_VERSION, kept on this machine."
+  echo "ade downloads it once from $MERMAID_URL"
+  echo "and keeps it only when its sha256 is the one pinned in ade."
+  tty_confirm "Download it now?" || { echo "nothing was downloaded"; return 0; }
+  file_urls_ok && [ -n "${ADE_MERMAID_URL:-}" ] && url="$ADE_MERMAID_URL"
+  tmp="$(mk_tmp)" || die 1 "could not make a temp folder"
+  if ! bun_get "$url" "$tmp/mermaid.js"; then
+    echo "ade: the download did not finish: $(tail -1 "$tmp/mermaid.js.err" 2> /dev/null | no_ctl); nothing was kept" >&2; rm_tmp "$tmp"; exit 1
+  fi
+  if [ "$(sha256_of "$tmp/mermaid.js" 2> /dev/null)" != "$(mermaid_sha)" ]; then
+    rm_tmp "$tmp"; die 1 "mermaid.min.js was downloaded, but its sha256 does not match the pinned one; nothing was kept"
+  fi
+  if ! { mkdir -p "$dir" && cp "$tmp/mermaid.js" "$MERMAID_FILE.ade-tmp" && chmod 644 "$MERMAID_FILE.ade-tmp" && mv -f "$MERMAID_FILE.ade-tmp" "$MERMAID_FILE"; } 2> /dev/null; then
+    rm -f "$MERMAID_FILE.ade-tmp"; rm_tmp "$tmp"; die 1 "could not write $MERMAID_FILE; nothing was kept"
+  fi
+  rm_tmp "$tmp"
+  echo "diagram drawer: mermaid $MERMAID_VERSION in ~/.local/share/ade/ (ade web's Docs page draws diagrams with it)"
+}
+
 # ade web (story A19, docs/notes/A19-web-view.md): a read-only page of the hub's agents and logs, served by python3's
 # standard library on 127.0.0.1, or with --tailnet on this machine's Tailscale address only. The address carries a
 # random token; ~/.config/ade/web (0600: the server's pid, then the address) is there while it runs.
@@ -5078,6 +5629,8 @@ cmd_web() {
   if [ "$mode" = tailnet ]; then t="$(web_tailnet)" || exit $?; bind="${t%% *}"; name="${t#* }"; open=0; fi
   ( umask 077; mkdir -p "$CONF_DIR" ) && chmod 700 "$CONF_DIR" || die 1 "cannot create $CONF_DIR"
   HUB="$hub"; export HUB   # as run_hub: the hub's bin/sessions reads it
+  # the Docs page (U6): the doc roots, and the diagram drawer with the sha256 it must have
+  ADE_DOC_ROOTS="$(docs_roots "$hub")"; ADE_MERMAID_FILE="$MERMAID_FILE"; ADE_MERMAID_SHA="$(mermaid_sha)"; export ADE_DOC_ROOTS ADE_MERMAID_FILE ADE_MERMAID_SHA
   for k in $THEME_KEYS; do export "ADE_THEME_$k=$(theme_get "$k")"; done   # the page uses ade ui's colours
   web_py "$hub" "$(hub_state "$hub")" "$(hub_label "$hub")" "$mode" "$bind" "$port" "$fixed" "$name" "$WEB_LINK" "$open"
 }
@@ -5088,7 +5641,7 @@ cmd_web() {
 # through hide(): the hub's bin/chat logs rule (bin/agent.py ESCAPES and HIDE), then ade's additions (MORE).
 web_py() {
   local src; IFS= read -r -d '' src <<'PY' || true
-import calendar, errno, functools, hmac, http.server, ipaddress, json, os, re, secrets, shutil, signal, socket, socketserver, stat, subprocess, sys, tempfile, threading, time, urllib.parse
+import calendar, errno, functools, hashlib, hmac, http.server, ipaddress, json, os, re, secrets, shutil, signal, socket, socketserver, stat, subprocess, sys, tempfile, threading, time, urllib.parse
 HUB, STATE, LABEL, MODE, BIND, PORT, FIXED, NAME, LINK, OPEN = sys.argv[1:11]
 HUB = os.path.realpath(HUB); STATE = os.path.realpath(STATE); PORT = int(PORT); FIXED = FIXED == "1"; OPEN = OPEN == "1" and MODE == "local"
 CAP = 256 * 1024   # at most this much of a file's end is read
@@ -5778,6 +6331,41 @@ body[data-gate=code] #app, body[data-gate=code] #help { display: none; }
   .s-busy .spin { display: none; } .s-busy .dot { display: inline-block; }
   #flt:focus-within .cur, #gl .cur { opacity: 1; }
 }
+/* story U6: the Docs page, over the dashboard: the list of docs beside the doc as it is written */
+#docs { position: fixed; inset: 0; z-index: 5; display: grid; grid-template-columns: minmax(24ch, 40ch) minmax(0, 1fr); grid-template-rows: minmax(0, 1fr);
+  gap: 0 2ch; padding: 10px 1ch; background: var(--bg); }
+#docs[hidden] { display: none; }
+#docs .pt .n { color: var(--dim); }
+#dlist, #dhtml { flex: 1; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.drow { display: flex; gap: 1ch; padding: 0 1ch; cursor: pointer; white-space: nowrap; }
+.drow:hover { background: var(--sel); }
+.drow.on { background: var(--sel); box-shadow: inset 2px 0 0 var(--accent); }
+.drow .dt { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--fg); }
+.drow .dk, .drow .df { color: var(--dim); }
+#dstat { color: var(--dim); font-weight: normal; }
+#dhtml { padding: 0 2ch 40px; color: var(--fg); line-height: 1.5; overflow-wrap: anywhere; }
+#dhtml::after { content: ""; display: block; height: 100vh; }   /* a heading near the end can still reach the top */
+#dhtml h1, #dhtml h2, #dhtml h3, #dhtml h4, #dhtml h5, #dhtml h6 { color: var(--accent); font-size: 1em; margin: 1.2em 0 0.4em; }
+#dhtml h1::before { content: "# "; } #dhtml h2::before { content: "## "; } #dhtml h3::before { content: "### "; }
+#dhtml p, #dhtml ul, #dhtml ol, #dhtml table, #dhtml blockquote, #dhtml pre { margin: 0 0 0.8em; }
+#dhtml ul, #dhtml ol { padding-left: 3ch; }
+#dhtml pre { white-space: pre; overflow: auto; border-left: 2px solid var(--line); padding: 2px 1ch; overflow-wrap: normal; }
+#dhtml code { color: var(--accent); }
+#dhtml pre code { color: var(--fg); }
+#dhtml blockquote { border-left: 2px solid var(--dim); padding-left: 2ch; color: var(--dim); margin-left: 0; }
+#dhtml table { border-collapse: collapse; }
+#dhtml th, #dhtml td { border: 1px solid var(--line); padding: 0 1ch; vertical-align: top; }
+#dhtml .al-l { text-align: left; } #dhtml .al-r { text-align: right; } #dhtml .al-c { text-align: center; }
+#dhtml hr { border: 0; border-top: 1px solid var(--line); }
+#dhtml a { color: var(--accent); }
+#dhtml .nolink { color: var(--dim); text-decoration: underline dotted; }
+#dhtml .note, #dhtml .mmd .err { color: var(--dim); }
+#dhtml .mmd svg { max-width: 100%; height: auto; background: #fff; }
+@media (max-width: 720px) {
+  #docs { display: flex; flex-direction: column; }
+  #docs #dside { flex: 0 0 30vh; }
+  #docs #dview { flex: 1; }
+}
 </style>
 </head>
 <body data-gate="__GATE__">
@@ -5800,13 +6388,23 @@ body[data-gate=code] #app, body[data-gate=code] #help { display: none; }
 <div class="body" id="feed" role="log"><div class="say">· waiting for the first events</div></div>
 </section>
 </main>
-<footer id="keys"><span><b>j k</b> move</span><span><b>⏎</b> detail</span><span><b>⇥</b> pane</span><span><b>/</b> filter</span><span><b>e</b> events</span><span><b>t</b> theme</span><span><b>?</b> help</span><span><b>q</b> lock</span><span>read-only · keys hidden</span></footer>
+<div id="docs" hidden role="dialog" aria-label="docs">
+<section id="dside" class="pane" aria-label="the docs"><h2 class="pt">docs <span class="n" id="ndocs"></span></h2>
+<div class="body" id="dlist" role="listbox" aria-label="the docs"><div class="say">· reading the docs…</div></div>
+</section>
+<section id="dview" class="pane on" aria-label="the doc"><h2 class="pt"><span id="dtitle">pick a doc</span> <span id="dstat"></span></h2>
+<div class="body" id="dhtml" tabindex="0"></div>
+</section>
+</div>
+<footer id="keys"><span><b>j k</b> move</span><span><b>⏎</b> detail</span><span><b>⇥</b> pane</span><span><b>/</b> filter</span><span><b>e</b> events</span><span><b>d</b> docs</span><span><b>t</b> theme</span><span><b>?</b> help</span><span><b>q</b> lock</span><span>read-only · keys hidden</span></footer>
 </div>
 <div id="help" hidden role="dialog" aria-label="keys"><div class="box"><h2 class="pt">keys</h2><pre>j k  ↑ ↓   move in a pane
 ⏎          show the agent's detail
 ⇥  ⇧⇥      next or previous pane
 /          filter the agents (Esc clears)
 e          jump to the events
+d          the docs: plans and specs as written
+           (live; q or Esc closes them)
 g G        top or bottom of a pane
 t          light or dark
 ?          this help
@@ -6060,6 +6658,7 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
     S.agents = []; S.alerts = []; S.note = ""; S.picked = null; S.chose = false; S.feed = []; S.cursor = ""; S.syncs = [];
     S.feedKey = ""; S.logFor = null; S.logKey = "";
     list(); $("dbody").textContent = ""; $("feed").textContent = ""; put($("hub"), "locked"); put($("counts"), "");
+    docsShow(false); D.id = ""; D.ver = ""; D.list = []; $("dhtml").textContent = ""; put($("dtitle"), "pick a doc"); put($("dstat"), "");
     help(false); said(why, false); prompt();
   }
   function lock() {
@@ -6074,10 +6673,174 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
   function start() {
     if (location.search) { history.replaceState(null, "", "/"); }
     focusPane(0);
+    if (D.want) { var w = D.want; D.want = ""; docsShow(true); docOpen(w, ""); }
     if (G.started) { tick(); return; }
     G.started = true;
     document.addEventListener("visibilitychange", function () { if (!document.hidden) { tick(); } });
     clock(); tick(); setInterval(tick, 3000); setInterval(clock, 1000);
+  }
+  // story U6: the Docs page. A doc is asked for by its id only; its html is the server's renderer's, and it is built
+  // again here from an allow-list of tags and attributes (never parsed into this page as markup). Shown again 1 s
+  // after a save at most, at the same place. Diagrams: the drawer ade web serves, run with this page's nonce.
+  var NONCE = (document.currentScript && document.currentScript.nonce) || "";
+  var D = { on: false, list: [], id: "", ver: "", anchor: "", timer: null, want: "" };
+  try { D.want = new URLSearchParams(location.search).get("doc") || ""; } catch (e) { D.want = ""; }
+  if (!/^[0-9a-f]{16}$/.test(D.want)) { D.want = ""; }
+  var DTAGS = { H1: 1, H2: 1, H3: 1, H4: 1, H5: 1, H6: 1, P: 1, UL: 1, OL: 1, LI: 1, TABLE: 1, THEAD: 1, TBODY: 1, TR: 1, TH: 1, TD: 1, PRE: 1,
+                CODE: 1, BLOCKQUOTE: 1, EM: 1, STRONG: 1, DEL: 1, A: 1, HR: 1, BR: 1, DIV: 1, SPAN: 1 };
+  var DCLASS = /^(al-[lrc]|mmd|note|nolink|lang-[a-z0-9+#-]{1,20})$/;
+  function hms(t) { function p(n) { return (n < 10 ? "0" : "") + n; } return p(t.getHours()) + ":" + p(t.getMinutes()) + ":" + p(t.getSeconds()); }
+  function rebuild(from, to, depth) {
+    [].forEach.call(from.childNodes, function (n) {
+      if (n.nodeType === 3) { to.appendChild(document.createTextNode(n.nodeValue)); return; }
+      if (n.nodeType !== 1 || depth > 40) { return; }
+      if (!DTAGS[n.nodeName]) { to.appendChild(document.createTextNode(n.textContent)); return; }
+      var e = document.createElement(n.nodeName.toLowerCase()), v;
+      v = n.getAttribute("id"); if (v && /^doc-[A-Za-z0-9_-]{1,100}$/.test(v)) { e.id = v; }
+      v = n.getAttribute("class"); if (v && DCLASS.test(v)) { e.className = v; }
+      if (n.nodeName === "A") {
+        var h = n.getAttribute("href") || "", d = n.getAttribute("data-doc") || "", an = n.getAttribute("data-anchor") || "";
+        if (/^[0-9a-f]{16}$/.test(d) && h === "#doc=" + d) { e.setAttribute("href", h); e.setAttribute("data-doc", d); }
+        else if (/^https?:\\x2f\\x2f[!-~]+$/i.test(h) && !/[<>"'`\\\\]/.test(h)) { e.setAttribute("href", h); e.target = "_blank"; e.rel = "noopener noreferrer"; }
+        else if (/^#doc-[A-Za-z0-9_-]{1,100}$/.test(h)) { e.setAttribute("href", h); }
+        if (/^doc-[A-Za-z0-9_-]{1,100}$/.test(an)) { e.setAttribute("data-anchor", an); }
+      }
+      rebuild(n, e, depth + 1); to.appendChild(e);
+    });
+    return to;
+  }
+  function docsList() {
+    ask("/api/docs", function (d) { if (d.gone) { return; } D.list = d.docs || []; drawDocs(); });
+  }
+  function drawDocs() {
+    var box = $("dlist"); box.textContent = "";
+    if (!D.list.length) { box.appendChild(el("div", "say", "· no docs yet: .md files under _bmad-output/ and docs/, and each folder's PLAN.md and STATE.md")); }
+    D.list.forEach(function (x) {
+      var r = el("div", "drow" + (x.id === D.id ? " on" : "")); r.setAttribute("role", "option"); r.title = x.folder + " · " + x.rel;
+      r.appendChild(el("span", "dt", x.title)); r.appendChild(el("span", "dk", x.kind)); r.appendChild(el("span", "df", x.folder));
+      r.addEventListener("click", function () { docOpen(x.id, ""); });
+      box.appendChild(r);
+    });
+    put($("ndocs"), "" + D.list.length);
+  }
+  function docsShow(on) {
+    D.on = on; $("docs").hidden = !on;
+    if (on) { docsList(); if (!D.timer) { D.timer = setInterval(docsTick, 1000); } $("dhtml").focus(); return; }
+    if (D.timer) { clearInterval(D.timer); D.timer = null; }
+    if (document.body.dataset.gate === "open") { $(PANES[S.pane]).focus(); }
+  }
+  function docOpen(id, anchor) { D.id = id; D.ver = ""; D.anchor = anchor || ""; docGet(true); drawDocs(); }
+  function docsTick() { if (D.on && D.id && !document.hidden) { docGet(false); } if (D.on && !document.hidden && Date.now() % 10000 < 1000) { docsList(); } }
+  function jump(id) {
+    var h = document.getElementById(id), b = $("dhtml");
+    if (h && b.contains(h)) { b.scrollTop += h.getBoundingClientRect().top - b.getBoundingClientRect().top - 4; }
+  }
+  function docGet(fresh) {
+    var id = D.id, since = fresh ? "" : D.ver;
+    ask("/api/doc?id=" + id + (since ? "&since=" + encodeURIComponent(since) : ""), function (d) {
+      if (id !== D.id || !D.on) { return; }
+      if (d.gone) { put($("dstat"), "· it can no longer be read (moved, a link, or over 2 MB)"); return; }
+      if (d.same || (!fresh && d.ver === D.ver)) { return; }
+      var box = $("dhtml"), top = fresh ? 0 : box.scrollTop, made = document.createDocumentFragment();
+      rebuild(new DOMParser().parseFromString("<!doctype html><body>" + (d.html || ""), "text/html").body, made, 0);
+      D.ver = d.ver; put($("dtitle"), d.title); box.textContent = ""; box.appendChild(made); box.scrollTop = top;
+      put($("dstat"), "· " + d.folder + " · updated " + hms(new Date()));
+      if (fresh && D.anchor) { jump(D.anchor); D.anchor = ""; }
+      if (d.mermaid) { draw(); }
+    });
+  }
+  $("dhtml").addEventListener("click", function (e) {
+    var a = e.target && e.target.closest ? e.target.closest("a") : null;
+    if (!a || !$("dhtml").contains(a)) { return; }
+    var d = a.getAttribute("data-doc"), an = a.getAttribute("data-anchor");
+    if (d) { e.preventDefault(); docOpen(d, an); } else if (an) { e.preventDefault(); jump(an); }
+  });
+  // diagrams: the drawer once (its code from ade web, run as a script element with this page's nonce), set to strict;
+  // each diagram drawn in order, a failure shows its code and the error
+  var M = { state: "", err: "", wait: [], gen: 0 };
+  function drawer(then) {
+    if (M.state === "ready" || M.state === "failed") { then(); return; }
+    M.wait.push(then); if (M.state === "loading") { return; }
+    M.state = "loading";
+    function done(state, err) { M.state = state; M.err = err || ""; var w = M.wait; M.wait = []; w.forEach(function (f) { f(); }); }
+    fetch("/api/mermaid", { credentials: "same-origin", cache: "no-store", headers: { "X-Ade-Key": KEY } }).then(function (r) {
+      if (!r.ok) { throw new Error("ade web did not give the diagram drawer (" + r.status + ")"); }
+      return r.text();
+    }).then(function (code) {
+      var s = document.createElement("script"); s.nonce = NONCE; s.setAttribute("nonce", NONCE); s.textContent = code; document.head.appendChild(s);
+      if (!window.mermaid || typeof window.mermaid.render !== "function") { throw new Error("the diagram drawer did not load"); }
+      window.mermaid.initialize({ startOnLoad: false, securityLevel: "strict" });
+      done("ready");
+    }).catch(function (err) { done("failed", String((err && err.message) || err)); });
+  }
+  function drawFail(box, err) {
+    if (box.querySelector(".err")) { return; }
+    box.appendChild(el("p", "err", "diagram: not drawn: " + String((err && err.message) || err || "").slice(0, 400)));
+  }
+  // a drawing keeps only the elements mermaid's flowchart and sequence drawings use (an allow-list), no attribute that
+  // runs, loads or navigates, and a <style> only when every rule in it is scoped to this drawing's own id
+  var SVG_OK = {};
+  ("svg g defs title desc style marker symbol path circle ellipse line polyline polygon rect text tspan textpath clippath mask pattern " +
+   "lineargradient radialgradient stop filter fedropshadow fegaussianblur feoffset feflood fecomposite femerge femergenode feblend " +
+   "fecolormatrix foreignobject div span p br b i em strong u s del small sub sup code ul ol li hr").split(" ").forEach(function (t) { SVG_OK[t] = 1; });
+  var ATTR_NO = { action: 1, formaction: 1, target: 1, data: 1, form: 1, ping: 1, background: 1, poster: 1 };
+  var KEYFRAMES = /^@keyframes\\s+(dash|edge-animation-frame)$/;   // mermaid 11's own, scoped by name
+  function cssScoped(css, own) {
+    var t = String(css || ""), depth = 0, pre = "", q = "", kf = false, i, c, sel;
+    if (/\\/\\*|\\\\|<|@im[p]ort|url\\(/i.test(t)) { return false; }
+    function inOwn(x) { x = x.trim(); return x.indexOf(own) === 0 && (x.length === own.length || " .:[>~+".indexOf(x.charAt(own.length)) >= 0); }
+    for (i = 0; i < t.length; i++) {
+      c = t.charAt(i);
+      if (q) { if (c === q) { q = ""; } else if (c === "\\n") { return false; } if (!depth) { pre += c; } continue; }
+      if (c === '"' || c === "'") { q = c; if (!depth) { pre += c; } continue; }
+      if (c === "{") {
+        if (!depth) { sel = pre.trim(); pre = ""; kf = KEYFRAMES.test(sel); if (!kf && !sel.split(",").every(inOwn)) { return false; } }
+        else if (!(kf && depth === 1)) { return false; }
+        depth++;
+      } else if (c === "}") { depth--; if (depth < 0) { return false; } }
+      else if (!depth) { pre += c; }
+    }
+    return depth === 0 && !q && !pre.trim();
+  }
+  function drawSvg(box, svg, id) {
+    // mermaid gives HTML-serialised SVG (<br>, &nbsp;): read as HTML in an inert document, the <svg> its only element
+    var x = new DOMParser().parseFromString(String(svg || ""), "text/html"), root = x.body && x.body.firstElementChild;
+    if (!root || x.body.children.length !== 1 || root.localName !== "svg" || !(root instanceof SVGSVGElement)) { drawFail(box, "the drawing could not be read"); return; }
+    [].slice.call(root.querySelectorAll("*")).forEach(function (n) {
+      if (!SVG_OK[String(n.localName).toLowerCase()] && n.parentNode) { n.parentNode.removeChild(n); }
+    });
+    [].slice.call(root.querySelectorAll("style")).forEach(function (st) { if (!cssScoped(st.textContent, "#" + id)) { st.parentNode.removeChild(st); } });
+    [root].concat([].slice.call(root.querySelectorAll("*"))).forEach(function (n) {
+      [].slice.call(n.attributes).forEach(function (a) {
+        var nm = String(a.localName).toLowerCase(), v = String(a.value).trim();
+        nm = nm.slice(nm.lastIndexOf(":") + 1);   // href in any namespace, or none (z:href, xlink:href)
+        if (nm.indexOf("on") === 0 || nm.indexOf("src") === 0 || ATTR_NO[nm] || (nm === "href" && v.charAt(0) !== "#") || /url\\(\\s*['"]?\\s*[^#'"\\s]/i.test(v) ||
+            (nm === "style" && /\\\\|expression|@im[p]ort|javascript:/i.test(v))) { n.removeAttributeNode(a); }
+      });
+    });
+    var node = document.importNode(root, true);
+    [].forEach.call(node.querySelectorAll("style"), function (st) { st.nonce = NONCE; st.setAttribute("nonce", NONCE); });
+    box.textContent = ""; box.appendChild(node);
+  }
+  function draw() {
+    var gen = ++M.gen, boxes = [].slice.call($("dhtml").querySelectorAll(".mmd"));
+    drawer(function () {
+      if (gen !== M.gen) { return; }
+      if (M.state !== "ready") { boxes.forEach(function (b) { drawFail(b, M.err); }); return; }
+      var chain = Promise.resolve();
+      boxes.forEach(function (b, i) {
+        chain = chain.then(function () {
+          if (gen !== M.gen) { return null; }
+          var id = "ade-mmd-" + gen + "-" + i;
+          return Promise.resolve().then(function () { return window.mermaid.render(id, b.textContent); }).then(function (r) {
+            if (gen === M.gen) { drawSvg(b, r && r.svg, id); }
+          }, function (err) {
+            var left = document.getElementById("d" + id); if (left && !$("dhtml").contains(left)) { left.parentNode.removeChild(left); }
+            if (gen === M.gen) { drawFail(b, err); }
+          });
+        });
+      });
+    });
   }
   // keys and panes
   function focusPane(i, quiet) {
@@ -6105,6 +6868,16 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
       return;
     }
     if (!$("help").hidden) { if (k === "q" || k === "Escape" || k === "?") { e.preventDefault(); help(false); } return; }
+    if (D.on) {   // the Docs page: j k scroll the doc, g G its top and bottom, q Esc d close it
+      var b = $("dhtml"), dh = true;
+      if (k === "j" || k === "ArrowDown") { b.scrollTop += 40; } else if (k === "k" || k === "ArrowUp") { b.scrollTop -= 40; }
+      else if (k === " " || k === "PageDown") { b.scrollTop += b.clientHeight - 40; } else if (k === "PageUp") { b.scrollTop -= b.clientHeight - 40; }
+      else if (k === "g") { b.scrollTop = 0; } else if (k === "G") { b.scrollTop = b.scrollHeight; }
+      else if (k === "q" || k === "Escape" || k === "d") { docsShow(false); }
+      else if (k === "?") { help(true); } else if (k === "t") { theme(); } else { dh = false; }
+      if (dh) { e.preventDefault(); }
+      return;
+    }
     if (inF) {
       if (k === "Escape") { e.preventDefault(); $("fi").value = ""; S.filter = ""; put($("fm"), ""); list(); focusPane(0); }
       else if (k === "Enter" || k === "ArrowDown" || k === "Tab") { e.preventDefault(); focusPane(0); }
@@ -6118,6 +6891,7 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
     else if (k === "Tab") { focusPane((S.pane + (e.shiftKey ? 2 : 1)) % 3); }
     else if (k === "/") { $("fi").focus(); }
     else if (k === "e") { focusPane(2); }
+    else if (k === "d") { docsShow(true); }
     else if (k === "?") { help(true); }
     else if (k === "t") { theme(); }
     else if (k === "q") { lock(); }
@@ -6183,6 +6957,55 @@ def session_new():
         while len(SESSIONS) >= SESSIONS_MAX: del SESSIONS[min(SESSIONS, key=SESSIONS.get)]
         SESSIONS[sid] = now + SESSION
     return sid
+# the Docs page (story U6): docs by their id in the current list only (the list is made again 2 s after the last one),
+# each read checked again as it is read (doc_read); every line through hide_lines() before the renderer escapes it
+DOC_ROOTS = doc_roots(); DLOCK = threading.Lock(); DOCS = {"at": 0.0, "list": [], "ids": {}}
+def docs_now():
+    with DLOCK:
+        if time.monotonic() - DOCS["at"] > 2 or not DOCS["at"]:
+            l = doc_list(DOC_ROOTS); DOCS.update(at=time.monotonic(), list=l, ids={d["id"]: d for d in l})
+        return DOCS["list"], DOCS["ids"]
+def docs_api():
+    return {"docs": [{k: d[k] for k in ("id", "title", "folder", "kind", "rel", "mtime")} for d in docs_now()[0]]}
+MLOCK = threading.Lock(); MERMAID = {"key": None, "body": None}
+def mermaid_js():
+    """the diagram drawer's bytes when the stored file is the one ade setup --diagrams kept (its sha256), else None"""
+    p = os.environ.get("ADE_MERMAID_FILE", ""); want = os.environ.get("ADE_MERMAID_SHA", "")
+    if not p.startswith("/") or not re.fullmatch(r"[0-9a-f]{64}", want): return None
+    try: fd = os.open(p, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
+    except OSError: return None
+    try:
+        st = os.fstat(fd); key = (st.st_dev, st.st_ino, st.st_mtime_ns, st.st_size)
+        if not stat.S_ISREG(st.st_mode) or st.st_size > 16 * 1024 * 1024: return None
+        with MLOCK:
+            if MERMAID["key"] == key: return MERMAID["body"]
+        parts = []; n = 0
+        while n <= 16 * 1024 * 1024:
+            b = os.read(fd, 1 << 20)
+            if not b: break
+            parts.append(b); n += len(b)
+        body = b"".join(parts)
+        if not hmac.compare_digest(hashlib.sha256(body).hexdigest(), want): body = None
+        with MLOCK: MERMAID.update(key=key, body=body)
+        return body
+    except OSError: return None
+    finally: os.close(fd)
+DRAWER_NOTE = "diagram: `ade setup` adds the diagram drawer"
+def doc_api(q):
+    """{id, title, folder, kind, mtime, ver, mermaid} and its html; {same, ver} when since is the version it has; None: 404"""
+    want = q.get("id", []); since = q.get("since", [])
+    if len(want) != 1 or not re.fullmatch(r"[0-9a-f]{16}", want[0]) or len(since) > 1: return None
+    docs, ids = docs_now(); d = ids.get(want[0])
+    got = doc_read(d["real"], DOC_ROOTS) if d else None
+    if not got: return None
+    b, st = got; ver = "%d-%d-%d" % (st.st_mtime_ns, st.st_size, st.st_ino)
+    if since and since[0] == ver: return {"same": True, "ver": ver}, None
+    drawer = mermaid_js() is not None
+    lines = hide_lines(b.decode("utf-8", "replace").replace("\r\n", "\n").replace("\r", "\n").split("\n"))
+    r = DocR(os.path.dirname(d["real"]), {x["real"]: x["id"] for x in docs}, drawer, None if drawer else DRAWER_NOTE)
+    html = r.render("\n".join(lines))
+    return {"id": d["id"], "title": d["title"], "folder": d["folder"], "kind": d["kind"], "mtime": st.st_mtime, "ver": ver,
+            "mermaid": drawer and r.mermaid}, html
 class Handler(http.server.BaseHTTPRequestHandler):
     server_version = "ade-web"; sys_version = ""; timeout = 15
     def log_message(self, *a): pass   # no access log: the first request line carries the token
@@ -6277,6 +7100,19 @@ class Handler(http.server.BaseHTTPRequestHandler):
             return self.send_json(found) if found else self.refuse(404, "not found")
         if path == "/api/journal": return self.send_json(journal())
         if path == "/api/chat": return self.send_json({"lines": tail(os.path.join(STATE, "logs", "chat.log"), STATE, 400)})
+        if path == "/api/docs": return self.send_json(docs_api())
+        if path == "/api/doc":
+            found = doc_api(q)
+            if not found: return self.refuse(404, "not found")
+            # the html is made from lines hide_lines() already hid, every character of the text escaped: it is sent
+            # as made (scrub() would cut it at its line length); every other string is scrubbed as always
+            data, html = found; ver = data.get("ver"); data = scrub(data)
+            if re.fullmatch(r"[0-9]{1,24}-[0-9]{1,20}-[0-9]{1,24}", ver or ""): data["ver"] = ver   # made here from the file's stat: the redactor would hide its digits
+            if html is not None: data["html"] = html
+            return self.reply(200, "application/json; charset=utf-8", json.dumps(data).replace("<", "\\u003c").encode("ascii"))
+        if path == "/api/mermaid":
+            body = mermaid_js()
+            return self.reply(200, "application/javascript; charset=utf-8", body) if body else self.refuse(404, "not found")
         self.refuse(404, "not found")
 
 class Server(http.server.ThreadingHTTPServer):
@@ -6365,6 +7201,8 @@ finally:
     link_off(); opener_off(); server.server_close()
 say("stopped")
 PY
+  src="$(docs_lib)
+$src"
   exec python3 -I -c "$src" "$@"
 }
 
@@ -7373,6 +8211,7 @@ case "$cmd" in
   doctor) tools_report; run_hub doctor "$@" ;;
   files) cmd_files "$@" ;;
   view) cmd_view "$@" ;;
+  docs) cmd_docs "$@" ;;
   ui) cmd_ui "$@" ;;
   dash) cmd_dash "$@" ;;
   web) cmd_web "$@" ;;

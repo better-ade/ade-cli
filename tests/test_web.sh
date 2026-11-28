@@ -195,6 +195,266 @@ def walk(v):
 walk(json.load(open(sys.argv[1])))' "$T/body" > "$T/text"; }
 json() { python3 -c 'import json, sys; d = json.load(open(sys.argv[1])); print(eval(sys.argv[2], {"d": d}))' "$T/body" "$1"; }
 
+# story U6: the Docs page. docs_fixture: the plan (every Markdown block, raw HTML, each kind of link, the secrets), a
+# second doc it links to, a long one, a diagram, and what is never a doc (a link out, a file outside the roots)
+docs_fixture() {
+  fixture; mkdir -p "$H/_bmad-output" "$H/projects/api/docs"
+  { cat <<'MD'
+# The plan
+Some *emphasis*, **strong**, ~~gone~~ and `code <b>` here.
+
+## Steps
+1. first
+2. second
+   - nested
+
+- [x] done box
+- [ ] open box
+
+> a quote with <i>html</i>
+
+| Name | Size |
+|:-----|-----:|
+| a <b> | 1 |
+| c | 22 |
+
+```sh
+echo "<script>alert(1)</script>"
+```
+
+<script>alert(2)</script>
+<img src=x onerror=alert(3)>
+
+[other](../projects/api/docs/other.md#section-two)
+[ext](https://example.com/a?b=1)
+[js](javascript:alert(4))
+[data](data:text/html,x)
+[file](file:///etc/passwd)
+[out](../../outside/out.md)
+[anchor](#steps)
+<https://example.org/auto>
+MD
+    secret_lines doc; } > "$H/_bmad-output/plan.md"
+  printf '# Other doc\n\nback to [the plan](../../../_bmad-output/plan.md)\n\n## Section two\ntext\n' > "$H/projects/api/docs/other.md"
+  # the plan a minute older than the other doc: two quick writes can share an mtime (Linux's coarse clock tick)
+  python3 -c 'import os, sys, time; t = time.time() - 60; os.utime(sys.argv[1], (t, t))' "$H/_bmad-output/plan.md"
+  { echo "# Long doc"; for i in $(seq 1 300); do echo "long line $i"; echo; done; } > "$H/projects/api/docs/long.md"
+  printf '# Flow\n\n```mermaid\ngraph TD; A-->B\n```\n\n```mermaid\nbad diagram here\n```\n' > "$H/projects/api/docs/flow.md"
+  echo "# CANARY-OUT" > "$T/outside/out.md"; ln -s "$T/outside/out.md" "$H/projects/api/docs/linked.md"
+}
+doc_id() { python3 -c 'import json, sys; print([d["id"] for d in json.load(open(sys.argv[1]))["docs"] if d["title"] == sys.argv[2]][0])' "$T/docs.json" "$1"; }
+docs_ids() { api "/api/docs"; assert_eq "$CODE" 200 "/api/docs"; cp "$T/body" "$T/docs.json"; PID="$(doc_id "The plan")"; OID="$(doc_id "Other doc")"; LID="$(doc_id "Long doc")"; MID="$(doc_id "Flow")"; }
+doc_html() { api "/api/doc?id=$1"; assert_eq "$CODE" 200 "/api/doc $1"; json 'd["html"]' > "$T/html"; }
+DOC_TAGS="h1 h2 h3 h4 h5 h6 p ul ol li table thead tbody tr th td pre code blockquote em strong del a hr br div span input"
+only_tags() {   # every tag and attribute in $T/html is one the renderer makes
+  python3 - "$T/html" "$DOC_TAGS" <<'PY' || fail "a tag or attribute the renderer never makes"
+import re, sys
+h = open(sys.argv[1]).read(); ok = set(sys.argv[2].split())
+attrs = {"id", "href", "target", "rel", "class", "data-doc", "data-anchor", "type", "checked", "disabled"}
+for m in re.finditer(r"<(/?)([a-zA-Z0-9-]+)([^>]*)>", h):
+    assert m.group(2) in ok, "tag %s" % m.group(2)
+    for a in re.findall(r'\s([a-zA-Z-]+)=', m.group(3)): assert a in attrs, "attribute %s on %s" % (a, m.group(2))
+PY
+}
+docs_web_page() {   # AC3
+  docs_fixture
+  # lines a backtracking pattern spends minutes on (the list reads the title raw): a 64 KB heading, a long ~ fence run
+  python3 -c 'import sys; open(sys.argv[1], "w").write("# a" + " " * 65000 + "x\n\n" + "~" * 60000 + "`\n\n## Closed ##\n")' "$H/_bmad-output/wide.md"
+  start; login; docs_ids
+  assert_eq "$(json '[(d["title"], d["folder"], d["kind"]) for d in d["docs"] if d["title"] in ("The plan", "Other doc")]')" "[('Other doc', 'projects/api', 'doc'), ('The plan', 'hub', 'plan')]" "the list: title, folder, kind, newest first"
+  assert_not_contains "$T/body" "CANARY" "never a link out"
+  local t0 wid; t0="$(python3 -c 'import time; print(time.time())')"
+  wid="$(python3 -c 'import json, sys; print([d["id"] for d in json.load(open(sys.argv[1]))["docs"] if d["rel"] == "_bmad-output/wide.md"][0])' "$T/docs.json")"
+  doc_html "$wid"; assert_contains "$T/html" '<h2 id="doc-closed">Closed</h2>' "the closing #s go"
+  python3 -c 'import sys, time; d = time.time() - float(sys.argv[1]); assert d < 5, "%.1f s" % d' "$t0" || fail "a doc of long lines is drawn quickly"
+  doc_html "$PID"; grep -qi "^content-security-policy: default-src 'none'; script-src 'nonce-" "$T/head" || fail "the doc keeps the policy"
+  local s; for s in '<h1 id="doc-the-plan">The plan</h1>' '<em>emphasis</em>' '<strong>strong</strong>' '<del>gone</del>' '<code>code &lt;b&gt;</code>' \
+    '<h2 id="doc-steps">Steps</h2>' '<ol>' '<li>first</li>' 'nested' '<blockquote>' 'a quote with &lt;i&gt;html&lt;/i&gt;' '<table>' '<th class="al-l">Name</th>' \
+    '<th class="al-r">Size</th>' '<td class="al-l">a &lt;b&gt;</td>' '<td class="al-r">22</td>' '<pre><code class="lang-sh">echo &quot;&lt;script&gt;alert(1)&lt;/script&gt;&quot;' \
+    '&lt;script&gt;alert(2)&lt;/script&gt;' '&lt;img src=x onerror=alert(3)&gt;' 'done box' 'open box'; do assert_contains "$T/html" "$s" "rendered: $s"; done
+  only_tags
+  if grep -Eq '<(script|img|iframe|style|svg|object|form|link|meta)' "$T/html"; then fail "raw HTML reached the page"; fi
+  for s in $SECRETS; do assert_not_contains "$T/body" "$s" "the doc shows a secret"; assert_not_contains "$T/html" "$s" "the doc shows a secret"; done
+  assert_contains "$T/html" "doc pw before password=&lt;hidden&gt; after" "the redactor ran, the words around kept"
+  browser_ok docs_web_page || { stop; return 0; }
+  DOCID="$PID" in_browser docs_web_page <<'PY'
+url = url + "&doc=" + os.environ["DOCID"]; opened(); settle(2)
+if js("location.search"): errs.append("the link stays in the address bar")
+if js("document.getElementById('docs').hidden") is not False: errs.append("the Docs view is not open")
+if js("document.getElementById('dtitle').textContent") != "The plan": errs.append("the title: %r" % js("document.getElementById('dtitle').textContent"))
+if js("document.querySelectorAll('#dhtml table td').length") != 4: errs.append("the table is not drawn")
+if js("document.querySelectorAll('#dhtml script, #dhtml img, #dhtml iframe, #dhtml style').length") != 0: errs.append("raw HTML became elements")
+if "<script>alert(2)</script>" not in (js("document.getElementById('dhtml').textContent") or ""): errs.append("raw HTML is not shown as text")
+if js("document.querySelectorAll('#dlist .drow').length") < 4: errs.append("the list beside it")
+base = url.split("/?")[0]
+for r in reqs:
+    if not (r.startswith(base + "/") or r == "about:blank" or r.startswith("data:font/")): errs.append("a load from elsewhere: %s" % r[:120])
+shot("docs-page")
+PY
+  stop
+}
+docs_web_links() {   # AC4
+  docs_fixture; start; login; docs_ids; doc_html "$PID"
+  assert_contains "$T/html" "<a href=\"#doc=$OID\" data-doc=\"$OID\" data-anchor=\"doc-section-two\">other</a>" "a doc link opens it in the viewer, at its heading"
+  assert_contains "$T/html" '<a href="https://example.com/a?b=1" target="_blank" rel="noopener noreferrer">ext</a>' "an outside link: a new tab, no opener, no referrer"
+  assert_contains "$T/html" '<a href="https://example.org/auto" target="_blank" rel="noopener noreferrer">https://example.org/auto</a>' "an autolink"
+  assert_contains "$T/html" '<a href="#doc-steps" data-anchor="doc-steps">anchor</a>' "a heading anchor"
+  local s; for s in js data file out; do assert_contains "$T/html" "<span class=\"nolink\">$s</span>" "$s: text, never a link"; done
+  if grep -Eqi 'href="(javascript|data|file|vbscript):' "$T/html"; then fail "a javascript:, data: or file: link"; fi
+  assert_not_contains "$T/html" "outside" "a link out of the roots is not followed"
+  doc_html "$OID"; assert_contains "$T/html" "<a href=\"#doc=$PID\" data-doc=\"$PID\">the plan</a>" "a link back"
+  assert_contains "$T/html" '<h2 id="doc-section-two">Section two</h2>' "the anchor's heading"
+  browser_ok docs_web_links || { stop; return 0; }
+  DOCID="$PID" in_browser docs_web_links <<'PY'
+url = url + "&doc=" + os.environ["DOCID"]; opened(); settle(2)
+a = js("(function(){var a=document.querySelector('#dhtml a[target]');return a?[a.getAttribute('href'),a.target,a.rel]:null})()")
+if a != ["https://example.com/a?b=1", "_blank", "noopener noreferrer"]: errs.append("the outside link: %r" % (a,))
+if js("document.querySelectorAll('#dhtml a[href^=\"javascript\"], #dhtml a[href^=\"data\"], #dhtml a[href^=\"file\"]').length") != 0: errs.append("a bad link became a link")
+js("document.querySelector('#dhtml a[data-doc]').click()"); settle(2)
+if js("document.getElementById('dtitle').textContent") != "Other doc": errs.append("a doc link does not open it: %r" % js("document.getElementById('dtitle').textContent"))
+if not js("(function(){var h=document.getElementById('doc-section-two');var b=document.getElementById('dhtml');return !!h && Math.abs(h.getBoundingClientRect().top-b.getBoundingClientRect().top)<60})()"): errs.append("the link's heading is not in view")
+PY
+  stop
+}
+docs_web_live() {   # AC5
+  docs_fixture; start; login; docs_ids
+  api "/api/doc?id=$LID"; local m; m="$(json 'd["ver"]')"
+  api "/api/doc?id=$LID&since=$m"; assert_eq "$(json 'd.get("same")')" True "an unchanged doc is not sent again"
+  browser_ok docs_web_live || { stop; return 0; }
+  DOCID="$LID" DOCFILE="$H/projects/api/docs/long.md" in_browser docs_web_live <<'PY'
+url = url + "&doc=" + os.environ["DOCID"]; opened(); settle(2)
+js("document.getElementById('dhtml').scrollTop = 600"); settle(0.5)
+top = js("document.getElementById('dhtml').scrollTop")
+with open(os.environ["DOCFILE"], "a") as f: f.write("\nLIVE-MARK at the end\n")
+t0 = time.time(); seen = False
+while time.time() - t0 < 3:
+    settle(0.2)
+    if "LIVE-MARK" in (js("document.getElementById('dhtml').textContent") or ""): seen = True; break
+if not seen: errs.append("the save was not shown within 3 s")
+st = js("document.getElementById('dstat').textContent") or ""
+if not re.search(r"updated \d\d:\d\d:\d\d", st): errs.append("no 'updated hh:mm:ss': %r" % st)
+now = js("document.getElementById('dhtml').scrollTop")
+if top < 500 or abs(now - top) > 2: errs.append("the place is not kept: %r then %r" % (top, now))
+PY
+  stop
+}
+docs_web_access() {   # AC6
+  docs_fixture; start; login; docs_ids; local p
+  for p in "/api/docs" "/api/doc?id=$PID" "/api/mermaid"; do
+    get "$p"; assert_eq "$CODE" 403 "$p without the token header"
+    get "$p?k=$K"; assert_eq "$CODE" 403 "$p with the link's token only"
+    get "$p" -H "X-Ade-Key: $K"; assert_eq "$CODE" 401 "$p without a session"
+    api "$p" -H "Origin: http://evil.example"; assert_eq "$CODE" 403 "$p from another page"
+    api "$p" -H "Sec-Fetch-Site: cross-site"; assert_eq "$CODE" 403 "$p asked cross-site"
+    get "$p" -H "Cookie: $CK"; assert_eq "$CODE" 403 "$p with the cookie alone"
+  done
+  assert_not_contains "$T/body" "The plan" "a refusal carries no doc"
+  for p in "id=0123456789abcdef" "id=../../etc/passwd" "id=$PID&id=$OID" "id=" "path=$H/_bmad-output/plan.md" "id=${PID}0" "id=$(printf %s "$PID" | tr a-f A-F)"; do
+    api "/api/doc?$p"; assert_eq "$CODE" 404 "/api/doc?$p"; done
+  api "/api/doc?id=$PID/../$OID"; assert_eq "$CODE" 404 "a path in the id"
+  get "/_bmad-output/plan.md" -H "Cookie: $CK" -H "X-Ade-Key: $K"; assert_eq "$CODE" 404 "a doc by its path"
+  # a file swapped for a link out after the list was made
+  api "/api/doc?id=$OID"; assert_eq "$CODE" 200 "before the swap"
+  mv "$H/projects/api/docs/other.md" "$T/moved.md"; ln -s "$T/outside/out.md" "$H/projects/api/docs/other.md"
+  api "/api/doc?id=$OID"; assert_eq "$CODE" 404 "swapped for a symlink"; assert_not_contains "$T/body" "CANARY" "nothing of the link's target"
+  rm "$H/projects/api/docs/other.md"; mv "$T/moved.md" "$H/projects/api/docs/other.md"
+  # a file swapped for a hard link to one outside the roots after the list was made
+  mv "$H/projects/api/docs/other.md" "$T/moved.md"; ln "$T/outside/out.md" "$H/projects/api/docs/other.md"
+  api "/api/doc?id=$OID"; assert_eq "$CODE" 404 "swapped for a hard link"; assert_not_contains "$T/body" "CANARY" "nothing of the hard link's file"
+  rm "$H/projects/api/docs/other.md"; mv "$T/moved.md" "$H/projects/api/docs/other.md"
+  # a folder on the way swapped for a link out
+  mv "$H/projects/api/docs" "$T/docs.real"; mkdir -p "$T/outside/docs"; cp "$T/docs.real/other.md" "$T/outside/docs/other.md"; ln -s "$T/outside/docs" "$H/projects/api/docs"
+  api "/api/doc?id=$OID"; assert_eq "$CODE" 404 "its folder swapped for a link out"
+  rm "$H/projects/api/docs"; mv "$T/docs.real" "$H/projects/api/docs"
+  # over 2 MB after the list was made
+  python3 -c 'import sys; open(sys.argv[1], "a").write("x" * (2 * 1024 * 1024 + 10))' "$H/projects/api/docs/long.md"
+  api "/api/doc?id=$LID"; assert_eq "$CODE" 404 "a doc over 2 MB"
+  # never in the list: a link out, a file outside the roots, a big file, a fifo
+  mkfifo "$H/_bmad-output/fifo.md"; ln "$T/outside/out.md" "$H/_bmad-output/hard.md"; sleep 2.2; api "/api/docs"
+  for p in CANARY linked.md out.md "Long doc" fifo.md hard.md; do assert_not_contains "$T/body" "$p" "never a doc: $p"; done
+  stop
+}
+docs_diagrams() {   # AC8: the page (ade setup --diagrams: test_setup.sh)
+  docs_fixture; start; login; docs_ids; doc_html "$MID"
+  assert_eq "$(json 'd["mermaid"]')" False "no diagram drawer installed"
+  assert_contains "$T/html" '<div class="mmd"><pre><code>graph TD; A--&gt;B</code></pre></div>' "the diagram's code"
+  assert_contains "$T/html" '<p class="note">diagram: `ade setup` adds the diagram drawer</p>' "says how to add the drawer"
+  api "/api/mermaid"; assert_eq "$CODE" 404 "no drawer to serve"
+  stop
+  # the drawer: a stub in its place, its sha256 given through the test switch (the suite's marker and file URLs on)
+  mkdir -p "$HOME/.local/share/ade"; local js="$HOME/.local/share/ade/mermaid-11.17.2.min.js"
+  cat > "$js" <<'JS'
+globalThis.mermaid = { n: 0, initialize: function (c) { globalThis.mermaidConfig = c; },
+  render: function (id, src) { this.n += 1;
+    if (src.indexOf("bad") >= 0) { return Promise.reject(new Error("Parse error on line 1: bad diagram")); }
+    if (src.indexOf("hostile") >= 0) { return Promise.resolve({ svg: '<svg xmlns="http://www.w3.org/2000/svg" xmlns:z="http://www.w3.org/1999/xlink" id="' + id + '" width="80" height="20">' +
+      '<style>body{background:rgb(1, 2, 3)!important}</style><style>#' + id + ' text{fill:blue}#' + id + '-x{fill:red}</style>' +
+      '<style>#' + id + ' text{fill:green}@import url(x.css);</style><style>#' + id + ' text{fill:rgb(4, 5, 6)}@keyframes dash{to{stroke-dashoffset:0;}}</style>' +
+      '<defs><linearGradient id="g1" z:href="http://evil.example/g.svg#g"/></defs>' +
+      '<rect width="5" height="5" fill="url(#g1)" style="fill:url(http://evil.example/f.svg#f)" onclick="x()"/>' +
+      '<foreignObject width="80" height="20"><div xmlns="http://www.w3.org/1999/xhtml"><meta http-equiv="refresh" content="0;url=about:blank"/>' +
+      '<base href="http://evil.example/"/><link rel="stylesheet" href="http://evil.example/x.css"/><form action="http://evil.example/">' +
+      '<button formaction="http://evil.example/">b</button><input value="i"/></form><iframe src="about:blank"></iframe><object data="x"></object>' +
+      '<embed src="x"/><script>window.pwned = 1;</script><span target="_top">hostile</span></div></foreignObject>' +
+      '<a z:href="http://evil.example/"><text x="1" y="15">linked</text></a><text x="1" y="15" src="x" z:href="http://evil.example/">kept</text></svg>' }); }
+    if (src.indexOf("html-br") >= 0) { return Promise.resolve({ svg: '<svg xmlns="http://www.w3.org/2000/svg" id="' + id + '" width="80" height="40"><foreignObject width="80" height="40">' +
+      '<div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell;"><span class="nodeLabel"><p>line1<br>line2 a&nbsp;b</p></span></div></foreignObject></svg>' }); }
+    return Promise.resolve({ svg: '<svg xmlns="http://www.w3.org/2000/svg" id="' + id + '" width="80" height="20"><style>#' + id + ' text{fill:red}</style><text x="1" y="15" style="font-size:12px">drawn ' + this.n + '</text></svg>' }); } };
+JS
+  export ADE_TEST_ALLOW_FILE_URLS=1 ADE_TEST_MERMAID_SHA256; ADE_TEST_MERMAID_SHA256="$(shasum -a 256 "$js" | cut -d' ' -f1)"
+  start; login; docs_ids; doc_html "$MID"
+  assert_eq "$(json 'd["mermaid"]')" True "the drawer is there"; assert_not_contains "$T/html" "adds the diagram drawer" "no note with the drawer"
+  api "/api/mermaid"; assert_eq "$CODE" 200 "the drawer, behind the gate"; cmp -s "$T/body" "$js" || fail "the drawer as stored"
+  grep -qi '^content-type: application/javascript' "$T/head" || fail "served as a script"
+  get "/api/mermaid" -H "X-Ade-Key: $K"; assert_eq "$CODE" 401 "the drawer needs a session"
+  if browser_ok docs_diagrams; then
+    printf '# Hostile\n\n```mermaid\nhostile\n```\n\n```mermaid\nhtml-br\n```\n' > "$H/projects/api/docs/hostile.md"
+    DOCID="$MID" DOCFILE="$H/projects/api/docs/flow.md" in_browser docs_diagrams <<'PY'
+url = url + "&doc=" + os.environ["DOCID"]; opened(); settle(3)
+cfg = js("JSON.stringify(globalThis.mermaidConfig||null)")
+if cfg != json.dumps({"startOnLoad": False, "securityLevel": "strict"}, separators=(",", ":")): errs.append("mermaid's settings: %r" % cfg)
+if js("document.querySelectorAll('#dhtml .mmd svg').length") != 1: errs.append("the diagram is not drawn")
+if "drawn 1" not in (js("document.getElementById('dhtml').textContent") or ""): errs.append("the drawing")
+if js("[].map.call(document.querySelectorAll('#dhtml .mmd svg style'),function(s){return !!s.nonce}).join()") != "true": errs.append("a style scoped to its drawing is kept, with the nonce")
+bad = js("(function(){var e=document.querySelectorAll('#dhtml .mmd')[1];return e?e.textContent:''})()") or ""
+if "bad diagram here" not in bad or "Parse error on line 1" not in bad: errs.append("a parse failure shows the source and the error: %r" % bad)
+if js("[].every.call(document.scripts,function(s){return !!s.nonce})") is not True: errs.append("a script without the nonce")
+if js("[].some.call(document.scripts,function(s){return s.src})"): errs.append("a script with a src")
+with open(os.environ["DOCFILE"], "a") as f: f.write("\nmore\n")
+settle(3.5)
+if "drawn 3" not in (js("document.getElementById('dhtml').textContent") or ""): errs.append("not drawn again on reload: %r" % js("document.getElementById('dhtml').textContent"))
+base = url.split("/?")[0]
+for r in reqs:
+    if not (r.startswith(base + "/") or r == "about:blank" or r.startswith("data:font/")): errs.append("a load from elsewhere: %s" % r[:120])
+PY
+    # a hostile drawing (the review's findings) and an HTML-serialised one (<br>, &nbsp;)
+    sleep 2.2; docs_ids; HID="$(doc_id "Hostile")" in_browser docs_diagrams <<'PY'
+url = url + "&doc=" + os.environ["HID"]; opened(); settle(3)
+if js("!!document.getElementById('dhtml') && !window.pwned") is not True: errs.append("the page went away or ran the drawing's script")
+if js("document.querySelectorAll('#dhtml .mmd svg').length") != 2: errs.append("both drawings: %r" % js("document.getElementById('dhtml').textContent"))
+kept = js("document.querySelectorAll('#dhtml meta, #dhtml base, #dhtml link, #dhtml form, #dhtml button, #dhtml input, #dhtml iframe, #dhtml object, #dhtml embed, #dhtml script, #dhtml a').length")
+if kept != 0: errs.append("%r elements the drawing never needs were kept" % kept)
+if js("getComputedStyle(document.body).backgroundColor") == "rgb(1, 2, 3)": errs.append("a style in the drawing restyled the page")
+if js("[].map.call(document.querySelectorAll('#dhtml .mmd svg style'),function(s){return !!s.nonce + ':' + /rgb\\(4, 5, 6\\)/.test(s.textContent)}).join()") != "true:true": errs.append("only the scoped style is kept: %r" % js("[].map.call(document.querySelectorAll('#dhtml .mmd svg style'),function(s){return s.textContent}).join(' | ')"))
+bad = js("""[].concat.apply([], [].map.call(document.querySelectorAll('#dhtml .mmd svg, #dhtml .mmd svg *'), function (e) {
+  return [].filter.call(e.attributes, function (a) { var n = a.localName.toLowerCase(), v = a.value.trim(); n = n.slice(n.lastIndexOf(':') + 1);
+    return n.indexOf('on') === 0 || ['src', 'action', 'formaction', 'target', 'data'].indexOf(n) >= 0 || (n === 'href' && v.charAt(0) !== '#') || /url\\(\\s*['"]?\\s*[^#'"\\s]/i.test(v);
+  }).map(function (a) { return e.localName + ' ' + a.name; }); })).join()""")
+if bad: errs.append("attributes kept: %s" % bad)
+if js("document.querySelector('#dhtml rect') && document.querySelector('#dhtml rect').getAttribute('fill')") != "url(#g1)": errs.append("a reference inside the drawing is kept")
+txt = js("document.getElementById('dhtml').textContent") or ""
+if "hostile" not in txt or "kept" not in txt: errs.append("the drawing's own text: %r" % txt)
+br = js("(function(){var e=document.querySelectorAll('#dhtml .mmd')[1];return e?[!!e.querySelector('svg'), !!e.querySelector('svg br'), e.textContent].join('|'):''})()") or ""
+if not br.startswith("true|true|") or "line1" not in br or "line2" not in br or "could not be read" in br: errs.append("a label with <br> and &nbsp; is drawn: %r" % br)
+PY
+  fi
+  stop
+  # a drawer that changed after it was checked is not served
+  echo "// changed" >> "$js"; start; login; api "/api/mermaid"; assert_eq "$CODE" 404 "a changed drawer"
+  docs_ids; doc_html "$MID"; assert_eq "$(json 'd["mermaid"]')" False "a changed drawer is no drawer"
+  stop; unset ADE_TEST_ALLOW_FILE_URLS ADE_TEST_MERMAID_SHA256
+}
+
 t_local() {
   fixture
   # 8765 when it is free, else a free port: the default port is taken from ADE_WEB_PORT here, since a host may use 8765
@@ -1561,4 +1821,9 @@ web_legend
 web_wide_names
 web_short_text
 web_devex_screens
+docs_web_page
+docs_web_links
+docs_web_live
+docs_web_access
+docs_diagrams
 echo ok

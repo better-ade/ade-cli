@@ -400,6 +400,33 @@ telegram_fails() {   # A18b, step 6: a token the key store refuses; the steps af
   assert_eq "$(tail -1 "$T/out")" "ade: stopped; to come back, run ade setup --telegram" "how to come back"
 }
 
-ALL="check_matches_work live_limit live_not_signed_in live_other_error live_go_on live_hostile sign_in_fails key_store_fails telegram_fails live_test_temp_safety exported_names_cleared ready_whole_line top_keeps_allowed failed_asks_key_again guided_default_mode other_hub_errors_pass reasons_scrubbed gemini_account hidden_on_a_pty installer_asks_first account_signin key_only_on_stdin glm_needs_live_check hub_when_missing guided_session check_changes_nothing top_first_only_one focus_multi_live_tests no_gpt_or_codex telegram_step test_reruns"
+diagrams_setup() {   # story U6 AC8: ade setup --diagrams fetches the pinned mermaid.min.js, kept only on a sha256 match
+  fresh; setup_fakes; local f="$HOME/.local/share/ade/mermaid-11.17.2.min.js" sum v
+  # the pin: one version (11.x), its URL and sha256, in ade itself
+  v="$(sed -n 's/^MERMAID_VERSION=\([0-9.]*\)$/\1/p' "$ADE")"; case "$v" in 11.*) ;; *) fail "mermaid 11.x is pinned: [$v]" ;; esac
+  grep -q "^MERMAID_URL=\"https://cdn.jsdelivr.net/npm/mermaid@\$MERMAID_VERSION/dist/mermaid.min.js\"$" "$ADE" || fail "the pinned URL"
+  grep -Eq '^MERMAID_SHA256=[0-9a-f]{64}$' "$ADE" || fail "the pinned sha256"
+  printf 'globalThis.mermaid = {};\n' > "$T/stub.js"; sum="$(shasum -a 256 "$T/stub.js" | cut -d' ' -f1)"
+  export ADE_TEST_ALLOW_FILE_URLS=1 ADE_MERMAID_URL="file://$T/stub.js"
+  # a sha256 that does not match: nothing kept
+  ADE_TEST_MERMAID_SHA256="$(printf '%064d' 0)" pty_run "y\n" bash "$ADE" setup --diagrams > "$T/out" 2>&1; assert_eq "$?" 1 "a mismatch fails"
+  assert_contains "$T/out" "its sha256 does not match the pinned one; nothing was kept" "says so"; [ ! -e "$f" ] || fail "a mismatch is not kept"
+  # no at a terminal: nothing fetched
+  ADE_TEST_MERMAID_SHA256="$sum" pty_run "n\n" bash "$ADE" setup --diagrams > "$T/out" 2>&1; [ ! -e "$f" ] || fail "no keeps nothing"
+  # piped answers, or an agent: refused
+  printf 'y\n' | ADE_TEST_MERMAID_SHA256="$sum" bash "$ADE" setup --diagrams > "$T/out" 2>&1; assert_eq "$?" 2 "no terminal"; [ ! -e "$f" ] || fail "piped"
+  CLAUDECODE=1 ADE_TEST_MERMAID_SHA256="$sum" pty_run "y\n" bash "$ADE" setup --diagrams > "$T/out" 2>&1; assert_eq "$?" 2 "an agent"; [ ! -e "$f" ] || fail "an agent"
+  bash "$ADE" doctor > "$T/out" 2>&1; grep -q "^  mermaid  missing (extra: diagrams in ade web's Docs page; ade setup --diagrams adds it)" "$T/out" || fail "doctor: missing"
+  # a match: kept under ~/.local/share/ade, and doctor lists it
+  ADE_TEST_MERMAID_SHA256="$sum" pty_run "y\n" bash "$ADE" setup --diagrams > "$T/out" 2>&1 || { cat "$T/out"; fail "a match"; }
+  cmp -s "$f" "$T/stub.js" || fail "kept as downloaded"; assert_contains "$T/out" "diagram drawer: mermaid 11.17.2" "says what it kept"
+  ADE_TEST_MERMAID_SHA256="$sum" bash "$ADE" doctor > "$T/out" 2>&1; grep -q "^  mermaid  installed" "$T/out" || fail "doctor: installed"
+  # the test switches count only in the test suite: without the marker the URL and sha256 are the pinned ones
+  ADE_TEST_SUITE= ADE_TEST_MERMAID_SHA256="$sum" bash "$ADE" doctor > "$T/out" 2>&1; grep -q "^  mermaid  missing" "$T/out" || fail "the stub passes only in the suite"
+  ADE_TEST_MERMAID_SHA256="$sum" pty_run "" bash "$ADE" setup --diagrams > "$T/out" 2>&1; assert_contains "$T/out" "already there" "a second run"
+  bash "$ADE" setup --diagrams x > /dev/null 2>&1; assert_eq "$?" 2 "a usage error"
+}
+
+ALL="diagrams_setup check_matches_work live_limit live_not_signed_in live_other_error live_go_on live_hostile sign_in_fails key_store_fails telegram_fails live_test_temp_safety exported_names_cleared ready_whole_line top_keeps_allowed failed_asks_key_again guided_default_mode other_hub_errors_pass reasons_scrubbed gemini_account hidden_on_a_pty installer_asks_first account_signin key_only_on_stdin glm_needs_live_check hub_when_missing guided_session check_changes_nothing top_first_only_one focus_multi_live_tests no_gpt_or_codex telegram_step test_reruns"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

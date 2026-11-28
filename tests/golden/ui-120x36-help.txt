@@ -6,7 +6,6 @@ orchestrator ready
 
 
 
-
                           ┌────────────────────────────────────────────────────────────────┐
                           │ade ui keys:                                                    │
                           │  prefix n   new agent: pick a folder, then a role              │
@@ -15,6 +14,7 @@ orchestrator ready
                           │  prefix p   preview the current agent's plan                   │
                           │  prefix f   show or hide the fleet sidebar (ade dash)          │
                           │  prefix e   files: explore and view the hub and its projects   │
+                          │  prefix v   docs: the plans and specs as written (live)        │
                           │  prefix l   links: open a file path or URL shown in this pane  │
                           │             in files and links, c: open in your editor         │
                           │  prefix ?   this help                                          │

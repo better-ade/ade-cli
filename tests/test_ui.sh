@@ -168,7 +168,7 @@ key_table() {   # AC5
   assert_contains "$T/m" "work --role builder projects/api" "role list runs ade work"
   bash "$ADE" ui --sidebar > /dev/null 2>&1; grep -q "split-window -h -d -l 44" "$TMUX_LOG" || fail "f opens the sidebar"
   bash "$ADE" ui --sidebar > /dev/null 2>&1; grep -q "kill-pane -t %9" "$TMUX_LOG" || fail "f again closes it"
-  bash "$ADE" ui --keys < /dev/null > "$T/out"; for k in n a t p f e l "?"; do grep -q "^  prefix $k " "$T/out" || fail "help names $k"; done
+  bash "$ADE" ui --keys < /dev/null > "$T/out"; for k in n a t p f e l v "?"; do grep -q "^  prefix $k " "$T/out" || fail "help names $k"; done
 }
 
 approve_popup() {   # AC6

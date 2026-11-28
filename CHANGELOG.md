@@ -9,6 +9,15 @@
   sessions until clicked. The full button row needs tmux 3.4 (its named click ranges); tmux 3.2 and 3.3 get
   `[+] [≡ menu]`. `ADE_UI_MOUSE=off` hides the buttons and the hint.
 
+- Read the plan as it is written (U6): `ade docs [<folder>]` lists the hub's plans and specs (`_bmad-output/`,
+  `docs/`, each folder's `PLAN.md` and `STATE.md`) newest first, with title, folder, kind and age; Enter shows one in
+  `ade view`, `--follow` (ctrl-f) shows it again on each save at the same place, `--web` (ctrl-o) opens it in
+  `ade web`'s new Docs page (`d`), starting `ade web` on 127.0.0.1 when it is not running. `prefix v` in `ade ui` is
+  the popup. The Docs page draws the Markdown itself (raw HTML is text; only `http(s)` and doc links are links), keeps
+  its place on a save and asks for a doc by its id only, behind the dashboard's gate and key-hiding rule. A mermaid
+  diagram is drawn there after `ade setup --diagrams` fetches the pinned diagram drawer (sha256 checked; `ade doctor`
+  lists it as an extra); otherwise its code is shown with a line that says how.
+
 ## 0.2.15
 - `ade ui` beside a JetBrains IDE (U1): `ADE_EDITOR` picks the editor `c` opens in `ade files`, `ade view` and the
   link picker (and `ADE_VIEWER=code`): `code` (the default, as before), `idea` or another JetBrains launcher

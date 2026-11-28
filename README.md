@@ -272,6 +272,36 @@ The full button row needs tmux 3.4 or newer, because it uses tmux's named click 
 shows `[+] [≡ menu]` at any width, and every action is still in the menu. `ADE_UI_MOUSE=off` hides the buttons and
 the hint, and leaves tmux's mouse off.
 
+## Read the plan as it is written ([U6](docs/stories/U6-docs-viewer.md))
+
+`ade docs` lists the hub's plans and specs, newest first: each with its title, folder, kind (prd, architecture, ux,
+spec, story, plan, doc) and age. It reads the `.md` files under `_bmad-output/` and `docs/` of the hub, of each
+`projects/<folder>` and `ops/<folder>` and of their checkouts, plus each folder's `PLAN.md` and `STATE.md`. With fzf
+you search them; without it you pick a number. In `ade ui`, `prefix v` opens it as a popup (`prefix d` still detaches).
+
+| Key or command | What it does |
+|---|---|
+| Enter (or `<n>`) | Shows the doc in `ade view` |
+| ctrl-f (or `<n>f`) / `ade docs --follow <doc>` | Follows it: shown again on each save, at the same place (checked at most once a second); `q` stops, `w` opens it in the browser. Read-only |
+| ctrl-o (or `<n>w`) / `ade docs --web <doc>` | Opens it in `ade web`'s Docs page in your browser |
+| `ade docs <folder>` | Only that folder's docs |
+
+- **The Docs page.** `d` in `ade web` opens it: the list beside the doc, drawn from its Markdown (headings, lists,
+  tables, code, quotes, links). It is shown again within a second or two of a save, at the same place, with
+  `updated hh:mm:ss`. A link to another doc opens it in the page and a `#heading` link jumps there; an outside
+  `http(s)` link opens in a new tab; any other link is shown as text. Raw HTML in a doc is shown as text.
+- **The same gate as the dashboard.** A doc is asked for by its id from the list, never by a path; a link to outside
+  the hub's folders, a symlink, a file over 2 MB or one swapped after the list was made is refused. Every line passes
+  the same key-hiding rule as the dashboard.
+- **`ade docs --web`** starts `ade web` when it is not running, on 127.0.0.1 only (never the tailnet), and says the
+  page's code is in that terminal. The link it opens carries the page's key and the doc's id, nothing else.
+- **A diagram** (a ` ```mermaid ` block) is drawn in the Docs page once `ade setup --diagrams` has added the diagram
+  drawer: one pinned mermaid release, kept in `~/.local/share/ade/` only when its sha256 matches the one in `ade`, and
+  served by `ade web` itself (the page loads nothing from the internet). It runs in mermaid's strict mode. A diagram
+  that cannot be drawn shows its code and the error. Without the drawer, the page shows the code and
+  `diagram: ade setup adds the diagram drawer`; in the terminal, the code and `diagram: w draws it in the browser`.
+  `ade doctor` lists the drawer as an extra.
+
 ## The web view ([A19](docs/stories/A19-web-view.md))
 
 `ade web` opens a live, read-only dashboard of the hub's agents in your browser (M1): a terminal UI in the browser,
