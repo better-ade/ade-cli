@@ -211,7 +211,7 @@ u6_docs() {   # AC9: the words
   for s in "ade docs" "prefix v" "--follow" "--web" "Docs" "diagram" "ade setup --diagrams"; do assert_contains "$T/readme" "$s" "README: $s"; done
   A help > "$T/help"; for s in "docs        ade docs [<folder>] | --follow <doc> | --web <doc>" "--follow" "--web"; do assert_contains "$T/help" "$s" "help: $s"; done
   A ui --keys < /dev/null > "$T/keys"; assert_contains "$T/keys" "prefix v   docs" "the keys popup"
-  awk '/^## Unreleased/ { on = 1; next } /^## / { on = 0 } on' "$REPO/CHANGELOG.md" > "$T/cl"; [ -s "$T/cl" ] || fail "CHANGELOG: ## Unreleased"
+  awk '/^## / { on = 0; next } /^- / { on = /\(U6\)/ } on' "$REPO/CHANGELOG.md" > "$T/cl"; [ -s "$T/cl" ] || fail "CHANGELOG: the U6 entry"   # any section: a release renames Unreleased
   for s in "ade docs" "prefix v" "--follow" "--web" "Docs page" "diagram"; do assert_contains "$T/cl" "$s" "CHANGELOG: $s"; done
   A doctor > "$T/doc" 2>&1; grep -q "^  mermaid  missing (extra: " "$T/doc" || fail "ade doctor lists the diagram drawer"
 }
