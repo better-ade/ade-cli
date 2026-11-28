@@ -37,7 +37,9 @@ Orchestrators (one per hub, run by the hub's bin/chat):
   orchestrator  new <name> --hub <path> [--channel telegram] | start | stop | list | logs <name> [-n N] | remove
 
 Hubs:
-  ui          ade ui [--detach]: one tmux window, a tab per agent (keys: prefix ? in it)
+  ui          ade ui [--detach]: one tmux window, a tab per agent (keys: prefix ? in it); needs tmux 3.2 or newer.
+              Beside an IDE: ADE_UI_MOUSE=off (tmux's mouse off), ADE_UI_ARROWS=off (no prefix Left/Right; prefix 0-9
+              still switch tabs), or those lines in ~/.config/ade/ui
   dash        ade dash [--once]: the fleet panel (agents, tickets, last events)
   web         ade web [--port N] [--tailnet] [--no-open] | --print-link | --stop: a live, read-only dashboard of the agents
               (state, alerts, events, logs, journal), keys hidden, on 127.0.0.1 behind a random link, opened in your
@@ -61,8 +63,10 @@ Hubs:
 Files (read-only; a path outside the hub and its projects asks first):
   files       ade files [<folder>]: explore the hub and its projects, with name search and preview (ADE_FILES=yazi: yazi, neither read-only nor held to the hub)
   view        ade view [--code] <path[:line[:col]]>: code at the line, Markdown, images and PDFs; o open, f reveal, y copy the path,
-              c (or --code) open it in Visual Studio Code at that line and column. ADE_VIEWER=code: code and text files open in
-              Visual Studio Code by default; images, PDFs and Markdown keep the built-in viewer
+              c (or --code) open it in your editor at that line and column. ADE_VIEWER=code: code and text files open in
+              the editor by default; images, PDFs and Markdown keep the built-in viewer. ADE_EDITOR picks the editor:
+              code (Visual Studio Code, the default), idea or another JetBrains launcher (--line N --column C <path>),
+              or a command with {path} {line} {col} (no shell runs it); in a JetBrains terminal, its launcher on PATH
 
 Proof (screenshots as evidence, in <project>/.ade/evidence/; a page or screen shot cannot be redacted):
   shot        ade shot url <address> [--full-page] [--width W] | screen [--yes-screen] | agent <name>, each with [--name N]
@@ -1505,6 +1509,7 @@ setup_check() {   # one line per step; reads only
     [ -n "$hub" ] && for p in $KEY_PROVIDERS; do key_stored "$hub" "$p" && keys="${keys:+$keys, }$p"; done
     if [ -n "$keys" ]; then echo "sign-in: signed in (key: $keys)"; else echo "sign-in: not signed in"; fi
   fi
+  editor_line
   if [ -z "$hub" ]; then echo "hub: none (ade hub new <name>)"; echo "projects: none"; echo "channel: none"; echo "telegram: off"; return 0; fi
   unt="$(conf_get "$hub" HUB_PROVIDERS_UNTESTED)"; echo "hub: $hub${unt:+ ($unt: not tested; ade setup --test)}"
   for d in "$hub"/projects/*/; do [ -d "$d" ] && n=$((n + 1)); done; echo "projects: $n"
@@ -1887,6 +1892,31 @@ need_tmux() {
   elif command -v pacman > /dev/null 2>&1; then how="sudo pacman -S tmux"; fi
   die 2 "ade ui needs tmux: $how"
 }
+# need_tmux_32: ade ui's popups (display-popup) need tmux 3.2 or newer; an older one stops here, before anything
+# starts. A version tmux -V does not give as numbers (master) is let through.
+need_tmux_32() {
+  local v; v="$(tmux -V 2> /dev/null < /dev/null | head -1 | no_ctl | cut -c1-40)"; v="${v#tmux }"
+  [[ $v =~ ([0-9]+)\.([0-9]+) ]] || return 0
+  [ "${BASH_REMATCH[1]}" -gt 3 ] || { [ "${BASH_REMATCH[1]}" = 3 ] && [ "${BASH_REMATCH[2]}" -ge 2 ]; } && return 0
+  local how="use your package manager, or build a newer one (https://github.com/tmux/tmux/wiki/Installing)"
+  [ "$(uname)" = Darwin ] && how="brew upgrade tmux"
+  die 1 "ade ui needs tmux 3.2 or newer (found $v) for its popups; to update tmux: $how"
+}
+# ui_opt <ADE_UI_MOUSE|ADE_UI_ARROWS>: on or off. The variable, else its NAME=off line in ~/.config/ade/ui (read as
+# text, never run), else on.
+ui_opt() {
+  local v="${!1:-}"
+  [ -n "$v" ] || [ ! -f "$CONF_DIR/ui" ] || v="$(sed -n "s/^$1=//p" "$CONF_DIR/ui" 2> /dev/null | tail -1 | tr -d '\r' | sed 's/[[:space:]]*$//')"
+  if [ "$v" = off ]; then echo off; else echo on; fi
+}
+# ui_ide_hint: in a JetBrains terminal, once (~/.config/ade/hints), how to turn off what may clash with the IDE
+ui_ide_hint() {
+  [ "${TERMINAL_EMULATOR:-}" = JetBrains-JediTerm ] || return 0
+  [ "$(ui_opt ADE_UI_MOUSE)" = on ] || [ "$(ui_opt ADE_UI_ARROWS)" = on ] || return 0
+  [ -f "$CONF_DIR/hints" ] && grep -qxF ui-jetbrains "$CONF_DIR/hints" && return 0
+  echo "ade ui: in a JetBrains terminal, the mouse and prefix Left/Right may clash with the IDE; to turn them off: ADE_UI_MOUSE=off ADE_UI_ARROWS=off, or those lines in ~/.config/ade/ui (said once)" >&2
+  { [ -f "$CONF_DIR/hints" ] && cat "$CONF_DIR/hints"; echo ui-jetbrains; } | write_conf_file hints
+}
 # ui_live <hub>: the session name when ade's tmux server runs that hub's session (quietly nothing otherwise)
 ui_live() { command -v tmux > /dev/null 2>&1 || return 1; local s; s="$(ui_session "$1")"; ui_tmux has-session -t "=$s" 2> /dev/null && echo "$s"; }
 # Focus work opens a tab, never a new window. in_app: an ADE desktop app terminal, as the hub's bin/work tells it (there
@@ -2117,7 +2147,7 @@ UI_KEYS="  prefix n   new agent: pick a folder, then a role
   prefix f   show or hide the fleet sidebar (ade dash)
   prefix e   files: explore and view the hub and its projects
   prefix l   links: open a file path or URL shown in this pane
-             in files and links, c: open in Visual Studio Code
+             in files and links, c: open in your editor
   prefix ?   this help
   prefix 0-9, Left, Right   switch tabs
   prefix d   detach (agents keep running)"
@@ -2136,7 +2166,7 @@ set -g window-status-format ""
 set -g window-status-current-format ""
 set -g status-left "#($run ui --bar $s)"
 set -g destroy-unattached off
-set -g mouse on
+set -g mouse $(ui_opt ADE_UI_MOUSE)
 set -g set-titles on
 bind-key -T prefix n run-shell "$run ui --menu new"
 bind-key -T prefix a run-shell "$run ui --menu approve"
@@ -2146,8 +2176,8 @@ bind-key -T prefix f run-shell "$run ui --sidebar"
 bind-key -T prefix ? display-popup -E -w 66 -h 16 "$run ui --keys"
 bind-key -T prefix e display-popup -E -w 90% -h 90% "$run files"
 bind-key -T prefix l run-shell "$run ui --menu links #{pane_id}"
-bind-key -T prefix Left previous-window
-bind-key -T prefix Right next-window
+$(if [ "$(ui_opt ADE_UI_ARROWS)" = on ]; then printf '%s\n' "bind-key -T prefix Left previous-window" "bind-key -T prefix Right next-window"
+  else printf '%s\n' "bind-key -r -T prefix Left select-pane -L" "bind-key -r -T prefix Right select-pane -R"; fi)
 CONF
 }
 
@@ -2229,7 +2259,9 @@ cmd_ui() {
     --preview) ui_preview "${2:-}"; return ;;
     --sidebar) ui_sidebar; return ;;
     --links) ui_links "${2:-}"; return ;;
-    --keys) echo "ade ui keys:"; echo "$UI_KEYS"; [ -t 0 ] && read -r _; return 0 ;;
+    --keys) echo "ade ui keys:"
+      if [ "$(ui_opt ADE_UI_ARROWS)" = on ]; then echo "$UI_KEYS"; else echo "${UI_KEYS/prefix 0-9, Left, Right   /prefix 0-9   }"; fi
+      [ -t 0 ] && read -r _; return 0 ;;
     --tickets) hub="$(find_hub)" || exit $?; d="$(mk_tmp)" || die 1 "could not make a temp folder"; ui_data "$hub" "$d"
       ui_render dash "$d" | awk '/^TICKETS/ { on = 1 } /^EVENTS/ { on = 0 } on'; rm_tmp "$d"; [ -t 0 ] && read -r _; return 0 ;;
     --session) hub="$(find_hub)" || exit $?; ui_session "$hub"; return 0 ;;
@@ -2240,9 +2272,9 @@ cmd_ui() {
     "") ;;
     *) die 2 "usage: ade ui [--detach]" ;;
   esac
-  need_tmux; hub="$(find_hub)" || exit $?; s="$(ui_session "$hub")"
+  need_tmux; need_tmux_32; hub="$(find_hub)" || exit $?; s="$(ui_session "$hub")"
   sq "$hub" > /dev/null; sq "$(ade_self)" > /dev/null   # checked here: inside $(...) a refusal would only end a subshell
-  ui_ensure "$hub" "$s"
+  ui_ensure "$hub" "$s"; ui_ide_hint
   [ "$detach" = 1 ] && { echo "ade ui: session $s (attach with: ade ui)"; return 0; }
   TMUX=""; export TMUX; exec tmux -L "$ADE_TMUX_SOCKET" attach-session -t "=$s"
 }
@@ -4150,30 +4182,96 @@ view_text() {
   rm_tmp "$VIEW_TMP"; trap - HUP TERM INT; return $rc
 }
 
-# code_bin: Visual Studio Code's command (code) as an absolute path, found once (CODE_BIN). Never a copy that lies
-# inside the hub or a project being viewed, or a link from there: a repository must not choose the program ade runs.
-CODE_BIN=""; CODE_WHY=""
-code_bin() {
-  local c w; [ -z "$CODE_BIN" ] || return 0
-  c="$(command -v code 2> /dev/null)"
-  case "$c" in /*) ;; *) CODE_WHY="Visual Studio Code (the code command) is not installed; ade setup --tools installs it"; return 1 ;; esac
-  w="$(files_py where "$c" / | awk -F "$US" '{ print $3 }')"
-  [ "$w" = out ] || { CODE_WHY="the code command on PATH is inside the hub or project being viewed, so ade does not run it"; return 1; }
-  CODE_BIN="$c"
+# The editor c runs (U1). ADE_EDITOR: code (the default), a JetBrains launcher (run as <launcher> --line N --column C
+# <path>), or a command with {path} and, if wanted, {line} and {col}. Without ADE_EDITOR, a JetBrains terminal
+# (TERMINAL_EMULATOR=JetBrains-JediTerm) uses the first launcher on PATH, else code. No shell ever runs it: a template
+# is split on spaces into words, each placeholder is replaced inside its word, and the path is always one argument;
+# a value with ; | & $ < > quotes, a backslash or a backtick outside the placeholders is refused.
+JB_LAUNCHERS="idea pycharm webstorm goland rider clion phpstorm rubymine fleet"
+ED_KIND=""; ED_CMD=""; ED_FROM=""; ED_WORDS=()
+# editor_pick: ED_KIND code|jetbrains|template|none|refused, ED_CMD (the command as given), ED_FROM ADE_EDITOR|
+# jetbrains|default, ED_WORDS (a template's words); CODE_WHY says why for none and refused
+editor_pick() {
+  local e="${ADE_EDITOR:-}" rest l; ED_CMD=""; ED_WORDS=(); CODE_WHY=""
+  if [ -n "$e" ]; then ED_FROM=ADE_EDITOR
+    rest="${e//\{path\}/}"; rest="${rest//\{line\}/}"; rest="${rest//\{col\}/}"
+    case "$rest" in *[\;\|\&\$\`\<\>\'\"\\]*|*[[:cntrl:]]*)
+      ED_KIND=refused; CODE_WHY="ADE_EDITOR is refused: ; | & \$ < > quotes, backslashes and backticks are not allowed outside {path} {line} {col} (no shell runs it)"; return 0 ;; esac
+    case "$e" in
+      *'{path}'*) IFS=' ' read -r -a ED_WORDS <<< "$e"; ED_CMD="${ED_WORDS[0]:-}"
+        case "$ED_CMD" in ""|*'{'*) ED_KIND=refused; CODE_WHY="ADE_EDITOR is refused: it must start with the command, before {path}"; return 0 ;; esac
+        ED_KIND=template; return 0 ;;
+      code|*/code) ED_KIND=code; ED_CMD="$e"; return 0 ;;
+    esac
+    case " $JB_LAUNCHERS " in *" ${e##*/} "*) ED_KIND=jetbrains; ED_CMD="$e"; return 0 ;; esac
+    ED_KIND=refused; CODE_WHY="ADE_EDITOR is refused: use code, a JetBrains launcher ($JB_LAUNCHERS) or a command with {path}"; return 0
+  fi
+  if [ "${TERMINAL_EMULATOR:-}" = JetBrains-JediTerm ]; then ED_FROM=jetbrains
+    for l in $JB_LAUNCHERS; do command -v "$l" > /dev/null 2>&1 && { ED_KIND=jetbrains; ED_CMD="$l"; return 0; }; done
+    command -v code > /dev/null 2>&1 && { ED_KIND=code; ED_CMD=code; return 0; }
+    ED_KIND=none; CODE_WHY="no JetBrains launcher ($JB_LAUNCHERS) or code command is installed"; return 0
+  fi
+  ED_FROM=default; ED_KIND=code; ED_CMD=code
+  command -v code > /dev/null 2>&1 || { ED_KIND=none; CODE_WHY="Visual Studio Code (the code command) is not installed; ade setup --tools installs it"; }
 }
-# view_code <line> <col>: FT_PATH (files_target checked it) in Visual Studio Code: a folder as a folder, a file at its
-# line and column (code --goto <path>:<line>:<col>; the path is absolute and one argument, never a shell string).
-# 1 = not opened, CODE_WHY says why (no code command, one inside the project, over SSH with no display)
+ed_label() { if [ "$ED_KIND" = code ]; then echo "Visual Studio Code"; else echo "${ED_CMD##*/}"; fi; }
+# editor_line: what ade setup --check says c uses
+editor_line() {
+  local how n; editor_pick; n="${ED_CMD##*/}"
+  case "$ED_KIND" in
+    refused) echo "editor: refused ($CODE_WHY)"; return 0 ;;
+    none) echo "editor: none (c prints the path; set ADE_EDITOR or install code)"; return 0 ;; esac
+  case "$ED_FROM" in ADE_EDITOR) how=ADE_EDITOR ;; jetbrains) how="JetBrains, found in this terminal" ;; *) how="Visual Studio Code" ;; esac
+  [ "$ED_FROM:$ED_KIND" != jetbrains:code ] || how="Visual Studio Code, no JetBrains launcher found"
+  if command -v "$ED_CMD" > /dev/null 2>&1; then echo "editor: $n ($how; c in ade files and ade view)"; else echo "editor: $n ($how; not installed)"; fi
+}
+# editor_bin: the chosen editor's command as an absolute path (ED_BIN). Never a copy that lies inside the hub or a
+# project being viewed, or a link from there: a repository must not choose the program ade runs.
+ED_BIN=""
+editor_bin() {
+  local c w n="${ED_CMD##*/}"; ED_BIN=""
+  case "$ED_KIND" in none|refused) return 1 ;; esac
+  c="$(command -v "$ED_CMD" 2> /dev/null)"
+  case "$c" in /*) [ -x "$c" ] && [ ! -d "$c" ] ;; *) false ;; esac || {
+    if [ "$ED_KIND:$ED_FROM" = code:default ]; then CODE_WHY="Visual Studio Code (the code command) is not installed; ade setup --tools installs it"
+    else CODE_WHY="$n is not installed (not on PATH)"; fi; return 1; }
+  w="$(files_py where "$c" / | awk -F "$US" '{ print $3 }')"
+  [ "$w" = out ] || { CODE_WHY="the $n command on PATH is inside the hub or project being viewed, so ade does not run it"; return 1; }
+  ED_BIN="$c"
+}
+# ed_sub <word> <path> <line> <col>: each {path} {line} {col} replaced left to right; what is put in is never scanned again
+ed_sub() {
+  local w="$1" out="" r
+  while :; do
+    case "$w" in *'{'*) ;; *) break ;; esac
+    out="$out${w%%\{*}"; r="${w#*\{}"
+    case "$r" in path\}*) out="$out$2"; w="${r#path\}}" ;; line\}*) out="$out$3"; w="${r#line\}}" ;;
+      col\}*) out="$out$4"; w="${r#col\}}" ;; *) out="$out{"; w="$r" ;; esac
+  done
+  printf '%s' "$out$w"
+}
+# view_code <line> <col>: FT_PATH (files_target checked it) in the chosen editor: a folder as a folder, a file at its
+# line and column (code --goto <path>:<line>:<col>; <launcher> --line N --column C <path>; a template's words). The
+# path is absolute and one argument, never a shell string. 1 = not opened, CODE_WHY says why (no editor, one inside
+# the project, ADE_EDITOR refused, over SSH with no display)
 view_code() {
-  local l="${1:-0}" c="${2:-0}"; [ "$l" -gt 0 ] || l=1; [ "$c" -gt 0 ] || c=1
-  if on_ssh && [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] && [ "${TERM_PROGRAM:-}" != vscode ]; then
-    CODE_WHY="over SSH with no display, Visual Studio Code cannot open here"; return 1; fi
-  code_bin || return 1
-  if [ "$FT_KIND" = dir ]; then "$CODE_BIN" "$FT_PATH"; else "$CODE_BIN" --goto "$FT_PATH:$l:$c"; fi || { CODE_WHY="Visual Studio Code did not open it (code failed)"; return 1; }
+  local l="${1:-0}" c="${2:-0}" w; local -a argv; [ "$l" -gt 0 ] || l=1; [ "$c" -gt 0 ] || c=1
+  editor_pick
+  case "$ED_KIND" in none|refused) return 1 ;; esac
+  if [ "$ED_KIND" != template ] && on_ssh && [ -z "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ] \
+    && ! { [ "$ED_KIND" = code ] && [ "${TERM_PROGRAM:-}" = vscode ]; } && ! { [ "$ED_KIND" = jetbrains ] && [ "${TERMINAL_EMULATOR:-}" = JetBrains-JediTerm ]; }; then
+    CODE_WHY="over SSH with no display, $(ed_label) cannot open here"; return 1; fi
+  editor_bin || return 1
+  case "$ED_KIND" in
+    code) if [ "$FT_KIND" = dir ]; then argv=("$FT_PATH"); else argv=(--goto "$FT_PATH:$l:$c"); fi ;;
+    jetbrains) if [ "$FT_KIND" = dir ]; then argv=("$FT_PATH"); else argv=(--line "$l" --column "$c" "$FT_PATH"); fi ;;
+    template) argv=(); for w in "${ED_WORDS[@]:1}"; do [ -n "$w" ] || continue; argv+=("$(ed_sub "$w" "$FT_PATH" "$l" "$c")"); done ;;
+  esac
+  "$ED_BIN" "${argv[@]}" || { CODE_WHY="$(ed_label) did not open it (${ED_CMD##*/} failed)"; return 1; }
 }
 # files_act open|reveal|copy|url <absolute path, or an http(s) URL>: the default app (never a program), the file
 # manager, the clipboard, the browser; over SSH the path and a copy command instead.
-# files_act code <absolute path> [line [col]]: Visual Studio Code (view_code); any regular file or folder
+# files_act code <absolute path> [line [col]]: the chosen editor (view_code); any regular file or folder
 ACT_USAGE="usage: ade files --act open|reveal|copy|url <path> | --act code <path> [line [col]]"
 files_act() {
   [ $# -eq 2 ] || { [ "${1:-}" = code ] && [ $# -ge 3 ] && [ $# -le 4 ] && matches "$3" '^[0-9]{1,9}$' && matches "${4:-0}" '^[0-9]{1,9}$'; } || die 2 "$ACT_USAGE"
@@ -4189,7 +4287,8 @@ files_act() {
   esac
   shown="$FT_SHOWN"
   if [ "$act" = code ]; then
-    if view_code "${3:-0}" "${4:-0}"; then echo "opened in Visual Studio Code: $shown"; else echo "$CODE_WHY; the path: $shown"; fi
+    if view_code "${3:-0}" "${4:-0}"; then echo "opened in $(ed_label): $shown"
+    else echo "$CODE_WHY; the path: $shown$([ "${3:-0}" -gt 0 ] && printf ':%s' "$3")$([ "${4:-0}" -gt 0 ] && printf ':%s' "$4")"; fi
     return 0
   fi
   if on_ssh; then
@@ -4587,7 +4686,7 @@ def act(t, a, p):   # o f y through ade files --act (its checks, its tools); the
     t.raw()
     msg = [l for l in r.stdout.decode("utf-8", "replace").splitlines() if l.strip()]
     return shown(" · ".join(msg[-2:])) if msg else ""
-ACTS = {"o": "open", "f": "reveal", "y": "copy", "c": "code"}   # c: Visual Studio Code
+ACTS = {"o": "open", "f": "reveal", "y": "copy", "c": "code"}   # c: the editor (ADE_EDITOR; default Visual Studio Code)
 
 def label(name, p):
     s = shown(name)
@@ -4780,7 +4879,7 @@ def pick(pane, cwd):
     while True:
         print("Paths and links in this pane (a file opens in ade view, a link in your browser):")
         for i, (k, d) in enumerate(items, 1): print("  %2d  %s" % (i, shown(d)))
-        try: s = input("Open which? (a number; a number then c: in Visual Studio Code; Enter closes) ").strip()
+        try: s = input("Open which? (a number; a number then c: in your editor; Enter closes) ").strip()
         except EOFError: return 0
         if not s: return 0
         m = re.fullmatch(r"(\d{1,4}) ?([cC]?)", s)

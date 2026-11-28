@@ -140,7 +140,7 @@ check_changes_nothing() {   # AC7
   assert_eq "$(snap)" "$before" "no file changed"
   ! grep -E "auth login|keys set|keys forget|agent |chat setup|^gh" "$CALLS" > /dev/null || { cat "$CALLS"; fail "no writing call"; }
   for s in "claude code: installed" "sign-in: not signed in" "hub: $T/hub" "projects: 2" "channel: telegram" "telegram: not finished: install the Telegram plugin (ade setup --telegram)"; do assert_contains "$T/out" "$s" "line: $s"; done
-  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 6 "one line per step"
+  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 7 "one line per step (U1: editor)"
 }
 
 top_first_only_one() {   # AC8
@@ -344,7 +344,7 @@ live_go_on() {   # go on without the test: chosen, not tested, in no focus role;
   assert_eq "$(conf HUB_PROVIDERS_ALLOWED)" "" "in no focus role (A5)"; grep -q '"provider": "anthropic"' "$T/hub/.ade/connections.json" || fail "the choice is in the record"
   assert_eq "$(grep -c 'go-on' "$T/out")" 1 "a focus agent is never offered it"; assert_contains "$T/out" "leave this service out" "it is left out instead"
   bash "$ADE" setup --check > "$T/out" 2>&1; assert_contains "$T/out" "hub: $T/hub (anthropic: not tested; ade setup --test)" "--check says not tested"
-  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 6 "still one line per step"
+  assert_eq "$(wc -l < "$T/out" | tr -d ' ')" 7 "still one line per step"
   bash "$ADE" setup --test < /dev/null > "$T/out" 2>&1; assert_eq "$?" 1 "--test tries it, and it still fails"; assert_eq "$(conf HUB_PROVIDERS_UNTESTED)" anthropic "so it stays"
   rm "$CALLS.fail.anthropic"; bash "$ADE" setup --test < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "--test"; }
   assert_contains "$T/out" "anthropic: tested now; your focus agents may use it" "a pass is recorded"
