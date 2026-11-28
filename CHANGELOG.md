@@ -1,6 +1,14 @@
 # Changelog
 
 ## Unreleased
+- A first run reads right (F1): `ade work <folder>` checks the hub's Claude Code command (`HUB_CLAUDE`, else
+  `claude`) before it starts anything; when it is not found it says so in one line, names `ade setup` as the fix and
+  exits 2 (no tab, no agent). `ade setup --check` checks the same command, so the two agree
+  (`claude code: missing (<command>)`). `ade hub new` prints one `next:` line, its own (bin/init's hand-run line is
+  not shown), and after the first save says in one line that `hub.conf` is not in it and how to commit it by hand
+  (nothing commits it). Bare `ade` with no agents says `agents: none running` instead of an empty table header, and
+  its next steps no longer offer `ade` itself. `ade help`'s `web` entry says the page asks for the code shown in the
+  terminal, with `--tailnet` too.
 - `ade web` reads right on a fresh hub (M3): a template's placeholder line in `STATE.md` is not shown as its state
   (`no state yet`; `no STATE.md yet` when there is none); main with no session reads `not running`; the quiet alert
   says how long since the last sign of life (`no check-in for 25m (since 13:45Z)`) and a quiet row's check-in is dim;

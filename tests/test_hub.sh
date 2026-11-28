@@ -10,6 +10,7 @@ make_template() {
 #!/bin/bash
 [ "\${1:-}" = --list ] && { echo "sre                          Site reliability"; exit 0; }
 echo "init in \$PWD: \$*" >> "$T/init.log"; echo "HUB_NAME=\$(basename "\$PWD")" > hub.conf
+echo "init: hub rendered"; echo "next: cd \$PWD && bin/setup && bin/brain index && bin/doctor, then start claude there"   # as bin/init ends
 STUB
   chmod +x "$TPL/bin/init"; commit_tag "$TPL" tpl; export ADE_HUB_TEMPLATE_URL="$TPL"
 }
@@ -47,6 +48,30 @@ no_github() {   # AC3
   assert_contains "$T/out" "Site reliability" "the personas listed"
 }
 
+hub_new_one_next() {   # story F1 AC3: one next: line, ade's; bin/init's hand-run line is not shown (its other lines are)
+  fresh; make_template; stub_gh
+  bash "$ADE" hub new acme $ID < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "hub new exit"; }
+  assert_eq "$(grep -c '^next:' "$T/out")" 1 "exactly one next: line"; assert_contains "$T/out" "next: ade (what to do next)" "ade's own"
+  assert_not_contains "$T/out" "bin/setup" "bin/init's hand-run line is not shown"; assert_contains "$T/out" "init: hub rendered" "bin/init's other lines are"
+}
+
+hub_new_conf_local() {   # story F1 AC6: after the first save, one line: hub.conf is not in it, and how to commit it by hand
+  fresh; make_template; stub_gh; mkdir -p "$T/fakebin"; printf '#!/bin/bash\nexit 0\n' > "$T/fakebin/gitleaks"; chmod +x "$T/fakebin/gitleaks"
+  # bin/sync as the hub's: its PATHS leave hub.conf out; bin/init sets the hooks path the secret scan needs
+  printf '#!/bin/bash\ngit add -- README.md bin\ngit diff --cached --quiet || git commit -qm sync\necho "synced"\n' > "$TPL/bin/sync"
+  echo 'git config core.hooksPath .githooks' >> "$TPL/bin/init"; echo "# a hub" > "$TPL/README.md"; chmod +x "$TPL/bin/sync"
+  commit_tag "$TPL" sync; git -C "$TPL" config receive.denyCurrentBranch ignore
+  bash "$ADE" hub new loc --no-github $ID < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "hub new --no-github"; }
+  assert_contains "$T/out" "synced" "the first save ran"
+  assert_eq "$(grep -c 'hub.conf' "$T/out")" 1 "one line about hub.conf"
+  assert_contains "$T/out" 'hub.conf is not in the saved version (bin/sync leaves it out on purpose); to keep it in git by hand: cd ~/hubs/loc && git add hub.conf && git commit -m "Add hub.conf"' "says so, and how"
+  assert_eq "$(git -C "$HOME/hubs/loc" ls-files hub.conf)" "" "nothing commits it"
+  assert_eq "$(git -C "$HOME/hubs/loc" status --porcelain hub.conf)" "?? hub.conf" "it stays in the folder, uncommitted"
+  bash "$ADE" hub new gh1 $ID < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "hub new"; }
+  assert_contains "$T/out" 'to keep it in git by hand: cd ~/hubs/gh1 && git add hub.conf && git commit -m "Add hub.conf" && git push' "with GitHub: and push"
+  assert_eq "$(git -C "$HOME/hubs/gh1" ls-files hub.conf)" "" "nothing commits it"
+}
+
 refusals_create_nothing() {   # AC4
   fresh; make_template; stub_gh
   for bad in Acme "a b" "a_b" ""; do
@@ -70,8 +95,9 @@ bare_ade() {   # AC5
   make_hub "$T/h" h; echo "HUB_NAME=acme" > "$T/h/hub.conf"
   out=$(cd "$T/nowhere" && ADE_HUB="$T/h" bash "$ADE"); rc=$?; assert_eq "$rc" 0 "hub exit 0"
   echo "$out" > "$T/out"
-  assert_contains "$T/out" "hub: acme ($T/h)" "hub name"; assert_contains "$T/out" "h sessions" "runs ade status"
-  [ "$(grep -c '^  ade ' "$T/out")" = 3 ] || { cat "$T/out"; fail "three next commands"; }
+  assert_contains "$T/out" "hub: acme ($T/h)" "hub name"
+  assert_contains "$T/out" "agents: none running" "runs ade status (one line from bin/sessions is its header: none, F1)"
+  [ "$(grep -c '^  ade ' "$T/out")" = 2 ] || { cat "$T/out"; fail "two next commands (not ade itself, F1)"; }
 }
 
 list_and_use() {   # AC6
@@ -199,6 +225,6 @@ import_documented() {   # I3 AC5
   assert_contains "$REPO/README.md" "ade hub import" "README"; assert_contains "$REPO/CHANGELOG.md" "ade hub import" "CHANGELOG"
 }
 
-ALL="new_with_github public_and_dir no_github refusals_create_nothing bare_ade list_and_use curl_install import_modes import_ask_and_refusals import_github import_old_or_not_hub import_documented"
+ALL="hub_new_one_next hub_new_conf_local new_with_github public_and_dir no_github refusals_create_nothing bare_ade list_and_use curl_install import_modes import_ask_and_refusals import_github import_old_or_not_hub import_documented"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

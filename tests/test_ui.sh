@@ -110,7 +110,7 @@ work_plain() {   # the ways out: ADE_UI=off, no tmux, the ADE app
   assert_eq "$out" "work projects/api AGENT_TERMINAL= ADE_UI_SESSION= TMUX=" "inside the ADE app: nothing changes (the hub opens its sub-terminal)"
   assert_not_contains "$TMUX_LOG" "new-session" "no tmux session there"; assert_eq "$(cat "$T/err")" "" "nothing said"
   d="$T/notmux"; mkdir -p "$d"; for c in bash python3 sed awk grep cat dirname basename tr head tail mktemp uname env date cksum; do ln -sf "$(command -v "$c")" "$d/$c"; done
-  cp "$T/fakebin/osascript" "$d/osascript"
+  cp "$T/fakebin/osascript" "$d/osascript"; cp "$T/fakebin/claude" "$d/claude"   # F1: ade work checks Claude Code first
   out=$(PATH="$d" bash "$ADE" work projects/api 2> "$T/err"); assert_eq "$out" "work projects/api AGENT_TERMINAL= ADE_UI_SESSION= TMUX=" "no tmux: as before"
   assert_eq "$(cat "$T/err")" "ade: tabs for focus work need tmux; ade setup --tools installs it" "with one line on how to get tabs"
 }
@@ -210,6 +210,19 @@ real_tmux() {   # AC1 on a real tmux, when installed
   assert_eq "$n" 1 "one session"; assert_eq "$w" "0 orchestrator" "tab 0 is the orchestrator"
 }
 
+bare_no_agents() {   # story F1 AC4: bare ade outside the tab view, no agents: one line instead of an empty header; not ade itself
+  fresh; ui_fixture; printf '#!/bin/bash\necho "NAME             FOLDER                     PID"\n' > "$T/hub/bin/sessions"
+  local how; for how in plain pty; do
+    if [ "$how" = plain ]; then bash "$ADE" < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "ade"; }
+    else ADE_UI=off pty_run "" bash "$ADE" > "$T/out" 2>&1 || { cat "$T/out"; fail "ade at a terminal, ADE_UI=off"; }; fi
+    assert_contains "$T/out" "agents: none running" "[$how] says so"; assert_not_contains "$T/out" "NAME " "[$how] no empty header"
+    ! grep -qE '^ +ade {2,}' "$T/out" || { cat "$T/out"; fail "[$how] the next steps do not offer ade itself"; }
+    assert_contains "$T/out" "  ade work <folder>    start a focus agent on a folder" "[$how] the other next steps stay"
+  done
+  bash "$ADE" home > "$T/out" 2>&1; assert_contains "$T/out" "agents: none running" "ade home: the same line"
+  assert_contains "$T/out" "  ade                  open your workspace" "ade home still offers ade (another command)"
+}
+
 bare_ade_opens_the_tabs() {   # "ade ui as the default": ade alone, at a terminal, with a hub that is set up
   fresh; ui_fixture; fake_work; local d; echo "HUB_ROOT_PROVIDER=anthropic" >> "$T/hub/hub.conf"
   pty_run "" bash "$ADE" > "$T/out" 2>&1 || { cat "$T/out"; fail "ade"; }
@@ -221,7 +234,7 @@ bare_ade_opens_the_tabs() {   # "ade ui as the default": ade alone, at a termina
   for l in "hub: acme ($T/hub)" "1.2              projects/api" "next:" "  ade                  open your workspace: a tab per agent (ade ui)" "  ade work <folder>    start a focus agent on a folder"; do assert_contains "$T/sum" "$l" "ade home: $l"; done
   assert_eq "$(cat "$TMUX_LOG")" "" "ade home never opens anything"
   bash "$ADE" status > "$T/out" 2>&1; assert_contains "$T/out" "NAME             FOLDER" "ade status is still the hub's sessions"; assert_not_contains "$T/out" "next:" "and only that"
-  bash "$ADE" < /dev/null > "$T/out" 2>&1; assert_eq "$(cat "$T/out")" "$(cat "$T/sum")" "no terminal: the summary, as before"; assert_eq "$(cat "$TMUX_LOG")" "" "nothing opened"
+  bash "$ADE" < /dev/null > "$T/out" 2>&1; assert_eq "$(cat "$T/out")" "$(grep -v '^  ade  ' "$T/sum")" "no terminal: the summary, as before (less ade itself, F1)"; assert_eq "$(cat "$TMUX_LOG")" "" "nothing opened"
   CLAUDECODE=1 pty_run "" bash "$ADE" > "$T/out" 2>&1; assert_contains "$T/out" "hub: acme" "an agent session: the summary"; assert_eq "$(cat "$TMUX_LOG")" "" "nothing opened"
   ADE_UI=off pty_run "" bash "$ADE" > "$T/out" 2>&1; assert_contains "$T/out" "hub: acme" "ADE_UI=off: the summary"; assert_eq "$(cat "$TMUX_LOG")" "" "nothing opened"
   assert_not_contains "$T/out" "needs tmux" "and no word about tmux"
@@ -294,6 +307,6 @@ dash_tokens_and_events() {   # UX review: TOKENS only when bin/sessions reports 
   assert_contains "$T/out" "TOKENS" "the column shows when reported"; assert_contains "$T/out" "12.3k" "with the session's usage"
 }
 
-ALL="dash_tokens_and_events session_names menu_skips_bad_folders sq_refuses bar_cached creates_then_attaches work_opens_tab work_makes_the_session work_plain claude_in_the_session bare_ade_opens_the_tabs work_real_tmux tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
+ALL="dash_tokens_and_events session_names menu_skips_bad_folders sq_refuses bar_cached creates_then_attaches work_opens_tab work_makes_the_session work_plain claude_in_the_session bare_ade_opens_the_tabs bare_no_agents work_real_tmux tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
