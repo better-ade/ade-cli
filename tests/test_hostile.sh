@@ -41,6 +41,7 @@ table() {
       echo "R|ui --menu links X"; echo "R|ui --links X" ;;
     files) echo "R|files X"; echo "R|files --act open X"; echo "R|files --act url X" ;;
     view) echo "R|view X"; echo "R|view --cwd X x" ;;
+    docs) echo "S|docs X"; echo "S|docs --follow X"; echo "S|docs --web X"; echo "S|docs --id X"; echo "R|docs X X" ;;
     agent) echo "R|agent add X" ;;
     skills) echo "R|skills add X"; echo "R|skills enable X"; echo "R|skills disable X"; echo "S|skills search X" ;;
     clean) echo "R|clean X" ;;

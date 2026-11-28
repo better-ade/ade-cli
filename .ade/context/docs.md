@@ -37,7 +37,7 @@
 - Initialised with `startOnLoad: false`, `securityLevel: "strict"`.
 - A drawing (`drawSvg`) is read as HTML in an inert document (mermaid gives HTML-serialised SVG: `<br>`, `&nbsp;`); its
   one element must be an `<svg>`. Kept: only the elements of an allow-list (`SVG_OK`: the SVG and HTML elements
-  flowchart and sequence drawings use); no `on*`, `src`, `srcdoc`, `action`, `formaction`, `target`, `data`, `form`,
+  flowchart and sequence drawings use); no `on*` or `src*` (`src`, `srcdoc`, `srcset`), `action`, `formaction`, `target`, `data`, `form`,
   `ping`, `background` or `poster` attribute; an `href` (in any namespace) only to `#...`; no value with `url(` to
   anything but `#...`. A `<style>` is kept (with the page nonce) only when every rule is scoped to `#<render id>` or is
   one of mermaid's own `@keyframes` (`dash`, `edge-animation-frame`), with no comment, backslash, `<`, `@import` or

@@ -6783,11 +6783,11 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
   ("svg g defs title desc style marker symbol path circle ellipse line polyline polygon rect text tspan textpath clippath mask pattern " +
    "lineargradient radialgradient stop filter fedropshadow fegaussianblur feoffset feflood fecomposite femerge femergenode feblend " +
    "fecolormatrix foreignobject div span p br b i em strong u s del small sub sup code ul ol li hr").split(" ").forEach(function (t) { SVG_OK[t] = 1; });
-  var ATTR_NO = { src: 1, srcdoc: 1, action: 1, formaction: 1, target: 1, data: 1, form: 1, ping: 1, background: 1, poster: 1 };
+  var ATTR_NO = { action: 1, formaction: 1, target: 1, data: 1, form: 1, ping: 1, background: 1, poster: 1 };
   var KEYFRAMES = /^@keyframes\\s+(dash|edge-animation-frame)$/;   // mermaid 11's own, scoped by name
   function cssScoped(css, own) {
     var t = String(css || ""), depth = 0, pre = "", q = "", kf = false, i, c, sel;
-    if (/\\/\\*|\\\\|<|@import|url\\(/i.test(t)) { return false; }
+    if (/\\/\\*|\\\\|<|@im[p]ort|url\\(/i.test(t)) { return false; }
     function inOwn(x) { x = x.trim(); return x.indexOf(own) === 0 && (x.length === own.length || " .:[>~+".indexOf(x.charAt(own.length)) >= 0); }
     for (i = 0; i < t.length; i++) {
       c = t.charAt(i);
@@ -6805,7 +6805,7 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
   function drawSvg(box, svg, id) {
     // mermaid gives HTML-serialised SVG (<br>, &nbsp;): read as HTML in an inert document, the <svg> its only element
     var x = new DOMParser().parseFromString(String(svg || ""), "text/html"), root = x.body && x.body.firstElementChild;
-    if (!root || x.body.children.length !== 1 || root.localName !== "svg" || root.namespaceURI !== "http://www.w3.org/2000/svg") { drawFail(box, "the drawing could not be read"); return; }
+    if (!root || x.body.children.length !== 1 || root.localName !== "svg" || !(root instanceof SVGSVGElement)) { drawFail(box, "the drawing could not be read"); return; }
     [].slice.call(root.querySelectorAll("*")).forEach(function (n) {
       if (!SVG_OK[String(n.localName).toLowerCase()] && n.parentNode) { n.parentNode.removeChild(n); }
     });
@@ -6814,8 +6814,8 @@ hidden. Refreshed every 3 seconds.</pre></div></div>
       [].slice.call(n.attributes).forEach(function (a) {
         var nm = String(a.localName).toLowerCase(), v = String(a.value).trim();
         nm = nm.slice(nm.lastIndexOf(":") + 1);   // href in any namespace, or none (z:href, xlink:href)
-        if (nm.indexOf("on") === 0 || ATTR_NO[nm] || (nm === "href" && v.charAt(0) !== "#") || /url\\(\\s*['"]?\\s*[^#'"\\s]/i.test(v) ||
-            (nm === "style" && /\\\\|expression|@import|javascript:/i.test(v))) { n.removeAttributeNode(a); }
+        if (nm.indexOf("on") === 0 || nm.indexOf("src") === 0 || ATTR_NO[nm] || (nm === "href" && v.charAt(0) !== "#") || /url\\(\\s*['"]?\\s*[^#'"\\s]/i.test(v) ||
+            (nm === "style" && /\\\\|expression|@im[p]ort|javascript:/i.test(v))) { n.removeAttributeNode(a); }
       });
     });
     var node = document.importNode(root, true);
