@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+- `ade ui` beside a JetBrains IDE (U1): `ADE_EDITOR` picks the editor `c` opens in `ade files`, `ade view` and the
+  link picker (and `ADE_VIEWER=code`): `code` (the default, as before), `idea` or another JetBrains launcher
+  (`pycharm`, `webstorm`, `goland`, `rider`, `clion`, `phpstorm`, `rubymine`, `fleet`), run as `<launcher> --line N
+  --column C <path>`, or a command with `{path}`, `{line}` and `{col}`. No shell runs it; the path is one argument,
+  and a value with `;`, `|`, `&`, `$` or a backtick outside the placeholders is refused in one line. In a JetBrains
+  terminal with no `ADE_EDITOR`, the first JetBrains launcher on PATH is used, else `code`, else the path and line
+  are printed. `ade setup --check` has an `editor:` line. `ade ui` needs tmux 3.2 or newer and now says so before it
+  starts (exit 1, the version found and how to update). `ADE_UI_MOUSE=off` and `ADE_UI_ARROWS=off` (or those lines in
+  `~/.config/ade/ui`) leave tmux's mouse off and drop `prefix Left/Right`; `ade ui` in a JetBrains terminal says once
+  how to set them.
+
 ## 0.2.14
 - A first run reads right (F1): `ade work <folder>` checks the hub's Claude Code command (`HUB_CLAUDE`, else
   `claude`) before it starts anything; when it is not found it says so in one line, names `ade setup` as the fix and

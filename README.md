@@ -210,7 +210,7 @@ line (resolved against that agent's folder), a URL in your browser. Outside `ade
 | `/` | search names under this folder | search the PDF's text |
 | `n` `p` `g` | | next, previous, go to page |
 | `o` `f` `y` | open in the default app, reveal in Finder (or the folder), copy the path | the same |
-| `c` | open the file (or folder) in Visual Studio Code | the same |
+| `c` | open the file (or folder) in your editor (`ADE_EDITOR`; default Visual Studio Code) | the same |
 | `q` | quit | quit |
 
 Over SSH, `o`, `f` and `y` print the path and an `scp` line instead, and PDFs are always text. A missing extra
@@ -225,6 +225,34 @@ shown by `ade view` is in the pager (`less`), which owns the keys: there, use `-
 outside the hub and its projects asks first; without the `code` command one line says so (`ade setup --tools`
 installs Visual Studio Code) and the built-in viewer is used; a `code` that lies inside the hub or project is never
 run; over SSH with no display (and outside Visual Studio Code's own terminal) the path is offered instead.
+
+### Use it beside your IDE
+
+`c` opens the editor `ADE_EDITOR` names ([U1](docs/stories/U1-ade-ui-beside-jetbrains.md)); `ade setup --check` shows
+which one (`editor: ...`):
+
+| `ADE_EDITOR` | `c` runs |
+|---|---|
+| unset, or `code` | `code --goto <path>:<line>:<col>` (Visual Studio Code) |
+| `idea`, `pycharm`, `webstorm`, `goland`, `rider`, `clion`, `phpstorm`, `rubymine`, `fleet` (or a full path to one) | `<launcher> --line <N> --column <C> <path>` |
+| a command with `{path}` (and `{line}`, `{col}` if wanted), e.g. `subl {path}:{line}:{col}` | that command, split on spaces |
+
+No shell runs it: the path is always one argument, and a value with `;`, `|`, `&`, `$`, `<`, `>`, quotes, a backslash
+or a backtick outside the placeholders is refused in one line. With no `ADE_EDITOR`, in a JetBrains terminal
+(`TERMINAL_EMULATOR=JetBrains-JediTerm`) `c` uses the first JetBrains launcher on PATH (Tools > Create Command-line
+Launcher makes one), else `code`, else it prints the path and line. A launcher inside the hub or a project is never run.
+
+`ade ui` needs tmux 3.2 or newer (its popups); an older tmux stops it before it starts, with how to update. In an
+IDE's terminal its keys may clash with the IDE's: `ADE_UI_MOUSE=off` leaves tmux's mouse mode off, and
+`ADE_UI_ARROWS=off` drops `prefix Left/Right` (`prefix 0-9` still switch tabs). Set them in the environment or as
+lines in `~/.config/ade/ui`:
+
+```
+ADE_UI_MOUSE=off
+ADE_UI_ARROWS=off
+```
+
+`ade ui` in a JetBrains terminal says once how to set them.
 
 ## The web view ([A19](docs/stories/A19-web-view.md))
 
@@ -376,6 +404,8 @@ or tool. A hub command exits with whatever the hub's script returns.
 | `ADE_HOOK_BIN` | set by the ADE app | What `ade open` hands off to |
 | `ADE_NO_UPDATE_CHECK` | unset | `1`: no daily release check (no request) |
 | `ADE_NO_AUTO_UPDATE` | unset | `1`: a new ade-cli release is announced, never installed by itself |
+| `ADE_EDITOR` | unset (`code`; a JetBrains launcher in a JetBrains terminal) | The editor `c` opens: `code`, a JetBrains launcher, or a command with `{path}` ([Use it beside your IDE](#use-it-beside-your-ide)) |
+| `ADE_UI_MOUSE`, `ADE_UI_ARROWS` | `on` | `off`: `ade ui` leaves tmux's mouse off, or drops `prefix Left/Right` (also read from `~/.config/ade/ui`) |
 
 ## Providers
 

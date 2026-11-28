@@ -386,7 +386,7 @@ code_opens_at_line() {   # --code and the keys: the right --goto argument; a fol
   assert_contains "$CALLS" "code [--goto] [$A_DIR/img.png:1:1]" "c in the viewer"; assert_contains "$T/screen" "o open · c code · f reveal" "the viewer's key line lists c"
   A help > "$T/out" 2>&1; assert_contains "$T/out" "ade view [--code] <path[:line[:col]]>" "the help: --code"
   assert_contains "$T/out" "ADE_VIEWER=code: code and text files open in" "the help: ADE_VIEWER"; assert_contains "$T/out" "images, PDFs and Markdown keep the built-in viewer" "and what stays"
-  A ui --keys 2> /dev/null | grep -q "in files and links, c: open in Visual Studio Code" || fail "the help popup lists c"
+  A ui --keys 2> /dev/null | grep -q "in files and links, c: open in your editor" || fail "the help popup lists c"
   A files --act code "$a" x > /dev/null 2>&1; assert_eq "$?" 2 "a line is a number"; A files --act open "$a" 3 > /dev/null 2>&1; assert_eq "$?" 2 "only code takes a line"
   : > "$CALLS"; A files --act code "$a" 9 2 > "$T/out" 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$a:9:2]" "the action the keys run, with a line and column"
 }
@@ -442,10 +442,61 @@ code_in_link_picker() {   # a number then c: the file in Visual Studio Code at i
   fresh; files_fixture; mkfake bat; code_fake; local d
   d="${TMPDIR:-/tmp}"; d="$(mktemp -d "${d%/}/ade.XXXXXX")"; printf 'see src/a.ts:3:7 and docs/x.md\n' > "$d/pane"; printf '%s\n' "$A_DIR" > "$d/cwd"
   P "1c\r" ui --links "$d" > "$T/raw" 2>&1; plain < "$T/raw" > "$T/screen"
-  assert_contains "$T/screen" "a number then c: in Visual Studio Code" "the question says how"
+  assert_contains "$T/screen" "a number then c: in your editor" "the question says how"
   assert_eq "$(cat "$CALLS")" "code [--goto] [$A_DIR/src/a.ts:3:7]" "the pick, at its line and column"; rm -rf "$d"
 }
 
-ALL="code_opens_at_line code_names_are_data code_asks_outside code_missing_or_local code_by_default code_in_link_picker explorer_lists_searches_previews explorer_in_real_tmux view_at_line pagers_are_secure pdf_pages pdf_real_tools open_reveal_copy link_picker outside_asks_first spoofed_names killed_window_cleans_up read_only tools_doctor tools_setup_installs_missing tools_in_setup_and_installer"
+# story U1: ADE_EDITOR picks the editor c runs (code, a JetBrains launcher, or a {path} {line} {col} template); in a
+# JetBrains terminal the IDE's launcher is found. Each fake logs its name and each argument in brackets.
+ed_fake() { printf '#!/bin/bash\n{ printf "%s"; printf " [%%s]" "$@"; echo; } >> "$CALLS"\n' "$1" > "${2:-$F}/$1"; chmod +x "${2:-$F}/$1"; }
+JB_LAUNCHERS="idea pycharm webstorm goland rider clion phpstorm rubymine fleet"
+editor_choice() {   # AC1
+  fresh; files_fixture; mkfake bat; code_fake; local a="$A_DIR/src/a.ts" l n v
+  ADE_EDITOR=code A view --code "$a:3:7" < /dev/null > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$a:3:7]" "ADE_EDITOR=code: as today"
+  for l in $JB_LAUNCHERS; do ed_fake "$l"; : > "$CALLS"
+    ADE_EDITOR="$l" A view --code "$a:3:7" < /dev/null > "$T/out" 2>&1 || { cat "$T/out"; fail "$l"; }
+    assert_eq "$(cat "$CALLS")" "$l [--line] [3] [--column] [7] [$a]" "ADE_EDITOR=$l: --line, --column, the path one argument"; done
+  : > "$CALLS"; ADE_EDITOR=idea A files --act code "$a" 9 2 > "$T/out" 2>&1; assert_eq "$(cat "$CALLS")" "idea [--line] [9] [--column] [2] [$a]" "the key's action"
+  assert_contains "$T/out" "opened in idea: $a" "and says where"
+  : > "$CALLS"; ADE_EDITOR=idea A view --code "$A_DIR/src" < /dev/null > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "idea [$A_DIR/src]" "a folder opens as a folder"
+  : > "$CALLS"; ADE_EDITOR="$F/idea" A view --code "$a:4" < /dev/null > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "idea [--line] [4] [--column] [1] [$a]" "a launcher's full path"
+  ed_fake subl; ed_fake nvim
+  : > "$CALLS"; ADE_EDITOR='subl {path}:{line}:{col}' A view --code "$a:3:7" < /dev/null > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "subl [$a:3:7]" "a template"
+  : > "$CALLS"; ADE_EDITOR='nvim  +{line}   {path}' A view --code "$a:5" < /dev/null > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "nvim [+5] [$a]" "words split on spaces, no shell"
+  for n in "my file.ts" 'a;b $(touch pwned) `id` "q'"'"'.ts' "-dash.ts"; do
+    echo x > "$A_DIR/$n"; : > "$CALLS"; (cd "$T" && ADE_EDITOR='nvim {path}' A view --cwd "$A_DIR" --code -- "$n" < /dev/null > /dev/null 2>&1)
+    assert_eq "$(cat "$CALLS")" "nvim [$A_DIR/$n]" "[$n] is one argument in a template"
+    : > "$CALLS"; (cd "$T" && ADE_EDITOR=idea A view --cwd "$A_DIR" --code -- "$n" < /dev/null > /dev/null 2>&1)
+    assert_eq "$(cat "$CALLS")" "idea [--line] [1] [--column] [1] [$A_DIR/$n]" "[$n] is one argument for a launcher"
+  done
+  for v in 'subl {path}; touch pwned' 'subl {path} | touch pwned' 'subl {path} & touch pwned' 'subl $HOME/{path}' 'subl `touch pwned` {path}' 'subl {path}>pwned'; do
+    : > "$CALLS"; (cd "$T" && ADE_EDITOR="$v" A view --code "$a" < /dev/null > "$T/out" 2>&1)
+    assert_eq "$(grep -c 'ADE_EDITOR' "$T/out")" 1 "[$v] refused in one line"; assert_contains "$T/out" "ADE_EDITOR is refused" "[$v] says so"
+    assert_not_contains "$CALLS" "subl" "[$v] never run"; assert_contains "$CALLS" "bat " "[$v] the built-in viewer instead"
+  done
+  [ ! -e "$T/pwned" ] && [ ! -e pwned ] || fail "nothing in ADE_EDITOR ran"
+  : > "$CALLS"; ADE_EDITOR=vim A files --act code "$a" > "$T/out" 2>&1; assert_contains "$T/out" "ADE_EDITOR is refused" "an unknown word"; assert_contains "$T/out" "the path: $a" "and the path is offered"
+  : > "$CALLS"; ADE_EDITOR='subl {line}' A files --act code "$a" > "$T/out" 2>&1; assert_contains "$T/out" "ADE_EDITOR is refused" "a template needs {path}"
+  : > "$CALLS"; ADE_EDITOR='nosuch {path}' A files --act code "$a" > "$T/out" 2>&1; assert_contains "$T/out" "nosuch is not installed" "a template's program not on PATH"
+  mkdir -p "$A_DIR/bin"; ed_fake idea "$A_DIR/bin"; : > "$CALLS"
+  ADE_EDITOR=idea PATH="$A_DIR/bin:$F:$T/sys" "$BASH" "$ADE" files --act code "$a" > "$T/out" 2>&1
+  assert_contains "$T/out" "inside the hub or project being viewed" "a launcher inside the project is never run"; assert_eq "$(cat "$CALLS")" "" "not run"
+}
+editor_detected() {   # AC2
+  fresh; files_fixture; mkfake bat; local a="$A_DIR/src/a.ts"
+  ed_fake goland; ed_fake pycharm; code_fake; export TERMINAL_EMULATOR=JetBrains-JediTerm
+  A files --act code "$a" 9 2 > "$T/out" 2>&1; assert_eq "$(cat "$CALLS")" "pycharm [--line] [9] [--column] [2] [$a]" "the first JetBrains launcher found"
+  rm "$F/pycharm" "$F/goland"; : > "$CALLS"; A files --act code "$a" 9 2 > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$a:9:2]" "no launcher: code"
+  rm "$F/code"; : > "$CALLS"; A files --act code "$a" 9 2 > "$T/out" 2>&1; assert_eq "$(cat "$CALLS")" "" "nothing: nothing runs"
+  assert_contains "$T/out" "the path: $a:9:2" "it prints the path at its line"
+  ed_fake idea; code_fake; unset TERMINAL_EMULATOR; : > "$CALLS"; A files --act code "$a" 9 2 > /dev/null 2>&1; assert_eq "$(cat "$CALLS")" "code [--goto] [$a:9:2]" "outside a JetBrains terminal: code, as today"
+  A setup --check < /dev/null > "$T/out" 2>&1; assert_eq "$(grep '^editor:' "$T/out")" "editor: code (Visual Studio Code; c in ade files and ade view)" "setup --check: code"
+  TERMINAL_EMULATOR=JetBrains-JediTerm A setup --check < /dev/null > "$T/out" 2>&1; assert_eq "$(grep '^editor:' "$T/out")" "editor: idea (JetBrains, found in this terminal; c in ade files and ade view)" "setup --check: the launcher"
+  ADE_EDITOR='subl {path}' A setup --check < /dev/null > "$T/out" 2>&1; assert_eq "$(grep '^editor:' "$T/out")" "editor: subl (ADE_EDITOR; not installed)" "setup --check: ADE_EDITOR"
+  ADE_EDITOR='x;y {path}' A setup --check < /dev/null > "$T/out" 2>&1; assert_contains "$T/out" "editor: refused (ADE_EDITOR is refused" "setup --check: refused"
+  rm "$F/code" "$F/idea"; A setup --check < /dev/null > "$T/out" 2>&1; assert_eq "$(grep '^editor:' "$T/out")" "editor: none (c prints the path; set ADE_EDITOR or install code)" "setup --check: none"
+}
+
+ALL="editor_choice editor_detected code_opens_at_line code_names_are_data code_asks_outside code_missing_or_local code_by_default code_in_link_picker explorer_lists_searches_previews explorer_in_real_tmux view_at_line pagers_are_secure pdf_pages pdf_real_tools open_reveal_copy link_picker outside_asks_first spoofed_names killed_window_cleans_up read_only tools_doctor tools_setup_installs_missing tools_in_setup_and_installer"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok

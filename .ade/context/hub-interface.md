@@ -10,6 +10,8 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
 - `accounts`: `hub<TAB>recorded fingerprint<TAB>current fingerprint<TAB>continue` once the owner chose to continue
   with another Claude account (A10).
 - `keys-set`: one `hub<TAB>tool` line per key `ade setup` stored (A9), names only; `ade reset --keys` offers only these.
+- `ui` (U1, optional, written by the person): `ADE_UI_MOUSE=off` and `ADE_UI_ARROWS=off` lines, read as text (never
+  sourced); the variable of the same name wins.
 
 ## `hub.conf` keys `ade` reads
 - `HUB_NAME`: the hub's display name (`ade` alone, `ade hub list`); default the folder name.
@@ -208,6 +210,14 @@ script's exit code unchanged. A hub is a folder with `bin/lib.sh` and `hub.conf`
   `$TMPDIR/ade.*` folder and runs `ade ui --links <folder>` in a popup; that folder is removed after.
 - `~/.config/ade/hints`: one tool name per line, each missing viewer tool's hint shown once (the one file A15 writes
   outside ade's temp folders).
+- The editor `c` runs (U1): `ADE_EDITOR` = `code`; a JetBrains launcher (`idea pycharm webstorm goland rider clion
+  phpstorm rubymine fleet`, by name or full path), run as `<launcher> --line N --column C <path>` (a folder: `<launcher>
+  <folder>`); or a template with `{path}` (and `{line}`, `{col}`): split on spaces, the first word the command, each
+  placeholder replaced inside its word, never through a shell; `; | & $ < > ' " \` and backticks (and control
+  characters) outside the placeholders refuse it. Unset: in a JetBrains terminal (`TERMINAL_EMULATOR=JetBrains-JediTerm`)
+  the first launcher on PATH, else `code`, else none (the path and line are printed); elsewhere `code`. The command
+  is held to the same rules as `<code>` below (absolute, outside the roots). `ade setup --check` prints `editor: ...`.
+  `ade ui` refuses tmux older than 3.2 (exit 1); in a JetBrains terminal it writes `ui-jetbrains` to `hints` once.
 - Visual Studio Code: `ade files --act code <absolute path> [line [col]]` (the key `c`), `ade view --code`, and
   `ADE_VIEWER=code` (text files, at a terminal) run `<code> --goto <path>:<line>:<col>` (line and column default 1;
   always both, so a name ending in `:5` stays the name) or `<code> <folder>`. `<code>` is `command -v code`, an

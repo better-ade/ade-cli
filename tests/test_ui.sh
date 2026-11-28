@@ -21,6 +21,7 @@ S
     printf '{"time": "2026-11-21T10:%02d:00Z", "from": "projects/api", "to": "all", "kind": "pushed", "text": "event %s"}\n' "$i" "$i"; done > "$AGENT_STATE/events.jsonl"
   mkdir -p "$T/fakebin"; cat > "$T/fakebin/tmux" <<'F'
 #!/bin/bash
+[ "$1" = -V ] && { echo "tmux ${FAKE_TMUX_V:-3.4}"; exit 0; }
 [ "$1" = -L ] && shift 2
 echo "tmux $*" >> "$TMUX_LOG"
 case "$1" in
@@ -307,6 +308,54 @@ dash_tokens_and_events() {   # UX review: TOKENS only when bin/sessions reports 
   assert_contains "$T/out" "TOKENS" "the column shows when reported"; assert_contains "$T/out" "12.3k" "with the session's usage"
 }
 
-ALL="dash_tokens_and_events session_names menu_skips_bad_folders sq_refuses bar_cached creates_then_attaches work_opens_tab work_makes_the_session work_plain claude_in_the_session bare_ade_opens_the_tabs bare_no_agents work_real_tmux tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
+# story U1: ade ui beside a JetBrains IDE
+tmux_version() {   # AC3: tmux older than 3.2 (no display-popup) stops before anything starts
+  fresh; ui_fixture; local v
+  for v in 3.1c 3.0a 2.9 1.8; do rm -f "$TMUX_LOG.session"; : > "$TMUX_LOG"
+    FAKE_TMUX_V="$v" bash "$ADE" ui > "$T/out" 2>&1; assert_eq "$?" 1 "tmux $v: exit 1"
+    assert_contains "$T/out" "ade ui needs tmux 3.2 or newer (found $v)" "names the version found and the one needed"
+    if [ "$(uname)" = Darwin ]; then assert_contains "$T/out" "brew upgrade tmux" "how to update it"; else assert_contains "$T/out" "update tmux" "how to update it"; fi
+    assert_eq "$(grep -c 'new-session\|attach-session' "$TMUX_LOG")" 0 "tmux $v: nothing starts"
+    FAKE_TMUX_V="$v" bash "$ADE" ui --detach > /dev/null 2>&1; assert_eq "$?" 1 "--detach too"
+  done
+  for v in 3.2 3.2a 3.4 3.10 next-3.6 master; do rm -f "$TMUX_LOG.session"; : > "$TMUX_LOG"
+    FAKE_TMUX_V="$v" bash "$ADE" ui > "$T/out" 2>&1 || { cat "$T/out"; fail "tmux $v starts"; }
+    grep -q "^tmux attach-session -t =$S" "$TMUX_LOG" || fail "tmux $v: attaches as today"; done
+}
+ide_safe_keys() {   # AC4: ADE_UI_MOUSE=off, ADE_UI_ARROWS=off (or ~/.config/ade/ui); a JetBrains terminal is told once
+  fresh; ui_fixture; local C
+  bash "$ADE" ui --detach > "$T/out" 2>&1 || fail "ui"; C="$HOME/.config/ade/ui-$S.tmux.conf"
+  grep -qx "set -g mouse on" "$C" || fail "mouse on by default"; grep -qx "bind-key -T prefix Left previous-window" "$C" || fail "Left by default"
+  assert_not_contains "$T/out" "ADE_UI_MOUSE" "no hint outside a JetBrains terminal"
+  rm -f "$TMUX_LOG.session"; ADE_UI_MOUSE=off bash "$ADE" ui --detach > /dev/null 2>&1
+  grep -qx "set -g mouse off" "$C" || fail "ADE_UI_MOUSE=off: mouse off"; grep -qx "bind-key -T prefix Right next-window" "$C" || fail "the arrows stay"
+  rm -f "$TMUX_LOG.session"; ADE_UI_ARROWS=off bash "$ADE" ui --detach > /dev/null 2>&1
+  grep -qx "set -g mouse on" "$C" || fail "the mouse stays"
+  assert_not_contains "$C" "previous-window" "ADE_UI_ARROWS=off: no prefix Left"; assert_not_contains "$C" "next-window" "nor Right"
+  assert_not_contains "$C" "prefix 0" "prefix 0-9 are tmux's own, untouched"
+  ADE_UI_ARROWS=off bash "$ADE" ui --keys < /dev/null > "$T/out"; assert_contains "$T/out" "prefix 0-9   switch tabs" "the help: 0-9 still switch"; assert_not_contains "$T/out" "Left, Right" "and no arrows"
+  mkdir -p "$HOME/.config/ade"; printf 'ADE_UI_MOUSE=off\nADE_UI_ARROWS=off\n' > "$HOME/.config/ade/ui"
+  rm -f "$TMUX_LOG.session"; bash "$ADE" ui --detach > /dev/null 2>&1
+  grep -qx "set -g mouse off" "$C" || fail "the file: mouse off"; assert_not_contains "$C" "previous-window" "the file: no arrows"
+  rm -f "$TMUX_LOG.session"; ADE_UI_MOUSE=on bash "$ADE" ui --detach > /dev/null 2>&1; grep -qx "set -g mouse on" "$C" || fail "the variable wins over the file"
+  printf 'ADE_UI_MOUSE=$(touch pwned)\nADE_UI_ARROWS=off; touch pwned\n' > "$HOME/.config/ade/ui"
+  rm -f "$TMUX_LOG.session"; (cd "$T" && bash "$ADE" ui --detach > /dev/null 2>&1); [ ! -e "$T/pwned" ] || fail "the file is read, never run"
+  grep -qx "set -g mouse on" "$C" || fail "an odd value: as default"
+  rm "$HOME/.config/ade/ui"; rm -f "$TMUX_LOG.session"
+  TERMINAL_EMULATOR=JetBrains-JediTerm bash "$ADE" ui --detach > "$T/out" 2>&1 || fail "ui in JetBrains"
+  assert_contains "$T/out" "ADE_UI_MOUSE=off" "a JetBrains terminal: how to turn the mouse off"; assert_contains "$T/out" "ADE_UI_ARROWS=off" "and the arrows"
+  assert_contains "$T/out" "~/.config/ade/ui" "and where to keep them"
+  rm -f "$TMUX_LOG.session"; TERMINAL_EMULATOR=JetBrains-JediTerm bash "$ADE" ui --detach > "$T/out" 2>&1
+  assert_not_contains "$T/out" "ADE_UI_MOUSE" "said once"
+}
+u1_docs() {   # AC5
+  fresh; local f
+  bash "$ADE" help > "$T/help" 2>&1; sed -n '/^## Unreleased/,/^## [0-9]/p' "$REPO/CHANGELOG.md" > "$T/changes"
+  assert_contains "$REPO/README.md" "### Use it beside your IDE" "README section"
+  for f in "$REPO/README.md" "$T/help" "$T/changes"; do
+    for s in ADE_EDITOR ADE_UI_MOUSE=off ADE_UI_ARROWS=off "tmux 3.2" "{path}"; do assert_contains "$f" "$s" "$(basename "$f"): $s"; done; done
+}
+
+ALL="tmux_version ide_safe_keys u1_docs dash_tokens_and_events session_names menu_skips_bad_folders sq_refuses bar_cached creates_then_attaches work_opens_tab work_makes_the_session work_plain claude_in_the_session bare_ade_opens_the_tabs bare_no_agents work_real_tmux tab_bar dash_golden key_table approve_popup unread_marks no_tmux_no_glow real_tmux"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
