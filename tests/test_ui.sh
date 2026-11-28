@@ -390,10 +390,12 @@ click_menu() {   # AC2
     assert_contains "$T/m" " $(tq "$k") $(tq "$cmd")" "the menu has prefix $k, with its key, running its command"; done < "$T/keys"
 }
 click_tab_menu() {   # AC3
-  ui_conf_made; local m
+  ui_conf_made; local m close
+  # built in an assignment: bash 3.2 brace-expands a for-list word holding "$(tq "#{a,b}")"
+  close="$(tq "#{?#{==:#{window_index},0},,close it}") $(tq x) $(tq "confirm-before -p \"close ##{b:window_name}? y/n\" \"kill-window -t #{window_id}\"")"
   sed -n '/^bind-key -T root MouseDown3Status {/,/^}/p' "$C" > "$T/b"; grep -q "display-menu -t= -x W -y W" "$T/b" || { cat "$C"; fail "a right click on a tab: a menu for that tab"; }
   for s in "$(tq "go to it") $(tq g) $(tq "select-window -t #{window_id}")" "$(tq "preview its plan") $(tq p) $(tq "$(prefix_cmd p)")" "$(tq "links in its pane") $(tq l) $(tq "$(prefix_cmd l)")" \
-    "$(tq "#{?#{==:#{window_index},0},,close it}") $(tq x) $(tq "confirm-before -p \"close ##{b:window_name}? y/n\" \"kill-window -t #{window_id}\"")"; do
+    "$close"; do
     assert_contains "$T/b" "$s" "tab menu: $s"; done
   assert_not_contains "$T/b" "rename" "rename waits for U2"
   [ "$(grep -o 'kill-window' "$C" | wc -l | tr -d ' ')" = 1 ] || fail "kill-window only behind the y/n"
