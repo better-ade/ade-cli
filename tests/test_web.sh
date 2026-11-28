@@ -255,9 +255,16 @@ for m in re.finditer(r"<(/?)([a-zA-Z0-9-]+)([^>]*)>", h):
 PY
 }
 docs_web_page() {   # AC3
-  docs_fixture; start; login; docs_ids
+  docs_fixture
+  # lines a backtracking pattern spends minutes on (the list reads the title raw): a 64 KB heading, a long ~ fence run
+  python3 -c 'import sys; open(sys.argv[1], "w").write("# a" + " " * 65000 + "x\n\n" + "~" * 60000 + "`\n\n## Closed ##\n")' "$H/_bmad-output/wide.md"
+  start; login; docs_ids
   assert_eq "$(json '[(d["title"], d["folder"], d["kind"]) for d in d["docs"] if d["title"] in ("The plan", "Other doc")]')" "[('Other doc', 'projects/api', 'doc'), ('The plan', 'hub', 'plan')]" "the list: title, folder, kind, newest first"
   assert_not_contains "$T/body" "CANARY" "never a link out"
+  local t0 wid; t0="$(python3 -c 'import time; print(time.time())')"
+  wid="$(python3 -c 'import json, sys; print([d["id"] for d in json.load(open(sys.argv[1]))["docs"] if d["rel"] == "_bmad-output/wide.md"][0])' "$T/docs.json")"
+  doc_html "$wid"; assert_contains "$T/html" '<h2 id="doc-closed">Closed</h2>' "the closing #s go"
+  python3 -c 'import sys, time; d = time.time() - float(sys.argv[1]); assert d < 5, "%.1f s" % d' "$t0" || fail "a doc of long lines is drawn quickly"
   doc_html "$PID"; grep -qi "^content-security-policy: default-src 'none'; script-src 'nonce-" "$T/head" || fail "the doc keeps the policy"
   local s; for s in '<h1 id="doc-the-plan">The plan</h1>' '<em>emphasis</em>' '<strong>strong</strong>' '<del>gone</del>' '<code>code &lt;b&gt;</code>' \
     '<h2 id="doc-steps">Steps</h2>' '<ol>' '<li>first</li>' 'nested' '<blockquote>' 'a quote with &lt;i&gt;html&lt;/i&gt;' '<table>' '<th class="al-l">Name</th>' \
@@ -349,6 +356,10 @@ docs_web_access() {   # AC6
   mv "$H/projects/api/docs/other.md" "$T/moved.md"; ln -s "$T/outside/out.md" "$H/projects/api/docs/other.md"
   api "/api/doc?id=$OID"; assert_eq "$CODE" 404 "swapped for a symlink"; assert_not_contains "$T/body" "CANARY" "nothing of the link's target"
   rm "$H/projects/api/docs/other.md"; mv "$T/moved.md" "$H/projects/api/docs/other.md"
+  # a file swapped for a hard link to one outside the roots after the list was made
+  mv "$H/projects/api/docs/other.md" "$T/moved.md"; ln "$T/outside/out.md" "$H/projects/api/docs/other.md"
+  api "/api/doc?id=$OID"; assert_eq "$CODE" 404 "swapped for a hard link"; assert_not_contains "$T/body" "CANARY" "nothing of the hard link's file"
+  rm "$H/projects/api/docs/other.md"; mv "$T/moved.md" "$H/projects/api/docs/other.md"
   # a folder on the way swapped for a link out
   mv "$H/projects/api/docs" "$T/docs.real"; mkdir -p "$T/outside/docs"; cp "$T/docs.real/other.md" "$T/outside/docs/other.md"; ln -s "$T/outside/docs" "$H/projects/api/docs"
   api "/api/doc?id=$OID"; assert_eq "$CODE" 404 "its folder swapped for a link out"
@@ -357,8 +368,8 @@ docs_web_access() {   # AC6
   python3 -c 'import sys; open(sys.argv[1], "a").write("x" * (2 * 1024 * 1024 + 10))' "$H/projects/api/docs/long.md"
   api "/api/doc?id=$LID"; assert_eq "$CODE" 404 "a doc over 2 MB"
   # never in the list: a link out, a file outside the roots, a big file, a fifo
-  mkfifo "$H/_bmad-output/fifo.md"; sleep 2.2; api "/api/docs"
-  for p in CANARY linked.md out.md "Long doc" fifo.md; do assert_not_contains "$T/body" "$p" "never a doc: $p"; done
+  mkfifo "$H/_bmad-output/fifo.md"; ln "$T/outside/out.md" "$H/_bmad-output/hard.md"; sleep 2.2; api "/api/docs"
+  for p in CANARY linked.md out.md "Long doc" fifo.md hard.md; do assert_not_contains "$T/body" "$p" "never a doc: $p"; done
   stop
 }
 docs_diagrams() {   # AC8: the page (ade setup --diagrams: test_setup.sh)
@@ -374,7 +385,19 @@ docs_diagrams() {   # AC8: the page (ade setup --diagrams: test_setup.sh)
 globalThis.mermaid = { n: 0, initialize: function (c) { globalThis.mermaidConfig = c; },
   render: function (id, src) { this.n += 1;
     if (src.indexOf("bad") >= 0) { return Promise.reject(new Error("Parse error on line 1: bad diagram")); }
-    return Promise.resolve({ svg: '<svg xmlns="http://www.w3.org/2000/svg" id="' + id + '" width="80" height="20"><style>text{fill:red}</style><text x="1" y="15" style="font-size:12px">drawn ' + this.n + '</text></svg>' }); } };
+    if (src.indexOf("hostile") >= 0) { return Promise.resolve({ svg: '<svg xmlns="http://www.w3.org/2000/svg" xmlns:z="http://www.w3.org/1999/xlink" id="' + id + '" width="80" height="20">' +
+      '<style>body{background:rgb(1, 2, 3)!important}</style><style>#' + id + ' text{fill:blue}#' + id + '-x{fill:red}</style>' +
+      '<style>#' + id + ' text{fill:green}@import url(x.css);</style><style>#' + id + ' text{fill:rgb(4, 5, 6)}@keyframes dash{to{stroke-dashoffset:0;}}</style>' +
+      '<defs><linearGradient id="g1" z:href="http://evil.example/g.svg#g"/></defs>' +
+      '<rect width="5" height="5" fill="url(#g1)" style="fill:url(http://evil.example/f.svg#f)" onclick="x()"/>' +
+      '<foreignObject width="80" height="20"><div xmlns="http://www.w3.org/1999/xhtml"><meta http-equiv="refresh" content="0;url=about:blank"/>' +
+      '<base href="http://evil.example/"/><link rel="stylesheet" href="http://evil.example/x.css"/><form action="http://evil.example/">' +
+      '<button formaction="http://evil.example/">b</button><input value="i"/></form><iframe src="about:blank"></iframe><object data="x"></object>' +
+      '<embed src="x"/><script>window.pwned = 1;</script><span target="_top">hostile</span></div></foreignObject>' +
+      '<a z:href="http://evil.example/"><text x="1" y="15">linked</text></a><text x="1" y="15" src="x" z:href="http://evil.example/">kept</text></svg>' }); }
+    if (src.indexOf("html-br") >= 0) { return Promise.resolve({ svg: '<svg xmlns="http://www.w3.org/2000/svg" id="' + id + '" width="80" height="40"><foreignObject width="80" height="40">' +
+      '<div xmlns="http://www.w3.org/1999/xhtml" style="display: table-cell;"><span class="nodeLabel"><p>line1<br>line2 a&nbsp;b</p></span></div></foreignObject></svg>' }); }
+    return Promise.resolve({ svg: '<svg xmlns="http://www.w3.org/2000/svg" id="' + id + '" width="80" height="20"><style>#' + id + ' text{fill:red}</style><text x="1" y="15" style="font-size:12px">drawn ' + this.n + '</text></svg>' }); } };
 JS
   export ADE_TEST_ALLOW_FILE_URLS=1 ADE_TEST_MERMAID_SHA256; ADE_TEST_MERMAID_SHA256="$(shasum -a 256 "$js" | cut -d' ' -f1)"
   start; login; docs_ids; doc_html "$MID"
@@ -383,12 +406,14 @@ JS
   grep -qi '^content-type: application/javascript' "$T/head" || fail "served as a script"
   get "/api/mermaid" -H "X-Ade-Key: $K"; assert_eq "$CODE" 401 "the drawer needs a session"
   if browser_ok docs_diagrams; then
+    printf '# Hostile\n\n```mermaid\nhostile\n```\n\n```mermaid\nhtml-br\n```\n' > "$H/projects/api/docs/hostile.md"
     DOCID="$MID" DOCFILE="$H/projects/api/docs/flow.md" in_browser docs_diagrams <<'PY'
 url = url + "&doc=" + os.environ["DOCID"]; opened(); settle(3)
 cfg = js("JSON.stringify(globalThis.mermaidConfig||null)")
 if cfg != json.dumps({"startOnLoad": False, "securityLevel": "strict"}, separators=(",", ":")): errs.append("mermaid's settings: %r" % cfg)
 if js("document.querySelectorAll('#dhtml .mmd svg').length") != 1: errs.append("the diagram is not drawn")
 if "drawn 1" not in (js("document.getElementById('dhtml').textContent") or ""): errs.append("the drawing")
+if js("[].map.call(document.querySelectorAll('#dhtml .mmd svg style'),function(s){return !!s.nonce}).join()") != "true": errs.append("a style scoped to its drawing is kept, with the nonce")
 bad = js("(function(){var e=document.querySelectorAll('#dhtml .mmd')[1];return e?e.textContent:''})()") or ""
 if "bad diagram here" not in bad or "Parse error on line 1" not in bad: errs.append("a parse failure shows the source and the error: %r" % bad)
 if js("[].every.call(document.scripts,function(s){return !!s.nonce})") is not True: errs.append("a script without the nonce")
@@ -399,6 +424,26 @@ if "drawn 3" not in (js("document.getElementById('dhtml').textContent") or ""): 
 base = url.split("/?")[0]
 for r in reqs:
     if not (r.startswith(base + "/") or r == "about:blank" or r.startswith("data:font/")): errs.append("a load from elsewhere: %s" % r[:120])
+PY
+    # a hostile drawing (the review's findings) and an HTML-serialised one (<br>, &nbsp;)
+    sleep 2.2; docs_ids; HID="$(doc_id "Hostile")" in_browser docs_diagrams <<'PY'
+url = url + "&doc=" + os.environ["HID"]; opened(); settle(3)
+if js("!!document.getElementById('dhtml') && !window.pwned") is not True: errs.append("the page went away or ran the drawing's script")
+if js("document.querySelectorAll('#dhtml .mmd svg').length") != 2: errs.append("both drawings: %r" % js("document.getElementById('dhtml').textContent"))
+kept = js("document.querySelectorAll('#dhtml meta, #dhtml base, #dhtml link, #dhtml form, #dhtml button, #dhtml input, #dhtml iframe, #dhtml object, #dhtml embed, #dhtml script, #dhtml a').length")
+if kept != 0: errs.append("%r elements the drawing never needs were kept" % kept)
+if js("getComputedStyle(document.body).backgroundColor") == "rgb(1, 2, 3)": errs.append("a style in the drawing restyled the page")
+if js("[].map.call(document.querySelectorAll('#dhtml .mmd svg style'),function(s){return !!s.nonce + ':' + /rgb\\(4, 5, 6\\)/.test(s.textContent)}).join()") != "true:true": errs.append("only the scoped style is kept: %r" % js("[].map.call(document.querySelectorAll('#dhtml .mmd svg style'),function(s){return s.textContent}).join(' | ')"))
+bad = js("""[].concat.apply([], [].map.call(document.querySelectorAll('#dhtml .mmd svg, #dhtml .mmd svg *'), function (e) {
+  return [].filter.call(e.attributes, function (a) { var n = a.localName.toLowerCase(), v = a.value.trim(); n = n.slice(n.lastIndexOf(':') + 1);
+    return n.indexOf('on') === 0 || ['src', 'action', 'formaction', 'target', 'data'].indexOf(n) >= 0 || (n === 'href' && v.charAt(0) !== '#') || /url\\(\\s*['"]?\\s*[^#'"\\s]/i.test(v);
+  }).map(function (a) { return e.localName + ' ' + a.name; }); })).join()""")
+if bad: errs.append("attributes kept: %s" % bad)
+if js("document.querySelector('#dhtml rect') && document.querySelector('#dhtml rect').getAttribute('fill')") != "url(#g1)": errs.append("a reference inside the drawing is kept")
+txt = js("document.getElementById('dhtml').textContent") or ""
+if "hostile" not in txt or "kept" not in txt: errs.append("the drawing's own text: %r" % txt)
+br = js("(function(){var e=document.querySelectorAll('#dhtml .mmd')[1];return e?[!!e.querySelector('svg'), !!e.querySelector('svg br'), e.textContent].join('|'):''})()") or ""
+if not br.startswith("true|true|") or "line1" not in br or "line2" not in br or "could not be read" in br: errs.append("a label with <br> and &nbsp; is drawn: %r" % br)
 PY
   fi
   stop

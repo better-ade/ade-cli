@@ -216,6 +216,62 @@ u6_docs() {   # AC9: the words
   A doctor > "$T/doc" 2>&1; grep -q "^  mermaid  missing (extra: " "$T/doc" || fail "ade doctor lists the diagram drawer"
 }
 
-ALL="docs_list docs_follow docs_web_link u6_docs"
+# the U6 review's findings: a long heading line, a hard link out, a folder label with control characters, the cap and
+# the title cache
+docs_limits() {
+  docs_fixture; local esc s
+  # a 64 KB heading line: listed quickly (a backtracking pattern took ~40 s), and the closing #s still go
+  python3 -c 'import sys; open(sys.argv[1], "w").write("# a" + " " * 65000 + "x\n")' "$H/docs/wide.md"
+  printf '# Closed title ##\n' > "$H/docs/closed.md"; printf '# Ends in a#\n' > "$H/docs/hash.md"
+  s="$(python3 -c 'import time; print(time.time())')"; A docs > "$T/out" 2> "$T/err" || { cat "$T/err"; fail "ade docs"; }
+  python3 -c 'import sys, time; d = time.time() - float(sys.argv[1]); assert d < 5, "ade docs took %.1f s" % d' "$s" || fail "a 64 KB heading line is listed quickly"
+  assert_contains "$T/out" "docs/wide.md" "the wide doc is listed"
+  grep -q "Closed title  .*docs/closed.md" "$T/out" || fail "the closing #s are not the title: $(grep closed.md "$T/out")"
+  grep -q "Ends in a#  .*docs/hash.md" "$T/out" || fail "a # in the word stays: $(grep hash.md "$T/out")"
+  # a hard link to a file outside the roots: never listed, never followed
+  echo "# CANARY-HARD" > "$T/outside/hard.md"; ln "$T/outside/hard.md" "$H/docs/hard.md"
+  A docs > "$T/out"; assert_not_contains "$T/out" "hard.md" "a hard link is not a doc"; assert_not_contains "$T/out" "CANARY" "nothing of it"
+  A docs --follow "$H/docs/hard.md" > /dev/null 2> "$T/err"; assert_eq "$?" 1 "a hard link is refused"; assert_contains "$T/err" "not a doc" "says so"
+  # a folder whose name holds ESC and BEL: its checkout's docs are listed, the label without them
+  esc="$(printf 'w\033]0;pwn\007eb')"; mkdir -p "$H/projects/$esc" "$T/proj2/docs"; printf '# Proj two\n' > "$T/proj2/docs/two.md"
+  printf '| Repo | Checkout | Branch |\n|---|---|---|\n| o/two | %s | main |\n' "$T/proj2" > "$H/projects/$esc/ACCESS.md"
+  A docs > "$T/out"; assert_contains "$T/out" "Proj two" "the checkout's doc is listed"
+  if LC_ALL=C grep -q "$(printf '[\033\007]')" "$T/out"; then fail "a control character reached the terminal"; fi
+  P "x\n\n" docs > "$T/out"; assert_contains "$T/out" "Proj two" "the numbered picker lists it"
+  if LC_ALL=C grep -q "$(printf '\007')" "$T/out"; then fail "the numbered picker printed a BEL"; fi
+  # the cap stops the walk; a title is read again only when its file changes
+  docs_fixture; mkdir -p "$H/_bmad-output/many" "$H/docs/after"
+  python3 - "$H" <<'PY'
+import os, sys
+for i in range(2001): open(os.path.join(sys.argv[1], "_bmad-output/many/d%04d.md" % i), "w").write("# doc %d\n" % i)
+for i in range(300): open(os.path.join(sys.argv[1], "docs/after/a%03d.md" % i), "w").write("# after %d\n" % i)
+PY
+  sed -n '/^docs_lib() { cat <<.PY.$/,/^PY$/p' "$ADE" | sed '1d;$d' > "$T/docs_lib.py"; [ -s "$T/docs_lib.py" ] || fail "docs_lib"
+  s="$(cd "$H" && pwd -P)"; esc="$(printf 'hub\t%s' "$s")"
+  ADE_DOC_ROOTS="$esc" python3 - "$T/docs_lib.py" "$s" <<'PY' || fail "the cap and the title cache"
+import os, sys, time
+g = {}; exec(open(sys.argv[1]).read(), g); hub = sys.argv[2]
+seen = []; real_lstat = os.lstat; walked = []; real_walk = os.walk
+def lstat(p, *a, **k): seen.append(str(p)); return real_lstat(p, *a, **k)
+def walk(top, *a, **k): walked.append(top); return real_walk(top, *a, **k)
+reads = []; real_read = g["doc_read"]
+def doc_read(real, roots, cap=g["DOC_MAX"]): reads.append(real); return real_read(real, roots, cap)
+g["doc_read"] = doc_read; os.lstat = lstat; os.walk = walk
+docs = g["doc_list"](g["doc_roots"]())
+os.lstat = real_lstat; os.walk = real_walk
+assert len(docs) == 2000, "%d docs listed" % len(docs)
+assert not [p for p in seen if "/docs/after/" in p], "the walk went on after the cap"
+assert os.path.join(hub, "docs") not in walked, "a folder was walked after the cap: %r" % walked
+assert len(reads) == 2000, "%d titles read" % len(reads)
+del reads[:]; g["doc_list"](g["doc_roots"]())
+assert len(reads) == 0, "the relist read %d titles again" % len(reads)
+one = os.path.join(hub, "_bmad-output/many/d0001.md"); open(one, "w").write("# changed title\n"); t = time.time() + 5; os.utime(one, (t, t))
+docs = g["doc_list"](g["doc_roots"]())
+assert len(reads) == 1, "a changed doc's title is read again (%d reads)" % len(reads)
+assert [d["title"] for d in docs if d["real"] == one] == ["changed title"], "the new title"
+PY
+}
+
+ALL="docs_list docs_follow docs_web_link u6_docs docs_limits"
 for t in ${1:-$ALL}; do ( $t ) || exit 1; done
 echo ok
