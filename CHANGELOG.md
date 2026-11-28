@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.14
 - A first run reads right (F1): `ade work <folder>` checks the hub's Claude Code command (`HUB_CLAUDE`, else
   `claude`) before it starts anything; when it is not found it says so in one line, names `ade setup` as the fix and
   exits 2 (no tab, no agent). `ade setup --check` checks the same command, so the two agree
@@ -15,6 +15,9 @@
   every top-bar count, `sync`, `monitors`, `inbox` and a row's `!` explain themselves on hover; whole folder names in
   the events on a wide screen; a start message of short lines and one hint line on the code page (`?` shows the rest).
   `/api/agents`: `line` is null when there is no `STATE.md`; new `running`.
+- CI checks check-ins and `ade web` end to end on a real hub (C3): `tests/e2e/web.sh`, in `e2e-linux` and
+  `e2e-macos`, drives a focus folder's check-in hooks, `bin/monitor`'s quiet event, and `ade web`'s code, API and
+  `--stop`, offline.
 
 ## 0.2.13
 - `ade web` asks for a code before it shows anything (M2): each start prints a code of 8 characters on its own
